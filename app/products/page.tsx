@@ -391,7 +391,7 @@ export default function ProductsPage() {
               </div>
 
               <div className="px-6 py-4 border-t border-border bg-slate-950/40 flex justify-between items-center">
-                {!editingProduct.id.startsWith("asset_new_link") ? (
+                {!(editingProduct?.id?.startsWith("asset_new_link") ?? true) ? (
                   <button type="button" onClick={() => handleDeleteProduct(editingProduct.id)} className="flex items-center gap-1 text-xs font-bold text-red-500 hover:text-red-400 transition-colors">
                     <Trash2 className="w-4 h-4" /> Delete Product
                   </button>

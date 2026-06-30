@@ -3,6 +3,8 @@
 import React, { useState, useRef } from "react";
 import { UploadCloud, FileAudio, Loader2, ShieldAlert } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { storage } from "@/lib/firebase"; // Ensure you export storage from your firebase config
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 interface VoiceUploadZoneProps {
   authorEmail: string;
@@ -16,45 +18,29 @@ export function VoiceUploadZone({ authorEmail, onUploadSuccess }: VoiceUploadZon
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
-  const processAudioFile = async (file: File) => {
-    if (!file.type.includes("audio/")) {
-      toast({
-        title: "Invalid File Type",
-        description: "Please supply a valid high-fidelity audio format (.wav, .mp3, .m4a).",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setFileDetails({
-      name: file.name,
-      size: (file.size / (1024 * 1024)).toFixed(2) + " MB",
-    });
-
-    setUploading(true);
-
-    try {
-      // Simulate secure streaming upload to Google Cloud Storage bucket path
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-
-      const mockStoragePath = `gs://vault-storage/raw-ingest/${authorEmail}/${file.name.toLowerCase().replace(/\s+/g, "_")}`;
-      
-      toast({
-        title: "Vocal Recording Ingested",
-        description: "File successfully targeted and queued for KOBA-I Audio staff mastering.",
-      });
-
-      onUploadSuccess(mockStoragePath);
-    } catch (error) {
-      toast({
-        title: "Pipeline Transmission Error",
-        description: "Failed to pipe file bytes to cloud storage target.",
-        variant: "destructive",
-      });
-    } finally {
-      setUploading(false);
-    }
-  };
+  // Replace the mock function with this production logic
+const processAudioFile = async (file: File) => {
+  setUploading(true);
+  try {
+    // 1. Reference your verified bucket
+    const storageRef = ref(storage, `vault/audio/${authorEmail}/${file.name.toLowerCase().replace(/\s+/g, "_")}`);
+    
+    // 2. Upload the real bytes
+    await uploadBytes(storageRef, file);
+    
+    // 3. Get the REAL public streaming URL
+    const downloadUrl = await getDownloadURL(storageRef);
+    
+    toast({ title: "Ingestion Success", description: "Media linked to production canvas." });
+    
+    // 4. Update the form with the real URL
+    onUploadSuccess(downloadUrl); 
+  } catch (error: any) {
+    toast({ title: "Pipeline Fault", description: error.message, variant: "destructive" });
+  } finally {
+    setUploading(false);
+  }
+};
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();

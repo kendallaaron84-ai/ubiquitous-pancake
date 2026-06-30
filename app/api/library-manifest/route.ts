@@ -1,92 +1,50 @@
 // app/api/library-manifest/route.ts
 import { NextResponse } from "next/server";
+import { getApps, initializeApp, cert } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
+import path from "path";
+import fs from "fs";
 
 export const dynamic = "force-dynamic";
 
-// 📦 The Master Fallback Catalog (Updated to support Atkinson Hyperlegible default for cold passes)
-const fallbackCatalog = [
-  {
-    assetId: "asset_duncan_audio_01",
-    title: "Duncan the Man Hunter - Unabridged",
-    author: "Kendall O'Brian Aaron",
-    coverArt: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500",
-    bgImage: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1000",
-    type: "Audiobook",
-    price: "14.99",
-    description: "A cinematic long-form audio drama experience set in a neon-drenched cyberpunk landscape.",
-    pubDate: "2026",
-    chapters: [
-      { id: "duncan_ch1", title: "Chapter 1: Rain-Slicked Streets", url: "http://localhost:3000/api/stream/duncan_01" }
-    ]
-  },
-  {
-    assetId: "short_story_sovereign",
-    title: "The Sovereign Decentral",
-    author: "Kendall O'Brian Aaron",
-    coverArt: "https://images.unsplash.com/photo-1614741118887-7a4ee193a5fa?w=500",
-    bgImage: "https://images.unsplash.com/photo-1614741118887-7a4ee193a5fa?w=1000",
-    type: "E-Book",
-    price: "0.00", 
-    description: "An immersive text exploring digital ownership, decentralized pipelines, and creative autonomy.",
-    pubDate: "2026",
-    ebookPayload: {
-      fontPreference: "Atkinson Hyperlegible",
-      chapters: [
-        { 
-          id: "sov_ch1", 
-          title: "The Decoupled Blueprint", 
-          textContent: "The corporate middlemen had built glass towers on the backs of uncompensated vocal cords. But deep in the local subnets, the independent nodes began to sing directly to their listeners..." 
-        }
-      ]
-    }
-  }
-];
-
-// 🚀 Unified GET Request Handler
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    // 🔥 DYNAMIC RUNTIME IMPORT: Keeps Firebase completely isolated from the build compiler
-    const admin = require("firebase-admin");
+    const { searchParams } = new URL(request.url);
+    const userId = searchParams.get("userId");
 
-    if (!admin || !admin.apps || !admin.apps.length) {
-      try {
-        admin.initializeApp({
-          credential: admin.credential.applicationDefault(),
+    if (getApps().length === 0) {
+      const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
+      if (fs.existsSync(keyPath)) {
+        initializeApp({
+          credential: cert(JSON.parse(fs.readFileSync(keyPath, "utf8"))),
+          projectId: "jubilee-command-center---dev"
         });
-      } catch (e) {
-        console.warn("⚠️ Firebase Admin initialization bypassed during build pass.");
-        return NextResponse.json(fallbackCatalog, { headers: { "Access-Control-Allow-Origin": "*" } });
       }
     }
 
-    const db = admin.firestore();
+    const db = getFirestore();
     
-    // Fetch live production publications flagged as Active
-    const snapshot = await db.collection("products").where("status", "==", "Active").get();
+    // 1. Fetch live products from your catalog database
+    const snapshot = await db.collection("products").get();
     
-    if (snapshot.empty) {
-      return NextResponse.json(fallbackCatalog, { headers: { "Access-Control-Allow-Origin": "*" } });
-    }
-    
-// ... (keep the database fetch query logic exactly the same)
+    // 2. Map through records and structure fields for player canvases
+    const manifest = snapshot.docs.map((doc) => {
+      const data = doc.data();
+      const isEbook = data.type === "E-Book";
 
-const manifest = snapshot.docs.map((doc: any) => {
-  const data = doc.data();
-  const isEbook = data.type === "E-Book";
+      return {
+        assetId: data.assetKey || doc.id,
+        assetKey: data.assetKey || doc.id, 
+        title: data.title || "Untitled",
+        author: data.author || "Kendall O'Brian Aaron",
+        type: data.type || "Audiobook", 
+        price: data.price || "0.00",
+        description: data.synopsis || data.description || "",
+        pubDate: data.pubDate || "2026",
+        coverArt: data.coverArtUrl || data.image || "", 
+        bgImage: data.bgImageUrl || data.image || "",
+        streamUrl: data.fileUrl || "",
 
-  return {
-    assetId: data.assetKey || doc.id,
-    assetKey: data.assetKey || doc.id, // 🚀 FIXED: Explicitly map assetKey for frontend includes validation checks!
-    title: data.title || "Untitled",
-    author: data.author || "Kendall O'Brian Aaron",
-    type: data.type || "Audiobook", 
-    price: data.price || "19.99",
-    description: data.description || "",
-    pubDate: data.pubDate || "2026",
-    coverArt: data.coverArtUrl || data.image || "", 
-    bgImage: data.bgImageUrl || data.image || "",
-
-        // Dynamic properties based on deployment criteria
         chaptersCount: isEbook 
           ? (data.ebookPayload?.chapters?.length || 0)
           : (data.studioTracks?.length || 0),
@@ -100,10 +58,26 @@ const manifest = snapshot.docs.map((doc: any) => {
       };
     });
 
-    return NextResponse.json(manifest, { headers: { "Access-Control-Allow-Origin": "*" } });
+    // 3. Process buyer profile entitlements if logged in via modern device signature
+    let ownedAssets: string[] = [];
+    if (userId && userId !== "unknown") {
+      const entitlementsSnapshot = await db.collection("entitlements")
+        .where("userId", "==", userId)
+        .where("status", "==", "active")
+        .get();
+        
+      ownedAssets = entitlementsSnapshot.docs.map(doc => doc.data().assetKey);
+    }
 
-  } catch (error) {
-    console.error("❌ Library Manifest Runtime Error:", error);
-    return NextResponse.json(fallbackCatalog, { headers: { "Access-Control-Allow-Origin": "*" } });
+    return NextResponse.json({ manifest, ownedAssets }, {
+      headers: {
+        "Access-Control-Allow-Origin": "http://koba-dev.local",
+        "Access-Control-Allow-Credentials": "true"
+      }
+    });
+
+  } catch (error: any) {
+    console.error("❌ Library Manifest Engine Error:", error.message);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

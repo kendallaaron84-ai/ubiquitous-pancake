@@ -23,12 +23,30 @@ export default function PhoneOtpVerification({ onStateChange, phoneNumber }: Pho
 		setOtpSent(true)
 	}
 
-	const handleVerifyOtp = async () => {
-		// Here you would typically send a request to your backend to verify the OTP
-		console.log("Verifying OTP:", otp)
-		// If successful, move to the success state
-		onStateChange("success")
-	}
+	// Inside PhoneOtpVerification.tsx
+
+	const handleVerify = async () => {
+		const response = await fetch('/api/auth/sms-verify', {
+			method: 'POST',
+			body: JSON.stringify({ phoneNumber, code })
+		});
+
+		const data = await response.json();
+
+		if (data.success) {
+			// THIS IS THE HANDSHAKE
+			// Send the message to the WordPress parent window
+			if (window.parent) {
+				window.parent.postMessage({ 
+					type: 'AUTH_SUCCESS', 
+					userId: data.userId 
+				}, "*"); 
+			}
+
+			// Proceed with your UI success state
+			onStateChange("success"); 
+		}
+	};
 
 	return (
 		<div className="flex flex-col justify-center h-full">

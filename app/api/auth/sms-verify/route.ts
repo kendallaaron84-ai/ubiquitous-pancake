@@ -1,9 +1,13 @@
 // app/api/auth/sms-verify/route.ts
 import { NextResponse } from "next/server";
 import twilio from "twilio";
+import { initializeApp, getApps, cert } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
+import path from "path";
+import fs from "fs";
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "https://koba-dev.local",
+  "Access-Control-Allow-Origin": "http://koba-dev.local",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Allow-Credentials": "true",
@@ -12,50 +16,49 @@ const corsHeaders = {
 export async function POST(request: Request) {
   try {
     const { phoneNumber, code } = await request.json();
-
-    if (!phoneNumber || !code) {
-      return NextResponse.json({ success: false, error: "Phone number and verification PIN are required." }, { status: 400, headers: corsHeaders });
-    }
-
-    // Standardize phone format exactly like the send route
+    
+    // Standardize phone format
     let cleanPhone = phoneNumber.trim().replace(/[^0-9]/g, "");
-    if (cleanPhone.length === 10) {
-      cleanPhone = `+1${cleanPhone}`;
-    } else if (cleanPhone.length === 11 && cleanPhone.startsWith("1")) {
-      cleanPhone = `+${cleanPhone}`;
-    } else if (phoneNumber.includes("+")) {
-      cleanPhone = `+${cleanPhone}`;
+    if (cleanPhone.length === 10) cleanPhone = `+1${cleanPhone}`;
+    else cleanPhone = `+${cleanPhone}`;
+
+    // 1. Re-initialize Firebase (Fixes 'getFirestore not defined')
+    if (getApps().length === 0) {
+        const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
+        initializeApp({
+            credential: cert(JSON.parse(fs.readFileSync(keyPath, "utf8"))),
+            projectId: "jubilee-command-center---dev"
+        });
     }
 
-    const cleanCode = code.trim();
-
+    // 2. Verify with Twilio
     const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-
     const check = await client.verify.v2
       .services(process.env.TWILIO_VERIFY_SERVICE_SID!)
-      .verificationChecks.create({ to: cleanPhone, code: cleanCode });
+      .verificationChecks.create({ to: cleanPhone, code: code.trim() });
 
     if (check.status === "approved") {
+      const db = getFirestore();
+      const entitlements = await db.collection("entitlements")
+          .where("userPhone", "==", cleanPhone)
+          .where("status", "==", "active")
+          .limit(1)
+          .get();
+
       return NextResponse.json({ 
         success: true, 
-        message: "Device authenticated successfully. Vault door unlocked." 
+        userId: entitlements.docs[0]?.id || "unknown" 
       }, { status: 200, headers: corsHeaders });
-    } else {
-      return NextResponse.json({ 
-        success: false, 
-        error: "Invalid or expired authorization code. Please try again." 
-      }, { status: 400, headers: corsHeaders });
     }
 
+    return NextResponse.json({ success: false, error: "Invalid PIN." }, { status: 400, headers: corsHeaders });
+
   } catch (error: any) {
-    console.error("❌ SMS Verification Safety Boundary Crash:", error.message);
+    console.error("❌ SMS Verification Error:", error.message);
     return NextResponse.json({ success: false, error: error.message }, { status: 500, headers: corsHeaders });
   }
 }
 
 export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 200,
-    headers: corsHeaders,
-  });
+  return new NextResponse(null, { status: 200, headers: corsHeaders });
 }

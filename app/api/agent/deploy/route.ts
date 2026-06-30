@@ -1,7 +1,8 @@
 // app/api/agent/deploy/route.ts
 import { NextResponse } from "next/server";
 import { getApps, initializeApp, cert } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore"; 
+import { getFirestore } from "firebase-admin/firestore";
+import { getStorage } from "firebase-admin/storage"; // 🚀 FIXED: Imported from firebase-admin/storage
 import path from "path";
 import fs from "fs";
 
@@ -10,26 +11,13 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    const { bookTitle, fileUrl, coverUrl, bgImageUrl, type, price } = body;
     
-    const authorEmail = body.authorEmail || "kendallaaron84@gmail.com";
-    const bookTitle = body.bookTitle || body.title || "Untitled Sovereign Publication Asset";
-    const statusState = body.status || "Active"; 
-    const price = body.price !== undefined && body.price !== null && body.price !== "" ? body.price.toString() : "0.00";
-    const type = body.type || "Audiobook";
-    const synopsis = body.synopsis || "";
-    const sections = body.sections || ["Featured Publications"];
-    const coverUrl = body.coverUrl || body.coverArtUrl || "";
-    const bgImageUrl = body.bgImageUrl || "";
-
-    if (!authorEmail || !bookTitle) {
-      return NextResponse.json({ success: false, error: "Missing core deployment identifiers." }, { status: 400 });
-    }
-
+    // 1. Initialize Admin SDK
     if (getApps().length === 0) {
       const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
       if (fs.existsSync(keyPath)) {
-        const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
-        initializeApp({ credential: cert(serviceAccount), projectId: serviceAccount.project_id });
+        initializeApp({ credential: cert(JSON.parse(fs.readFileSync(keyPath, "utf8"))) });
       } else {
         initializeApp({ projectId: "jubilee-command-center---dev" });
       }
@@ -40,96 +28,49 @@ export async function POST(request: Request) {
     const cleanBookSlug = bookTitle.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/(^_|_$)/g, '');
     const assetKey = `abk_${authorSlug}_${cleanBookSlug}`;
 
-    // 🚀 CONSOLIDATION ROUTINE: Harvest studio tracks and stripe properties from split documents
-    let consolidatedTracks = [];
-    let consolidatedStripeId = body.stripeConnectId || "";
+    // 2. Storage Initialization (Correct way for Admin SDK)
+    const storage = getStorage(); 
+    // 🚀 FIXED: Point explicitly to your known bucket name
+    const bucket = storage.bucket("jubilee-command-center---dev.firebasestorage.app");
     
-    const productsRef = adminDb.collection("products");
-    const querySnapshot = await productsRef.where("assetKey", "==", assetKey).get();
-    
-    for (const doc of querySnapshot.docs) {
-      if (doc.id !== assetKey) {
-        const docData = doc.data();
-        if (docData.studioTracks && docData.studioTracks.length > 0) {
-          consolidatedTracks = docData.studioTracks;
-        }
-        if (docData.stripeConnectId) {
-          consolidatedStripeId = docData.stripeConnectId;
-        }
-        // Delete temporary upload duplicate draft to keep data clean
-        await productsRef.doc(doc.id).delete();
-      }
+    const folderPrefix = `studio/${assetKey}/`;
+    const [files] = await bucket.getFiles({ prefix: folderPrefix });
+
+    let discoveredFileUrl = fileUrl || "";
+    if (files.length > 0 && !discoveredFileUrl) {
+        const file = files.sort((a, b) => b.metadata.updated.localeCompare(a.metadata.updated))[0];
+        const [url] = await file.getSignedUrl({ action: 'read', expires: '03-09-2491' });
+        discoveredFileUrl = url;
+        console.log("🛠️ Auto-linked media file:", discoveredFileUrl);
     }
 
-    const writePayload: any = {
-      id: assetKey,
-      assetKey: assetKey,
-      authorSlug: authorSlug,
-      authorEmail: authorEmail,
-      title: bookTitle,
-      price: price,
-      type: type, 
-      synopsis: synopsis,
-      status: statusState, 
-      sections: sections,
-      coverArtUrl: coverUrl,
-      bgImageUrl: bgImageUrl,
-      stripeConnectId: consolidatedStripeId,
-      studioTracks: consolidatedTracks, // Safe merge assignment
-      createdAt: new Date().toISOString()
-    };
-
-    // Commit consolidated master row to Firestore
-    await productsRef.doc(assetKey).set(writePayload, { merge: true });
-
-    // Format unified parameters for WordPress handoff
+    // 3. Construct Payload
     const syncPayload = {
-      authorEmail: "dev-email@wpengine.local",
-      author_slug: authorSlug,
-      bookTitle: bookTitle,
-      title: bookTitle,
-      bookSlug: cleanBookSlug.replace(/_/g, '-'),
-      slug: cleanBookSlug.replace(/_/g, '-'),
-      assetKey: assetKey,
-      asset_key: assetKey,
-      koba_asset_key: assetKey,
+      assetKey,
+      bookTitle,
+      streamUrl: discoveredFileUrl,
       coverArt: coverUrl,
-      cover_url: coverUrl,
       bgImage: bgImageUrl,
-      bg_image: bgImageUrl,
-      type: type, 
-      price: price
+      type: type || "Audiobook",
+      price: price?.toString() || "0.00"
     };
 
-    let targetWpDomain = "koba-dev.local"; 
-    const wpPublishUrl = `http://${targetWpDomain}/wp-json/kobai/v1/update-chapter-audio`;
-
+    // 4. Send to WordPress
+    const wpPublishUrl = `http://koba-dev.local/wp-json/kobai/v1/update-chapter-audio`;
     const wpResponse = await fetch(wpPublishUrl, {
       method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "X-KOBA-KEY": "JUBI-TEST-1234-5678" 
-      },
+      headers: { "Content-Type": "application/json", "X-KOBA-KEY": "JUBI-TEST-1234-5678" },
       body: JSON.stringify(syncPayload)
     });
 
-    let wpResult = { success: false, message: "No initial bridge tracking captured." };
-    const contentType = wpResponse.headers.get("content-type");
-
-    if (wpResponse.ok && contentType && contentType.includes("application/json")) {
-      wpResult = await wpResponse.json();
-    } else {
-      const errorText = await wpResponse.text();
-      return NextResponse.json({
-        success: false,
-        error: "WordPress destination server dropped an invalid format.",
-        details: errorText.substring(0, 200)
-      }, { status: 502 });
+    if (!wpResponse.ok) {
+        const text = await wpResponse.text();
+        throw new Error(`WordPress error: ${text.substring(0, 100)}`);
     }
 
-    return NextResponse.json({ success: true, assetKey: assetKey, wpDeployment: wpResult }, { status: 200 });
-
+    return NextResponse.json({ success: true, streamUrl: discoveredFileUrl });
   } catch (error: any) {
+    console.error("❌ Deploy Crash:", error.message);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
