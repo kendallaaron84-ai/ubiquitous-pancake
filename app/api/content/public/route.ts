@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
 
+// 🚀 FIXED: Tell Vercel this is a live API, do not prerender it during build
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -38,7 +41,6 @@ export async function GET(request: Request) {
       const data = doc.data();
       
       // Ensure the content belongs to the requesting author's Studio Key
-      // (Adjust 'authorEmail' or 'studioKey' based on how you link users to keys in Firestore)
       if (data.authorEmail === studioKey || data.studioKey === studioKey) {
         // Strip out backend execution metadata, only send what the blog needs
         publicContent.push({
