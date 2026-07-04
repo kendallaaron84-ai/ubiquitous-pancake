@@ -86,6 +86,10 @@
       "@google/genai",
       "protobufjs",
       "es5-ext"
-    ]
+    ],
+    "overrides": {
+      "jose": "4.15.5",
+      "jwks-rsa": "3.1.0"
+    }
   }
 }
