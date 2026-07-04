@@ -1,30 +1,40 @@
-import * as admin from "firebase-admin";
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
+import { getStorage } from 'firebase-admin/storage';
 
 const projectId = process.env.FIREBASE_PROJECT_ID || "author-jubilee-command-center";
 
-if (!admin.apps.length) {
+// 🚀 FIXED: Safely check initialized apps using the modular App Router method
+if (getApps().length === 0) {
   try {
-    // Vercel relies entirely on these environment variables in production
     if (process.env.FIREBASE_PRIVATE_KEY) {
-      admin.initializeApp({
-        credential: admin.credential.cert({
+      initializeApp({
+        credential: cert({
           projectId: projectId,
           clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
           // Safely handles the multi-line private key format from Vercel
           privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
         }),
       });
-      console.log("🚀 Firebase Admin SDK initialized seamlessly via Vercel Environment Variables.");
+      console.log("🚀 Firebase Admin SDK initialized seamlessly.");
     } else {
-      console.warn("⚠️ FIREBASE_PRIVATE_KEY is missing. Skipping init (Normal during Vercel static build phase).");
+      console.warn("⚠️ FIREBASE_PRIVATE_KEY is missing. Skipping init during static build.");
     }
   } catch (error) {
     console.error("❌ Firebase Admin SDK critical initialization failure:", error);
   }
 }
 
-const auth = admin.auth();
-const adminDb = admin.firestore(); // 🚀 FIXED: Renamed to adminDb to match your API routes
-const storage = admin.storage();
+const adminDb = getFirestore();
+const auth = getAuth();
+const storage = getStorage();
+
+// Exporting an 'admin' fallback object just in case any of your legacy files still import it
+const admin = {
+    auth: () => auth,
+    firestore: () => adminDb,
+    storage: () => storage
+};
 
 export { admin, auth, adminDb, storage };
