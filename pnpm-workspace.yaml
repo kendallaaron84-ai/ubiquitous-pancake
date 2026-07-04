@@ -1,7 +1,11 @@
 allowBuilds:
-  '@ampproject/toolbox-optimizer': set this to true or false
-  '@firebase/util': set this to true or false
-  '@google/genai': set this to true or false
-  es5-ext: set this to true or false
-  protobufjs: set this to true or false
-  sharp: true
+  '@ampproject/toolbox-optimizer': true
+  '@firebase/util': true
+  '@google/genai': true
+  'es5-ext': true
+  'protobufjs': true
+  'sharp': true
+
+overrides:
+  jose: "4.15.5"
+  jwks-rsa: "3.1.0"
