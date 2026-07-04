@@ -9,6 +9,8 @@ import Layout from "@/components/layout";
 import Link from "next/link"; 
 import { Plus, Image as ImageIcon, Settings2, Tag, X, UploadCloud, Save, Edit3, Mic, Trash2 } from "lucide-react";
 
+export const dynamic = 'force-dynamic';
+
 export default function ProductsPage() {
   const [products, setProducts] = useState<any[]>([]);
   const [editingProduct, setEditingProduct] = useState<any | null>(null);

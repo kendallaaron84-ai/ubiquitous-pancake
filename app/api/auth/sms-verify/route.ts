@@ -6,6 +6,8 @@ import { getFirestore } from "firebase-admin/firestore";
 import path from "path";
 import fs from "fs";
 
+export const dynamic = 'force-dynamic';
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "http://koba-dev.local",
   "Access-Control-Allow-Methods": "POST, OPTIONS",

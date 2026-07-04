@@ -6,6 +6,8 @@ import { storage, db } from "@/lib/firebase";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { ShieldAlert, Save, UploadCloud, Loader2 } from "lucide-react";
 
+export const dynamic = 'force-dynamic';
+
 export function AdminControlsModal() {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);

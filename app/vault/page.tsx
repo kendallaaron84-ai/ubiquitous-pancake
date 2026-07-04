@@ -14,6 +14,8 @@ import {
   UserCheck, Cpu, Plus, BookOpen, Trash2 
 } from "lucide-react";
 
+export const dynamic = 'force-dynamic';
+
 const mockBooks = [
   { id: "book_duncan", title: "Duncan the Man Hunter" },
   { id: "book_koba_doc", title: "KOBA-I Platform Documentation" }

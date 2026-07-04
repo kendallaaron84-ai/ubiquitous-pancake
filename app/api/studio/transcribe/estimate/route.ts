@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { adminDb } from '@/lib/firebase-admin';
 
+export const dynamic = 'force-dynamic';
+
 // Business Rule: $1.00 per hour of audio
 const PRICE_PER_HOUR = 1.00;
 

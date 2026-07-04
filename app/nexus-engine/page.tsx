@@ -10,6 +10,8 @@ import { db } from "@/lib/firebase";
 import { collection, query, where, onSnapshot, orderBy } from "firebase/firestore";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 
+export const dynamic = 'force-dynamic';
+
 export default function NexusEnginePage() {
 	const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
 	const [pipelineItems, setPipelineItems] = useState<any[]>([]);

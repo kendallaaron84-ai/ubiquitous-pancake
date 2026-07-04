@@ -19,6 +19,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Clock, Copy, Plus, RefreshCw, User, X } from "lucide-react"
 
+export const dynamic = 'force-dynamic';
+
 export default function TeamInvitesPage() {
 	return (
 		<Layout >

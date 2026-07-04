@@ -6,6 +6,8 @@ import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";
 import { Sparkles, FileText, Briefcase, Users, LayoutTemplate } from "lucide-react";
 
+export const dynamic = 'force-dynamic';
+
 export function AuthorIntakeForm() {
   const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);

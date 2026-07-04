@@ -9,6 +9,8 @@ import { db } from "@/lib/firebase";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
 import { BookOpen } from "lucide-react";
 
+export const dynamic = 'force-dynamic';
+
 export default function NexusPipelinePage() {
   const authorEmail = "kendall@domain.com"; // Multi-tenant boundary anchor
   const [activeRequests, setActiveRequests] = useState<any[]>([]);

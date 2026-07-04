@@ -27,6 +27,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Copy, Edit, Mail, MoreHorizontal, Plus, Shield, Trash, User } from "lucide-react"
 
+export const dynamic = 'force-dynamic';
+
 export default function TeamMembersPage() {
 	return (
 		<Layout >

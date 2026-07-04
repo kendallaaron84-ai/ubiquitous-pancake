@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
+export const dynamic = 'force-dynamic';
+
 // 23 Integration test points template definitions
 const STEP_TEMPLATES = [
   // 1. Content Creation & Onboarding (Steps 1–7)

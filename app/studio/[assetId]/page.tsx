@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 
+export const dynamic = 'force-dynamic';
+
 export default function ProductionStudio({ params }: { params: Promise<{ assetId: string }> }) {
   const { assetId } = use(params); 
 

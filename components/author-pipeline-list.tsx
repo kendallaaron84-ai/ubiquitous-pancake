@@ -4,6 +4,8 @@ import { db } from "@/lib/firebase";
 // 🔑 INJECT: Added UI icons for the asset tray
 import { Trash2, RefreshCw, ChevronDown, ChevronUp, Copy, ExternalLink } from "lucide-react";
 
+export const dynamic = 'force-dynamic';
+
 interface PipelineItem {
 	id: string;
 	title: string;
