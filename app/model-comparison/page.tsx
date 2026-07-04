@@ -1,5 +1,9 @@
 import Layout from "@/components/layout"
 import ModelComparison from "@/components/section/model-comparison"
+
+export const dynamic = 'force-dynamic';
+
+
 // import { ModelComparison } from "@/components/model-comparison"
 
 export default function ModelComparisonPage() {

@@ -3,6 +3,8 @@
 import React, { useState } from "react";
 import { Send, Bot, User, ShieldAlert, Sparkles, HelpCircle } from "lucide-react";
 
+export const dynamic = 'force-dynamic';
+
 interface Message {
   role: "user" | "assistant" | "system";
   content: string;
