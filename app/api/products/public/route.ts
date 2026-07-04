@@ -1,72 +1,81 @@
-// app/api/products/public/route.ts
-import { NextResponse } from "next/server";
-import { getApps, initializeApp, cert } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
-import path from "path";
-import fs from "fs";
-
-export const dynamic = "force-dynamic";
+import { NextResponse } from 'next/server';
+import { adminDb } from '@/lib/firebase-admin'; // Ensure this points to your Firebase Admin init
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const authorSlug = searchParams.get("author") || "kendall";
-    const readerEmail = searchParams.get("email")?.toLowerCase().trim() || null;
-    const readerPhone = searchParams.get("phone") || null;
+    const assetId = searchParams.get('assetId');
+    const studioKey = request.headers.get('x-studio-key'); // The Tenant ID from the React embed
 
-    if (getApps().length === 0) {
-      const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
-      if (fs.existsSync(keyPath)) {
-        const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
-        initializeApp({ credential: cert(serviceAccount), projectId: serviceAccount.project_id });
-      } else {
-        initializeApp({ projectId: "jubilee-command-center---dev" });
+    // 1. Initial Validation Gate
+    if (!assetId || !studioKey) {
+      return NextResponse.json(
+        { error: 'Missing required parameters: assetId or X-Studio-Key' },
+        { status: 400 }
+      );
+    }
+
+    // 2. Fetch the Asset from Firestore
+    const productRef = adminDb.collection('products').doc(assetId);
+    const productSnap = await productRef.get();
+
+    if (!productSnap.exists) {
+      return NextResponse.json({ error: 'Asset not found in catalog' }, { status: 404 });
+    }
+
+    const productData = productSnap.data();
+
+    // 3. Strict Tenant Isolation Check
+    // Ensures the StudioKey matches the author/owner of the asset. 
+    // (Adjust 'authorId' if your DB uses a different field name for the tenant identifier)
+    if (productData?.authorId !== studioKey && productData?.studioKey !== studioKey) {
+      return NextResponse.json(
+        { error: 'Tenant Key Invalid. Asset does not belong to this gateway.' },
+        { status: 403 }
+      );
+    }
+
+    // 4. Data Masking: Construct the Public-Only Payload
+    // Notice how we actively strip out anything related to 'chapters', 'urls', or 'content'
+    const publicData = {
+      id: productSnap.id,
+      title: productData?.title || 'Untitled Publication',
+      authorName: productData?.authorName || 'Unknown Author',
+      coverUrl: productData?.coverUrl || productData?.coverArtUrl || '',
+      price: typeof productData?.price === 'number' ? productData.price : parseFloat(productData?.price || '0'),
+      mediaType: productData?.mediaType || 'audio',
+      theme: {
+        backgroundColor: productData?.theme?.backgroundColor || '#070a0f',
+        backgroundImage: productData?.theme?.backgroundImage || '',
       }
-    }
+    };
 
-    const adminDb = getFirestore();
+    // 5. CORS Headers for Agnostic Embedding
+    const headers = {
+      'Access-Control-Allow-Origin': '*', // Allows Shopify/Wix/WP to fetch this
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Studio-Key',
+    };
 
-    // 🚀 FIX 1: ENFORCE STATUS CHECK - Grabs ONLY active products, completely hiding Drafts!
-    const productsSnapshot = await adminDb.collection("products")
-      .where("authorSlug", "==", authorSlug)
-      .where("status", "==", "Active")
-      .get();
+    return NextResponse.json(publicData, { status: 200, headers });
 
-    const productsList = productsSnapshot.docs.map(doc => doc.data());
-
-    // 🚀 FIX 2: DYNAMIC DUAL-CHANNEL ENTITLEMENT QUERY
-    const entitlementsList: string[] = [];
-    const entitlementsRef = adminDb.collection("entitlements");
-
-    if (readerEmail) {
-      const emailSnapshot = await entitlementsRef
-        .where("userEmail", "==", readerEmail)
-        .where("status", "==", "Active")
-        .get();
-      emailSnapshot.forEach(doc => entitlementsList.push(doc.data().assetKey));
-    }
-
-    if (readerPhone) {
-      const cleanPhone = readerPhone.replace(/[^0-9+]/g, "");
-      const formattedPhone = cleanPhone.startsWith("+") ? cleanPhone : `+1${cleanPhone}`;
-      
-      const phoneSnapshot = await entitlementsRef
-        .where("userPhone", "==", formattedPhone)
-        .where("status", "==", "Active")
-        .get();
-      phoneSnapshot.forEach(doc => entitlementsList.push(doc.data().assetKey));
-    }
-
-    return NextResponse.json({
-      success: true,
-      products: productsList,
-      entitlements: [...new Set(entitlementsList)] // Removes any duplicate tracking references cleanly
-    }, {
-      status: 200,
-      headers: { "Access-Control-Allow-Origin": "*" }
-    });
-
-  } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  } catch (error) {
+    console.error('Public Product API Error:', error);
+    return NextResponse.json(
+      { error: 'Internal Server Error' },
+      { status: 500 }
+    );
   }
+}
+
+// Handle OPTIONS preflight requests for CORS
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Studio-Key',
+    },
+  });
 }

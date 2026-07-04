@@ -41,9 +41,15 @@ export default function ProductsPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!editingProduct?.id) {
+    if (!editingProduct) {
       toast({ title: "Configuration Missing", description: "Initialize an asset row instance before streaming file components.", variant: "destructive" });
       return;
+    }
+
+    let finalAssetKey = editingProduct.assetKey?.trim();
+    if (!finalAssetKey || finalAssetKey.startsWith("asset_new_link")) {
+      const safeTitle = (editingProduct.title || "new_asset").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/(^_|_$)/g, '');
+      finalAssetKey = `abk_kendall_${safeTitle}`;
     }
 
     const isCover = targetField === "coverUrl";
@@ -53,7 +59,7 @@ export default function ProductsPage() {
 
     try {
       const storageInstance = getStorage();
-      const storagePath = `assets/${editingProduct.id}_${targetField}_${file.name}`;
+      const storagePath = `assets/${finalAssetKey}_${targetField}_${file.name}`;
       const storageRef = ref(storageInstance, storagePath);
       const uploadTask = uploadBytesResumable(storageRef, file);
 
@@ -69,6 +75,8 @@ export default function ProductsPage() {
           const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
           setEditingProduct((prev: any) => ({
             ...prev,
+            id: finalAssetKey,
+            assetKey: finalAssetKey,
             [targetField]: downloadUrl
           }));
 
@@ -94,13 +102,13 @@ export default function ProductsPage() {
       const userEmail = auth.currentUser?.email || "kendallaaron84@gmail.com";
       const userName = auth.currentUser?.displayName || "Kendall Aaron";
 
-      let finalAssetKey = editingProduct.assetKey;
+      let finalAssetKey = editingProduct.assetKey?.trim();
       if (!finalAssetKey || finalAssetKey.startsWith("asset_new_link")) {
         const safeTitle = editingProduct.title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/(^_|_$)/g, '');
         finalAssetKey = `abk_kendall_${safeTitle}`;
       }
 
-      const productDocRef = doc(db, "products", editingProduct.id);
+      const productDocRef = doc(db, "products", finalAssetKey);
       
       const processedEbookPayload = editingProduct.type === "E-Book" 
         ? (editingProduct.ebookPayload || {
@@ -116,7 +124,7 @@ export default function ProductsPage() {
         : null;
 
       const updatedData: any = {
-        id: editingProduct.id,
+        id: finalAssetKey,
         title: editingProduct.title || "",
         assetKey: finalAssetKey,
         type: editingProduct.type || "Audiobook",
@@ -138,7 +146,16 @@ export default function ProductsPage() {
         updatedData.ebookPayload = processedEbookPayload;
       }
 
+      if (editingProduct.studioTracks) {
+        updatedData.studioTracks = editingProduct.studioTracks;
+      }
+
       await setDoc(productDocRef, updatedData, { merge: true });
+
+      // Clean up legacy or placeholder document if the document ID changed
+      if (editingProduct.id && editingProduct.id !== finalAssetKey) {
+        await deleteDoc(doc(db, "products", editingProduct.id));
+      }
 
       if (updatedData.status === "Active") {
         toast({ title: "Agent Awakening", description: "Broadcasting metadata straight to the WordPress pipeline..." });
@@ -147,6 +164,7 @@ export default function ProductsPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            assetKey: updatedData.assetKey,
             authorEmail: updatedData.authorEmail,
             authorName: updatedData.authorName,
             bookTitle: updatedData.title,
@@ -158,7 +176,8 @@ export default function ProductsPage() {
             stripeConnectId: updatedData.stripeConnectId,
             coverUrl: updatedData.coverUrl,
             bgImageUrl: updatedData.bgImageUrl,
-            ebookPayload: updatedData.ebookPayload
+            ebookPayload: updatedData.ebookPayload,
+            studioTracks: updatedData.studioTracks || null
           })
         });
 
@@ -197,13 +216,13 @@ export default function ProductsPage() {
     const newId = `prod_${Math.random().toString(36).substring(2, 8)}`;
     setEditingProduct({
       id: newId,
-      assetKey: `asset_new_link_${Math.floor(Math.random() * 100)}`,
+      assetKey: "",
       title: "New Provisioned Asset Template",
       type: "Audiobook",
       price: "18.00",
       status: "Draft",
-      stripeConnectId: "acct_1Rxxxxxxxxxxxxxx", 
-      wpStudioKey: "koba_st_key_production_vault",
+      stripeConnectId: "acct_1TdEzNAfHyixYIkp", 
+      wpStudioKey: "JUBI-TEST-1234-5678",
       vaultPath: "",
       synopsis: ""
     });
@@ -291,8 +310,8 @@ export default function ProductsPage() {
                     </div>
 
                     <div className="space-y-1.5">
-                      <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">System Asset Identifier</label>
-                      <input type="text" value={editingProduct.assetKey || ""} readOnly className="w-full bg-slate-900/40 border border-border/60 rounded-xl px-3 py-2 text-xs text-slate-500 cursor-not-allowed font-mono shadow-inner" />
+                      <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">System Asset Identifier (Asset Key / Slug)</label>
+                      <input type="text" value={editingProduct.assetKey || ""} onChange={(e) => setEditingProduct({...editingProduct, assetKey: e.target.value})} className="w-full bg-slate-950 border border-border rounded-xl px-3 py-2 text-xs font-mono text-white" placeholder="e.g. abk_kendall_this_is_only_the_beginning" />
                     </div>
 
                     <div className="space-y-1.5">

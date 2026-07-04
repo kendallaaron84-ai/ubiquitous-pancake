@@ -23,6 +23,7 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
   const [transcribingId, setTranscribingId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!assetId) return;
     const fetchProduct = async () => {
       try {
         const docRef = doc(db, "products", assetId); 

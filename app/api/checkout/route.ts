@@ -1,118 +1,96 @@
-// app/api/checkout/route.ts
-import { NextResponse } from "next/server";
-import { getApps, initializeApp, cert } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
-import path from "path";
-import fs from "fs";
-import Stripe from "stripe";
+import { NextResponse } from 'next/server';
+import Stripe from 'stripe';
+import { adminDb } from '@/lib/firebase-admin';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
-  apiVersion: "2023-10-16" as any,
+// Initialize Stripe with the latest Dahlia API architecture
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
+  apiVersion: '2026-06-24.dahlia', 
 });
 
-export const dynamic = "force-dynamic";
-
-export async function POST(request: Request) {
+export async function GET(request: Request) {
   try {
-    const body = await request.json();
-    
-    // 🚀 THE PARAMETER HARVESTER: Catches any variation passed from the frontend catalog!
-    const assetKey = body.assetKey || body.asset_key || body.id || body.productId || body.product_id || body.assetId || body.asset_id;
+    const { searchParams } = new URL(request.url);
+    const assetId = searchParams.get('assetId');
+    const tenantKey = searchParams.get('tenantKey'); 
 
-    if (!assetKey) {
-      return NextResponse.json({ 
-        success: false, 
-        error: "Missing product asset identifier key. Provide assetKey, asset_key, or id context." 
-      }, { status: 400 });
+    if (!assetId || !tenantKey) {
+      return new NextResponse('Missing required parameters', { status: 400 });
     }
 
-    // Initialize Firebase Admin safely
-    if (getApps().length === 0) {
-      const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
-      if (fs.existsSync(keyPath)) {
-        const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
-        initializeApp({ credential: cert(serviceAccount), projectId: serviceAccount.project_id });
-      } else {
-        initializeApp({ projectId: "jubilee-command-center---dev" });
-      }
+    // 1. Fetch the Sovereign Product Data from Firestore
+    const productRef = adminDb.collection('products').doc(assetId);
+    const productSnap = await productRef.get();
+
+    if (!productSnap.exists) {
+      return new NextResponse('Asset not found', { status: 404 });
     }
 
-    const adminDb = getFirestore();
-    const productDoc = await adminDb.collection("products").doc(assetKey).get();
+    const productData = productSnap.data();
 
-    if (!productDoc.exists) {
-       return NextResponse.json({ success: false, error: `Product record [${assetKey}] not found in inventory ledger.` }, { status: 404 });
+    // 2. Validate Tenant Ownership
+    if (productData?.authorId !== tenantKey && productData?.studioKey !== tenantKey) {
+      return new NextResponse('Tenant Mismatch', { status: 403 });
     }
 
-    const productData = productDoc.data() || {};
-    
-    // Fallback directly to your verified sandbox connect account string
-    const stripeConnectId = productData.stripeConnectId || "acct_1TdEzNAfHyixYIkp"; 
-    const priceString = productData.price || "5.00";
-    const priceInCents = Math.round(parseFloat(priceString) * 100);
+    // 3. Price formatting (Stripe requires integers in cents)
+    const priceInCents = Math.round((parseFloat(productData?.price || '0')) * 100);
 
     if (priceInCents <= 0) {
-      return NextResponse.json({ success: false, error: "Bypass triggered for free context assets." }, { status: 400 });
+      return new NextResponse('Free assets do not require checkout', { status: 400 });
     }
 
-    const baseDomain = "http://koba-dev.local";
-    const cleanSlug = (productData.title || "freedom-fighter").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    // 4. Dynamic Platform Revenue Split (Author Autonomy Default: 0%)
+    // This value is driven entirely by the UI agreement in Firestore.
+    const platformCommissionPercent = parseFloat(productData?.platformCommissionPercent || '0');
+    const platformFeeInCents = Math.round(priceInCents * platformCommissionPercent);
 
-    // Initialize the checkout sequence directly on behalf of your connected account
-    // Ensure metadata matches your webhook extraction variables exactly
-    const session = await stripe.checkout.sessions.create({
-      mode: "payment",
-      payment_method_types: ["card"],
-      // Allow Stripe to collect the phone number automatically at checkout!
-      phone_number_collection: { enabled: true },
+    // 5. Build Stripe Checkout Session
+    const sessionPayload: Stripe.Checkout.SessionCreateParams = {
+      payment_method_types: ['card'],
       line_items: [
         {
           price_data: {
-            currency: "usd",
+            currency: 'usd',
             product_data: {
-              name: productData.title || "Sovereign Publication Asset",
-              description: productData.synopsis || "",
-              images: productData.coverArtUrl ? [productData.coverArtUrl] : [],
+              name: productData?.title || 'KOBA-I Audiobook',
+              images: productData?.coverUrl ? [productData.coverUrl] : [],
+              description: `By ${productData?.authorName || 'Author'}`,
             },
             unit_amount: priceInCents,
           },
           quantity: 1,
         },
       ],
-      success_url: `${baseDomain}/koba_publication/${cleanSlug}/?success=true&asset=${assetKey}`,
-      cancel_url: `${baseDomain}/koba_publication/${cleanSlug}/?canceled=true`,
+      mode: 'payment',
+      success_url: `${request.headers.get('referer') || 'https://dashboard.koba-i.com'}?success=true&asset=${assetId}`,
+      cancel_url: `${request.headers.get('referer') || 'https://dashboard.koba-i.com'}?canceled=true`,
       metadata: {
-        assetKey: assetKey,
-        user_email: productData.authorEmail || "kendallaaron84@gmail.com",
-        productType: productData.type || "Audiobook",
-        originDomain: "koba-dev.local"
+        assetId,
+        tenantKey,
+        type: 'audiobook_purchase'
       },
-    }, {
-      stripeAccount: stripeConnectId,
-    });
+    };
 
-    return NextResponse.json({ success: true, url: session.url }, {
-      status: 200,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
+    // 6. SaaS Stripe Connect Routing
+    if (productData?.stripeAccountId) {
+      sessionPayload.payment_intent_data = {
+        transfer_data: {
+          destination: productData.stripeAccountId,
+        },
+      };
+
+      // ONLY apply the application fee if there is an explicit marketing agreement > 0%
+      if (platformFeeInCents > 0) {
+        sessionPayload.payment_intent_data.application_fee_amount = platformFeeInCents;
       }
-    });
+    }
 
-  } catch (error: any) {
-    console.error("❌ Stripe Checkout Sequence Fault:", error.message);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    // 7. Create Session & Redirect
+    const session = await stripe.checkout.sessions.create(sessionPayload);
+    return NextResponse.redirect(session.url as string, 303);
+
+  } catch (error) {
+    console.error('Stripe Checkout Error:', error);
+    return new NextResponse('Internal Server Error', { status: 500 });
   }
-}
-
-export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 200,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    },
-  });
 }

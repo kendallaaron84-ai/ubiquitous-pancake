@@ -41,7 +41,7 @@ export async function GET(
     const chaptersPayload = (data?.studioTracks || []).map((track: any) => ({
       id: track.id,
       title: track.title,
-      url: track.securedPlaybackUrl || `https://storage.googleapis.com/koba-ai-processing-vault/audio-sources/${track.fileName}`,
+      url: track.url || track.securedPlaybackUrl || `https://storage.googleapis.com/koba-ai-processing-vault/audio-sources/${track.fileName}`,
       transcript_file_url: track.transcriptUrl || "" 
     }));
 

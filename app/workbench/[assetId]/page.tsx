@@ -42,36 +42,45 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   });
 
   useEffect(() => {
+    if (!assetId) return;
+    
     const fetchManuscript = async () => {
       try {
+        console.log("🎯 Workbench attempting connection for assetId:", assetId);
         const docRef = doc(db, "products", assetId); 
         const docSnap = await getDoc(docRef);
         
         if (docSnap.exists()) {
           const data = docSnap.data();
+          // Ensure chapters array structure is never undefined or empty
           if (!data.chapters || data.chapters.length === 0) {
-             data.chapters = [{ id: `ch_1_${assetId}`, title: "Chapter 1", content: "" }];
+             data.chapters = [{ id: `ch_1_${assetId}`, title: "Chapter 1", textContent: "" }];
           }
           setBookData(data);
           if (data.guardrails) setGuardrails(data.guardrails);
-          // Load saved API keys from the author's local document profile (or user profile later)
           if (data.apiKeys) setApiKeys(data.apiKeys);
         } else {
+          // 🚀 FALLBACK 1: Document ID does not match Firestore collections
+          console.warn("⚠️ Document ID not found in products collection. Loading sandbox.");
           setBookData({
-            title: "Untitled Draft",
+            title: "Sandbox Mode: Asset Not Found",
             type: "E-Book",
-            chapters: [{ id: `ch_1_${assetId}`, title: "Chapter 1", content: "" }]
+            chapters: [{ id: `ch_1_${assetId}`, title: "Chapter 1 Initializer", textContent: "The workbench compiled, but could not locate this book record in your Firestore database. Click 'Save Draft' to initialize a fresh record mapping." }]
           });
         }
-      } catch (error) {
+      } catch (error: any) {
+        // 🚀 FALLBACK 2: Database Rules / Network Connection Blocked
+        console.error("❌ Firestore connection failed:", error);
         setBookData({
-            title: "Offline Draft",
-            chapters: [{ id: `ch_1_${assetId}`, title: "Chapter 1", content: "Database connection failed. Check your Firestore rules." }]
+          title: "Offline Vault Mode",
+          type: "E-Book",
+          chapters: [{ id: `ch_1_${assetId}`, title: "Chapter 1 (Offline)", textContent: `Database handshake failed. Reason: ${error?.message || "Unknown Rule Block"}` }]
         });
       }
     };
     
     fetchManuscript();
+  // ... Your existing fetchManuscript useEffect ends here ...
   }, [assetId]);
 
   const handleMasteredUpload = async (e: React.ChangeEvent<HTMLInputElement>, chapterId: string) => {
@@ -146,7 +155,59 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
       setActiveChapterIndex(newChapters.length - 1);
   }
 
-  if (!bookData) return <div className="h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 text-emerald-600 dark:text-[#F9B437] font-mono">Loading Studio Canvas...</div>;
+  // 1. If bookData hasn't loaded anything from Firestore yet
+  // ==========================================
+  // 🚀 BULLETPROOF RENDERING LIFE-GUARD
+  // ==========================================
+
+  // 1. Await database resolution safely
+  if (!bookData) {
+    return (
+        <div className="flex h-screen w-screen items-center justify-center bg-[#070a0f]">
+            <p className="text-sm font-semibold tracking-wider text-orange-500 animate-pulse font-mono">
+                INITIALIZING DECOUPLED VAULT MATRIX...
+            </p>
+        </div>
+    );
+  }
+
+  // 2. Normalize chapters immediately so it is GUARANTEED to be a safe scrollable array
+  const safeChapters = Array.isArray(bookData.chapters) ? bookData.chapters : [];
+  const currentChapter = safeChapters[activeChapterIndex] || { title: "Drafting...", textContent: "" };
+
+  // 3. Trigger debug screen if the product payload contains no text lines
+  if (safeChapters.length === 0) {
+    return (
+        <div className="flex h-screen w-screen flex-col items-center justify-center bg-[#070a0f] p-6 text-center text-white">
+            <div className="max-w-md rounded-xl border border-red-900/40 bg-red-950/10 p-6 backdrop-blur-md">
+                <h3 className="text-lg font-bold text-red-500 mb-2">E-Reader Array Contract Missing</h3>
+                <p className="text-sm text-gray-400 mb-4">
+                    The record resolved, but the tracking array is missing its inner rows.
+                </p>
+            </div>
+        </div>
+    );
+  }
+
+  // 2. 🛠️ NEW DEBUG GUARD: If data fetched successfully but fields are corrupt/missing
+  if (bookData.title === "Offline Draft" || !bookData.chapters) {
+    return (
+        <div className="flex h-screen w-screen flex-col items-center justify-center bg-[#070a0f] p-6 text-center text-white font-sans">
+            <div className="max-w-md rounded-xl border border-red-900/40 bg-red-950/10 p-6 backdrop-blur-md">
+                <h3 className="text-lg font-bold text-red-500 mb-2">E-Reader Launch Blocked</h3>
+                <p className="text-sm text-gray-400 mb-4">
+                    The workbench route compiled successfully, but could not read valid manifest attributes for asset: 
+                    <span className="block font-mono text-xs text-orange-400 mt-1 bg-black/40 p-2 rounded">
+                        {assetId}
+                    </span>
+                </p>
+                <div className="text-left text-xs bg-black/50 p-3 rounded font-mono border border-gray-800 text-gray-500">
+                    Expected: Firestore Document under "products" collection with correct layout keys.
+                </div>
+            </div>
+        </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-slate-50 dark:bg-[#0b0f19] text-slate-900 dark:text-slate-200 overflow-hidden font-sans transition-colors duration-300 relative">

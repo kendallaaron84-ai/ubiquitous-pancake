@@ -2,23 +2,18 @@
 
 import React, { useState } from "react";
 import { db, auth } from "@/lib/firebase";
-// 🚀 CHANGED: Using doc and setDoc instead of collection and addDoc
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";
 import { Sparkles, FileText, Briefcase, Users, LayoutTemplate } from "lucide-react";
-import { VoiceUploadZone } from "./voice-upload-zone"; // 🚀 Added import
 
 export function AuthorIntakeForm() {
   const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
-  
-  // 🚀 ADDED: fileUrl to state so the form remembers the audio/video file
   const [formData, setFormData] = useState({
     title: "",
     brand: "personal",
     audience: "",
-    description: "",
-    fileUrl: "" 
+    description: ""
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -31,39 +26,33 @@ export function AuthorIntakeForm() {
 
     setIsSubmitting(true);
     try {
+      // 1. Identify the active operator
       const userEmail = auth.currentUser?.email || "kendallaaron84@gmail.com";
-      const authorSlug = "kendall";
       
-      // 🚀 1. Generate the exact Canonical Asset Key to prevent duplicates
-      const cleanBookSlug = formData.title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/(^_|_$)/g, '');
-      const assetKey = `abk_${authorSlug}_${cleanBookSlug}`;
-
-      // 🚀 2. Force Write to the exact 'products' document WordPress expects
-      const productRef = doc(db, "products", assetKey);
-      
-      await setDoc(productRef, {
-        assetKey: assetKey,
+      // 2. Inject payload directly into the Cloud Run execution matrix
+      await addDoc(collection(db, "content_blueprints"), {
         authorEmail: userEmail,
-        title: formData.title,
+        topicTitle: formData.title,
+        title: formData.title, // Saved twice to support both your pipeline pages
         brandAllocation: formData.brand,
         targetAudience: formData.audience,
         synopsis: formData.description,
-        fileUrl: formData.fileUrl, // 🚀 Saves the file stream URL safely
-        status: "Active",
-        type: "Audiobook",
-        updatedAt: serverTimestamp(),
-      }, { merge: true }); // Merge ensures we don't overwrite other data like Stripe IDs
-
-      toast({
-        title: "Asset Secured",
-        description: `"${formData.title}" added to the master products catalog.`,
+        executionState: "initializing",
+        currentStage: 1, // Triggers the visual narration tracker
+        queuePosition: Math.floor(Math.random() * 5) + 1, // Simulated queue line
+        createdAt: serverTimestamp(),
       });
 
-      // Clear the form
-      setFormData({ title: "", brand: "personal", audience: "", description: "", fileUrl: "" });
+      toast({
+        title: "Pipeline Triggered",
+        description: `"${formData.title}" added to the execution matrix.`,
+      });
+
+      // 3. Clear the form for the next book
+      setFormData({ title: "", brand: "personal", audience: "", description: "" });
     } catch (error: any) {
-      console.error("Database Write Failed:", error);
-      toast({ title: "Write Fault", description: error.message, variant: "destructive" });
+      console.error("Pipeline Injection Failed:", error);
+      toast({ title: "Pipeline Fault", description: error.message, variant: "destructive" });
     } finally {
       setIsSubmitting(false);
     }
@@ -83,6 +72,7 @@ export function AuthorIntakeForm() {
       </div>
 
       <div className="space-y-4">
+        {/* Project Title */}
         <div className="space-y-1.5">
           <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
             <FileText className="w-3 h-3" /> Project Title
@@ -92,31 +82,52 @@ export function AuthorIntakeForm() {
             value={formData.title}
             onChange={(e) => setFormData({...formData, title: e.target.value})}
             className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors"
+            placeholder="e.g. Duncan the Man Hunter - Chapter 2"
           />
         </div>
 
-        {/* 🚀 ADDED: The Media Upload Zone is now inside the form */}
-        <div className="space-y-1.5 pt-2">
-          <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-            Media Ingestion
-          </label>
-          <VoiceUploadZone 
-            authorEmail={auth.currentUser?.email || "kendallaaron84@gmail.com"} 
-            onUploadSuccess={(url) => setFormData({...formData, fileUrl: url})} 
-          />
-          {formData.fileUrl && (
-             <p className="text-xs text-emerald-400 mt-2">✓ Media securely linked to this asset.</p>
-          )}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Brand Allocation */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <Briefcase className="w-3 h-3" /> Brand Vector
+            </label>
+            <select 
+              value={formData.brand}
+              onChange={(e) => setFormData({...formData, brand: e.target.value})}
+              className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none"
+            >
+              <option value="personal">Personal Brand (Default)</option>
+              <option value="koba">KOBA-I Commercial</option>
+              <option value="jubilee">Jubilee Works</option>
+            </select>
+          </div>
+
+          {/* Target Audience */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <Users className="w-3 h-3" /> Target Demographic
+            </label>
+            <input 
+              type="text" 
+              value={formData.audience}
+              onChange={(e) => setFormData({...formData, audience: e.target.value})}
+              className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors"
+              placeholder="e.g. Noir Thriller Fans"
+            />
+          </div>
         </div>
 
+        {/* Synopsis / Instructions */}
         <div className="space-y-1.5">
           <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <LayoutTemplate className="w-3 h-3" /> Core Synopsis
+            <LayoutTemplate className="w-3 h-3" /> Core Synopsis / Agent Instructions
           </label>
           <textarea 
             value={formData.description}
             onChange={(e) => setFormData({...formData, description: e.target.value})}
             className="w-full h-24 bg-slate-950/50 border border-border rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors resize-none"
+            placeholder="Outline the core plot points, tone, or specific processing instructions for the AI..."
           />
         </div>
       </div>
@@ -127,9 +138,14 @@ export function AuthorIntakeForm() {
           disabled={isSubmitting}
           className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
         >
-          {isSubmitting ? "Securing Asset..." : "Save to Catalog"}
+          {isSubmitting ? (
+            <span className="animate-pulse">Initializing Blueprint...</span>
+          ) : (
+            <>Queue Generation <Sparkles className="w-4 h-4" /></>
+          )}
         </button>
       </div>
+
     </form>
   );
 }

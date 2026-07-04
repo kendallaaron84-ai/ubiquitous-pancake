@@ -16,7 +16,7 @@ import {
 	Sliders,
 	Database,
 	Activity,
-    Documentation,
+    Terminal,
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -47,6 +47,7 @@ const navigationSections: NavSection[] = [
             { title: "Studio", icon: Radio, href: "/studio", badge: null },
             { title: "Voice Vault", icon: ShieldCheck, href: "/vault", badge: "Secure" },
             { title: "Conversations", icon: MessageSquare, href: "/conversations", badge: "3" },
+            { title: "Automation Center", icon: Terminal, href: "/automation-center", badge: "Core" },
         ],
     },
     {
