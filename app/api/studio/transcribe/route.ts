@@ -8,13 +8,13 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const { trackId, assetId } = await request.json();
+    // 1. We only need the assetId now to process the entire book
+    const { assetId } = await request.json();
 
-    if (!trackId || !assetId) {
-      return NextResponse.json({ success: false, message: "Missing tracking identifiers." }, { status: 400 });
+    if (!assetId) {
+      return NextResponse.json({ success: false, message: "Missing asset identifier." }, { status: 400 });
     }
 
-    // 1. Pull the Gemini API token from your .env.local file safely
     const apiKey = process.env.GEMINI_API_KEY; 
     if (!apiKey) {
       return NextResponse.json({ 
@@ -23,7 +23,7 @@ export async function POST(request: Request) {
       }, { status: 500 });
     }
 
-    // 2. 🚀 FIXED: Use modular admin initializers to guarantee .cert execution passes compiler passes
+    // 2. Initialize Firebase Admin
     const { getApps, initializeApp, cert } = require("firebase-admin/app");
     const { getFirestore } = require("firebase-admin/firestore");
     const { getStorage } = require("firebase-admin/storage");
@@ -36,9 +36,7 @@ export async function POST(request: Request) {
           credential: cert(serviceAccount),
           storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "jubilee-command-center---dev.appspot.com"
         });
-        console.log("🚀 Firebase Admin successfully mounted via Service Account Key file.");
       } else {
-        // Fallback placeholder if file is omitted in cold passes
         initializeApp({ projectId: "jubilee-command-center---dev" });
       }
     }
@@ -46,7 +44,7 @@ export async function POST(request: Request) {
     const db = getFirestore();
     const bucket = getStorage().bucket();
 
-    // 3. Retrieve the target row item context details from Firestore
+    // 3. Retrieve the master asset and its tracks
     const productRef = db.collection("products").doc(assetId);
     const productDoc = await productRef.get();
 
@@ -56,91 +54,117 @@ export async function POST(request: Request) {
 
     const productData = productDoc.data();
     const tracks = productData?.studioTracks || [];
-    const targetTrack = tracks.find((t: any) => t.id === trackId);
 
-    // 🚀 FIXED: Fallback to securedPlaybackUrl so legacy database items pass validation
-    const activeAudioUrl = targetTrack?.url || targetTrack?.securedPlaybackUrl;
-
-    if (!targetTrack || !activeAudioUrl) {
+    // Quick check to see if there is actually work to do
+    const pendingTracks = tracks.filter((t: any) => !t.isTranscribed && (t.url || t.securedPlaybackUrl));
+    
+    if (pendingTracks.length === 0) {
       return NextResponse.json({ 
-        success: false, 
-        message: "Target audio file reference is empty in the database master registry." 
-      }, { status: 400 });
+        success: true, 
+        message: "All tracks are already transcribed or lack audio files.",
+        processedCount: 0 
+      });
     }
 
-    // 4. Download file bytes into memory buffer using the resolved URL
-    console.log(`📡 Ingesting audio buffer for transcription from: ${targetTrack.fileName}`);
-    const fileResponse = await fetch(activeAudioUrl);
-    if (!fileResponse.ok) throw new Error("Failed to stream target track file from cloud cores.");
-    const audioBuffer = await fileResponse.arrayBuffer();
-    const base64Audio = Buffer.from(audioBuffer).toString("base64");
-
-    // 5. Initialize the official Google Gen AI Client SDK
     const ai = new GoogleGenAI({ apiKey });
+    let processedCount = 0;
+    let failedCount = 0;
 
-    console.log("⚡ Bootstrapping Gemini multimodal speech-to-text pipeline...");
-    
-    const aiResponse = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        {
-          role: "user",
-          parts: [
+    console.log(`⚡ Commencing batch transcription for ${pendingTracks.length} tracks on asset: ${assetId}`);
+
+    // 4. Process each track sequentially to respect rate limits and memory
+    for (let i = 0; i < tracks.length; i++) {
+      const track = tracks[i];
+      const activeAudioUrl = track.url || track.securedPlaybackUrl;
+
+      // Skip tracks that are already done or missing audio
+      if (track.isTranscribed || !activeAudioUrl) continue;
+
+      console.log(`📡 Ingesting audio buffer for Chapter ${track.chapterNumber}: ${track.title}`);
+
+      try {
+        const fileResponse = await fetch(activeAudioUrl);
+        if (!fileResponse.ok) throw new Error("Failed to stream target track file from cloud cores.");
+        const audioBuffer = await fileResponse.arrayBuffer();
+        const base64Audio = Buffer.from(audioBuffer).toString("base64");
+
+        const aiResponse = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: [
             {
-              inlineData: {
-                mimeType: "audio/mp3", // Handles mp3, wav, ogg automatically
-                data: base64Audio
-              }
-            },
-            {
-              text: `Analyze this audio file and return a strict JSON object formatting transcription alignments. 
-              The response MUST be raw JSON matching this TypeScript schema definition exactly without Markdown wrappers:
-              
-              {
-                "success": true,
-                "transcriptText": "Full text string of audio",
-                "wordTimeline": [
-                  { "word": "string", "start": 0.0, "end": 0.5 }
-                ]
-              }
-              
-              Calculate 'start' and 'end' parameters as floating-point timestamps in seconds relative to the audio track timeline.`
+              role: "user",
+              parts: [
+                {
+                  inlineData: { mimeType: "audio/mp3", data: base64Audio }
+                },
+                {
+                  text: `Analyze this audio file and return a strict JSON object formatting transcription alignments. 
+                  The response MUST be raw JSON matching this TypeScript schema definition exactly without Markdown wrappers:
+                  
+                  {
+                    "success": true,
+                    "transcriptText": "Full text string of audio",
+                    "wordTimeline": [
+                      { "word": "string", "start": 0.0, "end": 0.5 }
+                    ]
+                  }
+                  
+                  Calculate 'start' and 'end' parameters as floating-point timestamps in seconds relative to the audio track timeline.`
+                }
+              ]
             }
-          ]
-        }
-      ],
-      config: {
-        responseMimeType: "application/json"
+          ],
+          config: { responseMimeType: "application/json" }
+        });
+
+        const rawJsonText = aiResponse.text;
+        if (!rawJsonText) throw new Error("Gemini returned an empty transcription frame.");
+
+        const parsedTranscriptionData = JSON.parse(rawJsonText.trim());
+
+        // Write the specific JSON to the storage bucket
+        const transcriptFileName = `transcripts/${assetId}_${track.id}.json`;
+        const transcriptFile = bucket.file(transcriptFileName);
+
+        await transcriptFile.save(JSON.stringify(parsedTranscriptionData), {
+          contentType: "application/json",
+          metadata: { cacheControl: "public, max-age=31536000" }
+        });
+
+        await transcriptFile.makePublic();
+        const secureTranscriptUrl = `https://storage.googleapis.com/${bucket.name}/${transcriptFileName}`;
+
+        // 5. Update the track object in memory with the new status and URL
+        tracks[i].isTranscribed = true;
+        tracks[i].transcriptUrl = secureTranscriptUrl;
+        
+        processedCount++;
+        console.log(`✅ Successfully transcribed Chapter ${track.chapterNumber}`);
+
+      } catch (err: any) {
+        console.error(`❌ Failed to transcribe Chapter ${track.chapterNumber}:`, err.message);
+        failedCount++;
+        // The loop continues even if one chapter fails, protecting the rest of the batch
       }
-    });
+    }
 
-    const rawJsonText = aiResponse.text;
-    if (!rawJsonText) throw new Error("Gemini returned an empty transcription matrix template frame.");
-
-    const parsedTranscriptionData = JSON.parse(rawJsonText.trim());
-
-    // 6. Write the generated timeline JSON directly into your asset folders in Firebase Storage
-    const transcriptFileName = `transcripts/${assetId}_${trackId}.json`;
-    const transcriptFile = bucket.file(transcriptFileName);
-
-    await transcriptFile.save(JSON.stringify(parsedTranscriptionData), {
-      contentType: "application/json",
-      metadata: { cacheControl: "public, max-age=31536000" }
-    });
-
-    // Make the transcript publicly accessible for bloom-player.js to fetch
-    await transcriptFile.makePublic();
-    const secureTranscriptUrl = `https://storage.googleapis.com/${bucket.name}/${transcriptFileName}`;
+    // 6. Write the updated master track array back to Firestore
+    if (processedCount > 0) {
+      await productRef.update({
+        studioTracks: tracks,
+        updatedAt: new Date().toISOString()
+      });
+    }
 
     return NextResponse.json({
       success: true,
-      message: "Transcription successfully compiled and aligned.",
-      transcriptUrl: secureTranscriptUrl,
-      wordTimeline: parsedTranscriptionData.wordTimeline || []
+      message: `Batch processing complete. Successfully transcribed ${processedCount} tracks. Failed: ${failedCount}.`,
+      processedCount,
+      failedCount
     });
 
   } catch (error: any) {
-    console.error("❌ Transcription Processing Pipeline Collapsed:", error);
+    console.error("❌ Batch Transcription Pipeline Collapsed:", error);
     return NextResponse.json({ success: false, message: error.message }, { status: 500 });
   }
 }

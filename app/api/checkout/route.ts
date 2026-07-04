@@ -7,46 +7,49 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
   apiVersion: '2026-06-24.dahlia', 
 });
 
-export async function GET(request: Request) {
+export async function POST(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-    const assetId = searchParams.get('assetId');
-    const tenantKey = searchParams.get('tenantKey'); 
+    // 1. Parse JSON body instead of URL parameters for the POST request
+    const body = await request.json();
+    const { assetId, tenantKey } = body;
 
     if (!assetId || !tenantKey) {
-      return new NextResponse('Missing required parameters', { status: 400 });
+      return NextResponse.json({ error: 'Missing required parameters' }, { status: 400 });
     }
 
-    // 1. Fetch the Sovereign Product Data from Firestore
+    // 2. Fetch the Sovereign Product Data from Firestore
     const productRef = adminDb.collection('products').doc(assetId);
     const productSnap = await productRef.get();
 
     if (!productSnap.exists) {
-      return new NextResponse('Asset not found', { status: 404 });
+      return NextResponse.json({ error: 'Asset not found' }, { status: 404 });
     }
 
     const productData = productSnap.data();
 
-    // 2. Validate Tenant Ownership
+    // 3. Validate Tenant Ownership
     if (productData?.authorId !== tenantKey && productData?.studioKey !== tenantKey) {
-      return new NextResponse('Tenant Mismatch', { status: 403 });
+      return NextResponse.json({ error: 'Tenant Mismatch' }, { status: 403 });
     }
 
-    // 3. Price formatting (Stripe requires integers in cents)
+    // 4. Price formatting (Stripe requires integers in cents)
     const priceInCents = Math.round((parseFloat(productData?.price || '0')) * 100);
 
     if (priceInCents <= 0) {
-      return new NextResponse('Free assets do not require checkout', { status: 400 });
+      return NextResponse.json({ error: 'Free assets do not require checkout' }, { status: 400 });
     }
 
-    // 4. Dynamic Platform Revenue Split (Author Autonomy Default: 0%)
-    // This value is driven entirely by the UI agreement in Firestore.
+    // 5. Dynamic Platform Revenue Split
     const platformCommissionPercent = parseFloat(productData?.platformCommissionPercent || '0');
     const platformFeeInCents = Math.round(priceInCents * platformCommissionPercent);
 
-    // 5. Build Stripe Checkout Session
+    // 6. Build Stripe Checkout Session
     const sessionPayload: Stripe.Checkout.SessionCreateParams = {
       payment_method_types: ['card'],
+      // CRITICAL: Force Stripe to collect the phone number for the OTP Ghost Protocol
+      phone_number_collection: {
+        enabled: true,
+      },
       line_items: [
         {
           price_data: {
@@ -62,8 +65,9 @@ export async function GET(request: Request) {
         },
       ],
       mode: 'payment',
-      success_url: `${request.headers.get('referer') || 'https://dashboard.koba-i.com'}?success=true&asset=${assetId}`,
-      cancel_url: `${request.headers.get('referer') || 'https://dashboard.koba-i.com'}?canceled=true`,
+      // Allow React frontend to define the return URLs dynamically via headers, or default to the Command Center
+      success_url: `${request.headers.get('origin') || 'https://dashboard.koba-i.com'}?success=true&asset=${assetId}`,
+      cancel_url: `${request.headers.get('origin') || 'https://dashboard.koba-i.com'}?canceled=true`,
       metadata: {
         assetId,
         tenantKey,
@@ -71,7 +75,7 @@ export async function GET(request: Request) {
       },
     };
 
-    // 6. SaaS Stripe Connect Routing
+    // 7. SaaS Stripe Connect Routing
     if (productData?.stripeAccountId) {
       sessionPayload.payment_intent_data = {
         transfer_data: {
@@ -85,12 +89,13 @@ export async function GET(request: Request) {
       }
     }
 
-    // 7. Create Session & Redirect
+    // 8. Create Session & Return JSON URL for client-side redirect
     const session = await stripe.checkout.sessions.create(sessionPayload);
-    return NextResponse.redirect(session.url as string, 303);
+    
+    return NextResponse.json({ url: session.url }, { status: 200 });
 
   } catch (error) {
     console.error('Stripe Checkout Error:', error);
-    return new NextResponse('Internal Server Error', { status: 500 });
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }

@@ -39,32 +39,39 @@ export async function POST(req: Request) {
     const tenantKey = session.metadata?.tenantKey;
     
     // Extract the buyer's contact info for Twilio passwordless login
-    const customerEmail = session.customer_details?.email;
-    const customerPhone = session.customer_details?.phone || ''; 
+    const customerEmail = session.customer_details?.email || '';
+    const rawPhone = session.customer_details?.phone || ''; 
+    
+    // Normalize phone to E.164 format (strip spaces, dashes, parens)
+    const normalizedPhone = rawPhone.replace(/[^\d+]/g, '');
 
-    if (assetId && tenantKey && customerEmail) {
+    // CRITICAL: We MUST have the normalizedPhone for the Ghost Protocol to work
+    if (assetId && tenantKey && normalizedPhone) {
       try {
         // 3. Provision the Vault Entitlement in Firestore
         // Using a composite ID prevents duplicate entitlements if webhooks fire twice
-        const entitlementId = `${tenantKey}_${assetId}_${customerEmail}`;
+        // Added normalized phone to the composite ID to ensure unique device/user pairing
+        const entitlementId = `${tenantKey}_${assetId}_${normalizedPhone}`;
         
         await adminDb.collection('entitlements').doc(entitlementId).set({
           assetId,
           tenantKey,
           customerEmail,
-          customerPhone,
+          customerPhone: normalizedPhone,
+          stripeSessionId: session.id,
+          stripeCustomerId: session.customer || null,
           status: 'active',
           amountTotal: session.amount_total,
           purchasedAt: new Date().toISOString(),
         });
 
-        console.log(`✅ Vault Entitlement provisioned for: ${customerEmail} on asset: ${assetId}`);
+        console.log(`✅ Vault Entitlement provisioned for phone: ${normalizedPhone} on asset: ${assetId}`);
       } catch (dbError) {
         console.error('🔥 Firestore Write Error during Webhook:', dbError);
         return new NextResponse('Database Error', { status: 500 });
       }
     } else {
-      console.warn('⚠️ Webhook missing metadata or customer email. Cannot provision entitlement.');
+      console.warn('⚠️ Webhook missing metadata or customer phone. Cannot provision Ghost Protocol entitlement.');
     }
   }
 

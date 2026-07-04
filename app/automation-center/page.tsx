@@ -93,12 +93,12 @@ export default function AutomationCenterPage() {
     }));
 
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/automation/run-step/${stepId}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        }
-      });
+    const response = await fetch(`http://localhost:8000/api/v1/automation/run-step/${stepId}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      }
+    });
 
       if (!response.ok) {
         throw new Error(`HTTP Error Status: ${response.status}`);

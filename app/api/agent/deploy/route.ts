@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { getApps, initializeApp, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
-import { getStorage } from "firebase-admin/storage"; // 🚀 FIXED: Imported from firebase-admin/storage
+import { getStorage } from "firebase-admin/storage";
 import path from "path";
 import fs from "fs";
 
@@ -11,15 +11,38 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { assetKey: passedAssetKey, bookTitle, fileUrl, coverUrl, bgImageUrl, type, price, studioTracks, ebookPayload } = body;
+    const { 
+      assetKey: passedAssetKey, 
+      bookTitle, 
+      fileUrl, 
+      coverUrl, 
+      bgImageUrl, 
+      type, 
+      price, 
+      studioTracks, 
+      ebookPayload 
+    } = body;
     
-    // 1. Initialize Admin SDK
+    // 1. Initialize Admin SDK (Production Ready)
     if (getApps().length === 0) {
-      const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
-      if (fs.existsSync(keyPath)) {
-        initializeApp({ credential: cert(JSON.parse(fs.readFileSync(keyPath, "utf8"))) });
+      if (process.env.FIREBASE_PRIVATE_KEY) {
+        // Production: Use secure environment variables
+        initializeApp({
+          credential: cert({
+            projectId: process.env.FIREBASE_PROJECT_ID,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            // Handle newline characters in the private key string
+            privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+          }),
+        });
       } else {
-        initializeApp({ projectId: "jubilee-command-center---dev" });
+        // Local Fallback: Use the file system
+        const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
+        if (fs.existsSync(keyPath)) {
+          initializeApp({ credential: cert(JSON.parse(fs.readFileSync(keyPath, "utf8"))) });
+        } else {
+           throw new Error("Fatal: Missing Firebase credentials.");
+        }
       }
     }
 
@@ -28,9 +51,8 @@ export async function POST(request: Request) {
     const cleanBookSlug = bookTitle.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/(^_|_$)/g, '');
     const assetKey = passedAssetKey || `abk_${authorSlug}_${cleanBookSlug}`;
 
-    // 2. Storage Initialization (Correct way for Admin SDK)
+    // 2. Storage Initialization (Locate the audio/media file)
     const storage = getStorage(); 
-    // 🚀 FIXED: Point explicitly to your known bucket name
     const bucket = storage.bucket("jubilee-command-center---dev.firebasestorage.app");
     
     const folderPrefix = `studio/${assetKey}/`;
@@ -44,26 +66,7 @@ export async function POST(request: Request) {
         console.log("🛠️ Auto-linked media file:", discoveredFileUrl);
     }
 
-    // 3. Construct Payload
-    const syncPayload: any = {
-      assetKey,
-      bookTitle,
-      bookSlug: assetKey, // 🚀 NEW: Dynamic slug/routing matching assetKey
-      streamUrl: discoveredFileUrl,
-      coverArt: coverUrl,
-      bgImage: bgImageUrl,
-      type: type || "Audiobook",
-      price: price?.toString() || "0.00"
-    };
-
-    if (studioTracks) {
-      syncPayload.studioTracks = studioTracks;
-    }
-    if (ebookPayload) {
-      syncPayload.ebookPayload = ebookPayload;
-    }
-
-    // 🚀 NEW: Re-align the Local Database with the Firestore Product Schema
+    // 3. Construct and Upsert the Firestore Product Schema
     try {
       const productDocRef = adminDb.collection("products").doc(assetKey);
       const existingProductDoc = await productDocRef.get();
@@ -79,54 +82,41 @@ export async function POST(request: Request) {
         bgImage: bgImageUrl || "",
         type: type || "Audiobook",
         price: price?.toString() || "0.00",
-        status: "Active", // 🚀 REQUIRED: "Active" with capital "A" matches .where("status", "==", "Active")
+        // Notice we are defaulting to lowercase "active" to match the Public API's strict check
+        visibility: "active", 
+        status: "Active", 
         streamUrl: discoveredFileUrl || "",
         studioTracks: studioTracks || existingProductData?.studioTracks || [],
         ebookPayload: ebookPayload || existingProductData?.ebookPayload || null,
         authorSlug: authorSlug,
-        authorName: existingProductData?.authorName || "Kendall",
+        authorName: existingProductData?.authorName || "Kendall Aaron",
         stripeConnectId: existingProductData?.stripeConnectId || "acct_1TdEzNAfHyixYIkp",
         synopsis: existingProductData?.synopsis || "Sovereign Publication Asset",
+        
+        // 🚀 NEW: Ensure the Studio Key is attached so the WordPress Catalog can find it
+        studioKey: existingProductData?.studioKey || "JUBI-TEST-1234-5678", 
         updatedAt: new Date().toISOString()
       };
 
       await productDocRef.set(dbProductData, { merge: true });
       console.log("🔥 Successfully upserted Firestore products document for:", assetKey);
+      
     } catch (dbErr: any) {
       console.warn("⚠️ Bypassed Firestore products upsert, continuing sync:", dbErr.message);
+      return NextResponse.json({ error: "Failed to write to database", details: dbErr.message }, { status: 500 });
     }
 
-    // 4. Send to WordPress (supporting both ngrok and local fallback)
-    let wpPublishUrl = `https://barbecue-scuff-scale.ngrok-free.dev/wp-json/kobai/v1/update-chapter-audio`;
-    let wpResponse;
-    try {
-      console.log("🚀 Dispatched payload to ngrok:", wpPublishUrl);
-      wpResponse = await fetch(wpPublishUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-KOBA-KEY": "JUBI-TEST-1234-5678" },
-        body: JSON.stringify(syncPayload)
-      });
-      if (!wpResponse.ok) {
-        throw new Error(`WordPress ngrok error status: ${wpResponse.status}`);
-      }
-    } catch (err: any) {
-      console.log(`⚠️ Ngrok error (${err.message}). Falling back to local koba-dev.local...`);
-      wpPublishUrl = `http://koba-dev.local/wp-json/kobai/v1/update-chapter-audio`;
-      wpResponse = await fetch(wpPublishUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-KOBA-KEY": "JUBI-TEST-1234-5678" },
-        body: JSON.stringify(syncPayload)
-      });
-    }
+    // 4. Return Success to the Agent (No Ngrok, No WordPress Webhooks)
+    // The moment Firestore is updated, the WordPress site will naturally pull the new data
+    // the next time a user loads the page via the Public API.
+    return NextResponse.json({ 
+      success: true, 
+      message: "Deployment complete. Asset is now live in the Firestore catalog.",
+      assetKey: assetKey
+    }, { status: 200 });
 
-    if (!wpResponse.ok) {
-        const text = await wpResponse.text();
-        throw new Error(`WordPress error: ${text.substring(0, 100)}`);
-    }
-
-    return NextResponse.json({ success: true, streamUrl: discoveredFileUrl });
   } catch (error: any) {
-    console.error("❌ Deploy Crash:", error.message);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    console.error("❌ Agent Deploy API Error:", error);
+    return NextResponse.json({ error: "Internal Server Error", details: error.message }, { status: 500 });
   }
 }
