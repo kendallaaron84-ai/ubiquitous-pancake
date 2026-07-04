@@ -1,7 +1,6 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
+import { getFirestore } from "firebase/firestore"; // Optional: If you export the db here
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -12,11 +11,25 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// Next.js Hot Reload Safeguard: Prevent initializing duplicate apps
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+// 🚀 FIXED: The Static Compiler Bypass
+let app;
+if (getApps().length === 0) {
+  // Check if we have real keys (Browser or successful Env load)
+  if (process.env.NEXT_PUBLIC_FIREBASE_API_KEY) {
+    app = initializeApp(firebaseConfig);
+  } else {
+    // Next.js Static Build Environment Fallback
+    console.warn("⚠️ Client API keys missing during static build. Engaging mock initialization.");
+    app = initializeApp({
+        apiKey: "build-phase-bypass",
+        projectId: "author-jubilee-command-center"
+    }, "build-bypass");
+  }
+} else {
+  app = getApp();
+}
 
 const auth = getAuth(app);
-const db = getFirestore(app);
-const storage = getStorage(app);
+// const db = getFirestore(app); // Uncomment if you use the database here
 
-export { app, auth, db, storage };
+export { app, auth };
