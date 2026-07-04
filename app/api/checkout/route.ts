@@ -1,103 +1,89 @@
-export const dynamic = 'force-dynamic';
-
 import { NextResponse } from 'next/server';
-import Stripe from 'stripe';
 import { adminDb } from '@/lib/firebase-admin';
 
-// Initialize Stripe with the latest Dahlia API architecture
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2026-06-24.dahlia', 
-});
+// 🚀 FIXED: Tell Vercel this is a live API, do not prerender it during build
+export const dynamic = 'force-dynamic';
 
-export async function POST(request: Request) {
+export async function GET(request: Request) {
   try {
-    // 1. Parse JSON body instead of URL parameters for the POST request
-    const body = await request.json();
-    const { assetId, tenantKey } = body;
-
-    if (!assetId || !tenantKey) {
-      return NextResponse.json({ error: 'Missing required parameters' }, { status: 400 });
-    }
-
-    // 2. Fetch the Sovereign Product Data from Firestore
-    const productRef = adminDb.collection('products').doc(assetId);
-    const productSnap = await productRef.get();
-
-    if (!productSnap.exists) {
-      return NextResponse.json({ error: 'Asset not found' }, { status: 404 });
-    }
-
-    const productData = productSnap.data();
-
-    // 3. Validate Tenant Ownership
-    if (productData?.authorId !== tenantKey && productData?.studioKey !== tenantKey) {
-      return NextResponse.json({ error: 'Tenant Mismatch' }, { status: 403 });
-    }
-
-    // 4. Price formatting (Stripe requires integers in cents)
-    const priceInCents = Math.round((parseFloat(productData?.price || '0')) * 100);
-
-    if (priceInCents <= 0) {
-      return NextResponse.json({ error: 'Free assets do not require checkout' }, { status: 400 });
-    }
-
-    // 5. Dynamic Platform Revenue Split
-    const platformCommissionPercent = parseFloat(productData?.platformCommissionPercent || '0');
-    const platformFeeInCents = Math.round(priceInCents * platformCommissionPercent);
-
-    // 6. Build Stripe Checkout Session
-    const sessionPayload: Stripe.Checkout.SessionCreateParams = {
-      payment_method_types: ['card'],
-      // CRITICAL: Force Stripe to collect the phone number for the OTP Ghost Protocol
-      phone_number_collection: {
-        enabled: true,
-      },
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: {
-              name: productData?.title || 'KOBA-I Audiobook',
-              images: productData?.coverUrl ? [productData.coverUrl] : [],
-              description: `By ${productData?.authorName || 'Author'}`,
-            },
-            unit_amount: priceInCents,
-          },
-          quantity: 1,
-        },
-      ],
-      mode: 'payment',
-      // Allow React frontend to define the return URLs dynamically via headers, or default to the Command Center
-      success_url: `${request.headers.get('origin') || 'https://dashboard.koba-i.com'}?success=true&asset=${assetId}`,
-      cancel_url: `${request.headers.get('origin') || 'https://dashboard.koba-i.com'}?canceled=true`,
-      metadata: {
-        assetId,
-        tenantKey,
-        type: 'audiobook_purchase'
-      },
-    };
-
-    // 7. SaaS Stripe Connect Routing
-    if (productData?.stripeAccountId) {
-      sessionPayload.payment_intent_data = {
-        transfer_data: {
-          destination: productData.stripeAccountId,
-        },
-      };
-
-      // ONLY apply the application fee if there is an explicit marketing agreement > 0%
-      if (platformFeeInCents > 0) {
-        sessionPayload.payment_intent_data.application_fee_amount = platformFeeInCents;
-      }
-    }
-
-    // 8. Create Session & Return JSON URL for client-side redirect
-    const session = await stripe.checkout.sessions.create(sessionPayload);
+    const { searchParams } = new URL(request.url);
+    const studioKey = request.headers.get('x-studio-key'); // The Tenant ID from the WordPress plugin
+    const limitParam = searchParams.get('limit') || '10'; // Allow WP to request a certain number of posts
     
-    return NextResponse.json({ url: session.url }, { status: 200 });
+    // 1. Initial Validation Gate
+    if (!studioKey) {
+      return NextResponse.json(
+        { error: 'Missing required authorization: X-Studio-Key header' },
+        { status: 400, headers: getCorsHeaders() }
+      );
+    }
+
+    // 2. Fetch the Completed Blog Content from Firestore
+    // We target 'content_blueprints' where the Nexus Engine has finished its job
+    const contentRef = adminDb.collection('content_blueprints');
+    const contentSnap = await contentRef
+      .where('executionState', '==', 'completed')
+      .orderBy('createdAt', 'desc')
+      .limit(parseInt(limitParam))
+      .get();
+
+    if (contentSnap.empty) {
+      return NextResponse.json(
+        { success: true, content: [], message: 'No published content found.' }, 
+        { status: 200, headers: getCorsHeaders() }
+      );
+    }
+
+    // 3. Strict Tenant Isolation & Data Masking
+    const publicContent: any[] = [];
+    
+    contentSnap.forEach(doc => {
+      const data = doc.data();
+      
+      // Ensure the content belongs to the requesting author's Studio Key
+      if (data.authorEmail === studioKey || data.studioKey === studioKey) {
+        // Strip out backend execution metadata, only send what the blog needs
+        publicContent.push({
+          id: doc.id,
+          title: data.topicTitle || data.title || 'Untitled Post',
+          body: data.generatedContent || data.body || '', // The actual AI-written HTML/Markdown
+          excerpt: data.synopsis || data.description || '',
+          category: data.brandAllocation || 'General',
+          targetAudience: data.targetAudience || '',
+          publishedAt: data.completedAt ? data.completedAt.toDate().toISOString() : new Date().toISOString()
+        });
+      }
+    });
+
+    // 4. Return the clean payload
+    return NextResponse.json(
+      { success: true, content: publicContent }, 
+      { status: 200, headers: getCorsHeaders() }
+    );
 
   } catch (error) {
-    console.error('Stripe Checkout Error:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    console.error('Public Content API Error:', error);
+    return NextResponse.json(
+      { error: 'Internal Server Error' },
+      { status: 500, headers: getCorsHeaders() }
+    );
   }
+}
+
+// Handle OPTIONS preflight requests for CORS
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: getCorsHeaders(),
+  });
+}
+
+// Helper function to maintain consistent CORS policy
+function getCorsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': '*', // Allows the WordPress site to fetch this
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Studio-Key',
+    'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' // Edge caching to make WP fast
+  };
 }
