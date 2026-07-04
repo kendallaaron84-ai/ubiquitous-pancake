@@ -12,25 +12,36 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// The Static Compiler Bypass
 let app;
-if (getApps().length === 0) {
-  if (process.env.NEXT_PUBLIC_FIREBASE_API_KEY) {
-    app = initializeApp(firebaseConfig);
-  } else {
-    console.warn("⚠️ Client API keys missing during static build. Engaging mock initialization.");
+
+// 🚀 FIXED: Strict Environment Isolation
+if (typeof window === "undefined") {
+  // WE ARE ON THE VERCEL SERVER (Build Phase or SSR)
+  // Safely mock initialization so the compiler doesn't crash
+  if (getApps().length === 0) {
     app = initializeApp({
         apiKey: "build-phase-bypass",
         projectId: "author-jubilee-command-center"
-    }, "build-bypass");
+    }, "server-bypass");
+  } else {
+    app = getApp("server-bypass");
   }
 } else {
-  app = getApp();
+  // WE ARE IN THE LIVE BROWSER
+  // Enforce real keys. If this fails, the environment variables were not baked in.
+  if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "build-phase-bypass") {
+    console.error("❌ CRITICAL: NEXT_PUBLIC_FIREBASE_API_KEY is completely missing from the browser bundle. Check Vercel Environment Variables.");
+  }
+  
+  if (getApps().length === 0) {
+    app = initializeApp(firebaseConfig);
+  } else {
+    app = getApp();
+  }
 }
 
 const auth = getAuth(app);
 const db = getFirestore(app);
 const storage = getStorage(app);
 
-// 🚀 FIXED: All necessary services are properly exported for your React components
 export { app, auth, db, storage };
