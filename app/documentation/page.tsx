@@ -5,6 +5,9 @@ import React, { useState } from "react";
 import Layout from "@/components/layout";
 import { Database, ShieldAlert, Key, HelpCircle, Layers, Search, ArrowRightLeft, ShieldCheck } from "lucide-react";
 
+export const dynamic = "force-dynamic";
+
+
 export default function DataDictionaryPage() {
   const [activeTab, setActiveTab] = useState<"products" | "entitlements" | "licenses" | "api_payloads">("products");
   const [searchTerm, setSearchTerm] = useState("");
