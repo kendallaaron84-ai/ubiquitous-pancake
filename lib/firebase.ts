@@ -1,6 +1,7 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore"; // Optional: If you export the db here
+import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -11,14 +12,12 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// 🚀 FIXED: The Static Compiler Bypass
+// The Static Compiler Bypass
 let app;
 if (getApps().length === 0) {
-  // Check if we have real keys (Browser or successful Env load)
   if (process.env.NEXT_PUBLIC_FIREBASE_API_KEY) {
     app = initializeApp(firebaseConfig);
   } else {
-    // Next.js Static Build Environment Fallback
     console.warn("⚠️ Client API keys missing during static build. Engaging mock initialization.");
     app = initializeApp({
         apiKey: "build-phase-bypass",
@@ -30,6 +29,8 @@ if (getApps().length === 0) {
 }
 
 const auth = getAuth(app);
-// const db = getFirestore(app); // Uncomment if you use the database here
+const db = getFirestore(app);
+const storage = getStorage(app);
 
-export { app, auth };
+// 🚀 FIXED: All necessary services are properly exported for your React components
+export { app, auth, db, storage };
