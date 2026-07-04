@@ -1,28 +1,22 @@
 import * as admin from "firebase-admin";
 
-// Ensure the server-side environment variables match your content-engine-prod project
-const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "content-engine-prod";
+const projectId = process.env.FIREBASE_PROJECT_ID || "author-jubilee-command-center";
 
 if (!admin.apps.length) {
   try {
-    // If running inside Google Cloud / Cloud Run (production), it authenticates automatically
-    if (process.env.NODE_ENV === "production") {
-      admin.initializeApp({
-        credential: admin.credential.applicationDefault(),
-        projectId: projectId,
-      });
-      console.log("🚀 Firebase Admin SDK initialized seamlessly via Application Default Credentials.");
-    } else {
-      // Local development fallback framework
+    // Vercel relies entirely on these environment variables in production
+    if (process.env.FIREBASE_PRIVATE_KEY) {
       admin.initializeApp({
         credential: admin.credential.cert({
           projectId: projectId,
           clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          // Replace escaped line breaks if your private key string contains them
-          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+          // Safely handles the multi-line private key format from Vercel
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
         }),
       });
-      console.log("🛠️ Firebase Admin SDK initialized locally via development environment keys.");
+      console.log("🚀 Firebase Admin SDK initialized seamlessly via Vercel Environment Variables.");
+    } else {
+      console.warn("⚠️ FIREBASE_PRIVATE_KEY is missing. Skipping init (Normal during Vercel static build phase).");
     }
   } catch (error) {
     console.error("❌ Firebase Admin SDK critical initialization failure:", error);
@@ -30,7 +24,7 @@ if (!admin.apps.length) {
 }
 
 const auth = admin.auth();
-const db = admin.firestore();
+const adminDb = admin.firestore(); // 🚀 FIXED: Renamed to adminDb to match your API routes
 const storage = admin.storage();
 
-export { admin, auth, db, storage };
+export { admin, auth, adminDb, storage };
