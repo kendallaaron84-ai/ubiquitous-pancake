@@ -19,9 +19,33 @@ function generateSystemId(prefix = 'KOBA-AUDIO') {
 
 export async function POST(req: Request) {
   const body = await req.text();
-  const headersList = headers();
-  const signature = headersList.get('stripe-signature');
+  
+  // Guardrail: Check if middleware or something else consumed the body stream
+  if (!body || body.trim() === '') {
+    console.error('🚨 WEBHOOK BODY IS EMPTY. The request body stream may have been consumed by a middleware.');
+    return new NextResponse('Webhook Error: Empty request body payload.', { status: 400 });
+  }
+
+  // Dual-layer signature extraction for maximum compatibility with serverless headers
+  let signature = req.headers.get('stripe-signature');
+  if (!signature) {
+    try {
+      const headersList = headers();
+      signature = headersList.get('stripe-signature');
+    } catch (hErr) {
+      console.warn('⚠️ Could not read global headers helper:', hErr);
+    }
+  }
+
   const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  // Print non-sensitive debugging information to compare secrets
+  if (endpointSecret) {
+    const formattedSecret = `${endpointSecret.substring(0, 8)}...${endpointSecret.substring(endpointSecret.length - 4)}`;
+    console.log(`🔑 Webhook Secret in Use: ${formattedSecret}`);
+  } else {
+    console.error('🚨 Missing STRIPE_WEBHOOK_SECRET env variable.');
+  }
 
   let event: Stripe.Event;
 
