@@ -84,18 +84,27 @@ export async function POST(req: Request) {
         
         // Loop through the items to grant the correct licenses
         for (const item of lineItems.data) {
-          const productName = item.description.toLowerCase();
-          const productId = typeof item.price?.product === 'string' ? item.price.product : '';
+          const productName = (item.description || '').toLowerCase();
+          
+          // Ultra-safe fallback for getting the product ID regardless of Stripe's payload format
+          const productId = typeof item.price?.product === 'string' 
+            ? item.price.product 
+            : (item.price?.product as any)?.id || '';
           
           console.log(`🔍 Checking purchased item: "${productName}" (ProductID: ${productId})`);
           
           // 🎯 STRICT MATCHING: Checking for the exact Product ID or precise names
-          const isAudioPlugin = productId === 'prod_UpYvZLShITzyej' || productName.includes('koba-i audio player');
-          const isEReader = productName.includes('jubilee works digital e-reader');
+          const isAudioPlugin = productId === 'prod_UpYvZLShITzyej' || 
+                                productName.includes('koba-i audio player') ||
+                                productName.includes('jubilee edition');
+                                
+          const isEReader = productName.includes('jubilee works digital e-reader') || 
+                            productName.includes('digital e-reader');
 
           // Only generate a key if they actually bought the software
           if (isAudioPlugin || isEReader) {
-            const customerEmail = session.customer_details?.email;
+            // Bulletproof fallback for customer data
+            const customerEmail = session.customer_details?.email || session.customer_email || `customer-${Date.now()}@koba-i.com`;
             const customerName = session.customer_details?.name || 'Unknown Author';
             const authorId = session.client_reference_id || customerEmail; 
             
