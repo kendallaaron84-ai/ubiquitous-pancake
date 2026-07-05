@@ -12,14 +12,12 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
 });
 
 // 1. Cryptographically Secure License Generator
-// Generates an unguessable system ID (e.g., KOBA-AUDIO-8F3A2B9C)
 function generateSystemId(prefix = 'KOBA-AUDIO') {
   const secureRandom = randomBytes(4).toString('hex').toUpperCase();
   return `${prefix}-${secureRandom}`;
 }
 
 export async function POST(req: Request) {
-  // Next.js App Router requires consuming the raw body as text for Stripe signature verification
   const body = await req.text();
   const headersList = headers();
   const signature = headersList.get('stripe-signature');
@@ -42,63 +40,13 @@ export async function POST(req: Request) {
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session;
     
-    // 🚦 ROUTING LOGIC: Determine if this is an Author buying KOBA-I, or a Listener buying an Audiobook
-    // Ensure you pass `checkoutType: 'author_license'` or `'listener_purchase'` in your Stripe checkout session metadata
-    const checkoutType = session.metadata?.checkoutType || 'author_license';
+    // Check if this is a listener buying an audiobook (Ghost Protocol)
+    const isListenerPurchase = session.metadata?.checkoutType === 'listener_purchase';
 
     // ====================================================================
-    // SCENARIO A: AUTHOR BUYING KOBA-I INFRASTRUCTURE (License Generation)
+    // SCENARIO A: LISTENER BUYING AUDIOBOOK (The Ghost Protocol)
     // ====================================================================
-    if (checkoutType === 'author_license') {
-      const customerEmail = session.customer_details?.email;
-      const customerName = session.customer_details?.name || 'Unknown Author';
-      const authorId = session.client_reference_id || customerEmail; 
-      const assetId = session.metadata?.assetId || 'global_access'; 
-
-      if (!authorId) {
-        console.error('⚠️ Cannot provision license: Missing author identifier.');
-        return new NextResponse('Missing author identifier', { status: 400 });
-      }
-
-      try {
-        // Auto-Generate the Unique System ID
-        const newStudioKey = generateSystemId();
-        console.log(`✅ Provisioning new license [${newStudioKey}] for Author: ${customerEmail}`);
-
-        // Write the Dual-Layer License to Firestore
-        await adminDb.collection('licenses').doc(newStudioKey).set({
-          studioKey: newStudioKey,
-          authorId: authorId,
-          authorEmail: customerEmail,
-          authorName: customerName,
-          assetId: assetId,
-          status: 'active',
-          type: 'audiobook_plugin',
-          stripeSessionId: session.id,
-          createdAt: new Date().toISOString(),
-          associatedWebsite: null // To be populated when activated on WP
-        });
-
-        // Update the Author Profile in your 'users' collection
-        await adminDb.collection('users').doc(authorId).set({
-          email: customerEmail,
-          name: customerName,
-          hasActiveLicense: true,
-          lastPurchaseDate: new Date().toISOString(),
-        }, { merge: true });
-
-        return NextResponse.json({ provisioned: true, generatedKey: newStudioKey }, { status: 200 });
-
-      } catch (dbError) {
-        console.error('❌ Failed to provision author license:', dbError);
-        return new NextResponse('Database Error', { status: 500 });
-      }
-    }
-
-    // ====================================================================
-    // SCENARIO B: LISTENER BUYING AUDIOBOOK (The Ghost Protocol)
-    // ====================================================================
-    else if (checkoutType === 'listener_purchase') {
+    if (isListenerPurchase) {
       const assetId = session.metadata?.assetId;
       const tenantKey = session.metadata?.tenantKey;
       const customerEmail = session.customer_details?.email || session.customer?.toString();
@@ -108,35 +56,85 @@ export async function POST(req: Request) {
 
       if (assetId && tenantKey && normalizedPhone) {
         try {
-          // Provision the Vault Entitlement in Firestore using composite ID
           const entitlementId = `${tenantKey}_${assetId}_${normalizedPhone}`;
-          
           await adminDb.collection('entitlements').doc(entitlementId).set({
-            assetId,
-            tenantKey,
-            customerEmail,
-            customerPhone: normalizedPhone,
-            stripeSessionId: session.id,
-            stripeCustomerId: session.customer || null,
-            status: 'active',
-            amountTotal: session.amount_total,
-            purchasedAt: new Date().toISOString(),
+            assetId, tenantKey, customerEmail, customerPhone: normalizedPhone,
+            stripeSessionId: session.id, stripeCustomerId: session.customer || null,
+            status: 'active', amountTotal: session.amount_total, purchasedAt: new Date().toISOString(),
           });
-
-          console.log(`✅ Ghost Protocol Entitlement provisioned for phone: ${normalizedPhone} on asset: ${assetId}`);
-          return new NextResponse('Listener Entitlement Provisioned', { status: 200 });
-
+          console.log(`✅ Ghost Protocol Entitlement provisioned for phone: ${normalizedPhone}`);
+          return NextResponse.json({ provisioned: true }, { status: 200 });
         } catch (dbError) {
-          console.error('🔥 Firestore Write Error during Webhook:', dbError);
+          console.error('🔥 Firestore Write Error:', dbError);
           return new NextResponse('Database Error', { status: 500 });
         }
-      } else {
-        console.warn('⚠️ Webhook missing metadata or customer phone. Cannot provision Ghost Protocol entitlement.');
-        return new NextResponse('Missing metadata for listener purchase', { status: 400 });
       }
+      return new NextResponse('Missing metadata', { status: 400 });
+    }
+
+    // ====================================================================
+    // SCENARIO B: AUTHOR BUYING KOBA-I SOFTWARE (Intelligent Routing)
+    // ====================================================================
+    else {
+      // Reach back into Stripe and fetch the exact items they purchased
+      const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
+      
+      // Loop through the items to grant the correct licenses
+      for (const item of lineItems.data) {
+        const productName = item.description.toLowerCase();
+        
+        // STRICT MATCHING: Checking for the exact product names to prevent false positives
+        const isAudioPlugin = productName.includes('koba-i audio player');
+        const isEReader = productName.includes('jubilee works digital e-reader');
+
+        // Only generate a key if they actually bought the software
+        if (isAudioPlugin || isEReader) {
+          const customerEmail = session.customer_details?.email;
+          const customerName = session.customer_details?.name || 'Unknown Author';
+          const authorId = session.client_reference_id || customerEmail; 
+          
+          if (!authorId) continue;
+
+          // Determine the prefix based on what they bought
+          const prefix = isEReader && !isAudioPlugin ? 'KOBA-READER' : 'KOBA-AUDIO';
+          const licenseType = isEReader && !isAudioPlugin ? 'ereader_plugin' : 'audiobook_plugin';
+          
+          const newStudioKey = generateSystemId(prefix);
+          
+          console.log(`✅ Provisioning [${newStudioKey}] (${licenseType}) for: ${customerEmail}`);
+
+          try {
+            await adminDb.collection('licenses').doc(newStudioKey).set({
+              studioKey: newStudioKey,
+              authorId: authorId,
+              authorEmail: customerEmail,
+              authorName: customerName,
+              status: 'active',
+              type: licenseType,
+              stripeSessionId: session.id,
+              productName: item.description,
+              createdAt: new Date().toISOString(),
+              associatedWebsite: null
+            });
+
+            await adminDb.collection('users').doc(authorId).set({
+              email: customerEmail,
+              name: customerName,
+              hasActiveLicense: true,
+              lastPurchaseDate: new Date().toISOString(),
+            }, { merge: true });
+
+          } catch (dbError) {
+            console.error('❌ Failed to provision author license:', dbError);
+          }
+        } else {
+          console.log(`ℹ️ Ignored product purchase: ${item.description} (Not a KOBA-I software product)`);
+        }
+      }
+
+      return NextResponse.json({ processed: true }, { status: 200 });
     }
   }
 
-  // Acknowledge other event types quietly so Stripe doesn't retry
   return new NextResponse('Webhook processed successfully', { status: 200 });
 }
