@@ -3,7 +3,7 @@
 import React, { useState, useRef } from "react";
 import { UploadCloud, FileAudio, Loader2, ShieldAlert } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { storage } from "@/lib/firebase"; // Ensure you export storage from your firebase config
+import { storage } from "@/core/firebase"; // Ensure you export storage from your firebase config
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 interface VoiceUploadZoneProps {

@@ -16,7 +16,7 @@ import Link from "next/link"
 // 🔑 Import the Router and Auth modules
 import { useRouter } from "next/navigation"
 import { signOut, getAuth, onAuthStateChanged } from "firebase/auth"
-import { auth } from "@/lib/firebase"
+import { auth } from "@/core/firebase"
 
 export function UserNav() {
 	const router = useRouter();

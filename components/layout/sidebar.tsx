@@ -1,6 +1,6 @@
 "use client"
 
-import { cn } from "@/lib/utils"
+import { cn } from "@/core/utils"
 import {
     Cpu,           // For KOBA-I Nexus Engine
     Radio,         // For Studio Bridge

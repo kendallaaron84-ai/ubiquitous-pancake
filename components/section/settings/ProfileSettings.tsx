@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Save, Loader2 } from "lucide-react";
-import { db } from "@/lib/firebase";
+import { db } from "@/core/firebase";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";

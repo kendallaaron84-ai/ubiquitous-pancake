@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, use } from "react";
-import { db } from "@/lib/firebase";
+import { db } from "@/core/firebase";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, Settings, X, Key } from "lucide-react";
 import Link from "next/link";

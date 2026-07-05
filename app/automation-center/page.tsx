@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Layout from "@/components/layout";
-import { db } from "@/lib/firebase";
+import { db } from "@/core/firebase";
 import { 
   collection, doc, onSnapshot, setDoc, addDoc, 
   getDocs, writeBatch, serverTimestamp 

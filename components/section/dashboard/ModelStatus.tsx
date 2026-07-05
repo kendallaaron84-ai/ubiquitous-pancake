@@ -3,7 +3,7 @@
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { cn } from "@/lib/utils"
+import { cn } from "@/core/utils"
 import { AlertTriangle, Check, X } from "lucide-react" // icon import
 
 const modelStatuses = [

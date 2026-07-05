@@ -5,7 +5,7 @@ import React, { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { User, BookOpen, Save, UploadCloud, Settings, Loader2, Trash2 } from "lucide-react";
-import { db, storage } from "@/lib/firebase"; 
+import { db, storage } from "@/core/firebase"; 
 import { ref, uploadBytes } from "firebase/storage";
 import { doc, getDoc, setDoc, collection, addDoc, getDocs, deleteDoc } from "firebase/firestore";
 // 🔑 Imported the Auth modules

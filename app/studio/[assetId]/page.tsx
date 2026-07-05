@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, use } from "react";
-import { db, storage } from "@/lib/firebase"; // 🚀 FIXED: Using your pre-configured instances directly
+import { db, storage } from "@/core/firebase"; // 🚀 FIXED: Using your pre-configured instances directly
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage"; // 🚀 FIXED: Standard static imports
 import { 

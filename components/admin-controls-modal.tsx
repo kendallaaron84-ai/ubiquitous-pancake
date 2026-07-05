@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { ref, uploadBytes } from "firebase/storage"; // 🔑 Import storage references
-import { storage, db } from "@/lib/firebase";
+import { storage, db } from "@/core/firebase";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { ShieldAlert, Save, UploadCloud, Loader2 } from "lucide-react";
 

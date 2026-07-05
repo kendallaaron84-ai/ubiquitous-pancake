@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { db, auth } from "@/lib/firebase";
+import { db, auth } from "@/core/firebase";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";
 import { Sparkles, FileText, Briefcase, Users, LayoutTemplate } from "lucide-react";

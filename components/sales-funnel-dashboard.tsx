@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { db } from "@/lib/firebase";
+import { db } from "@/core/firebase";
 import { collection, onSnapshot, query } from "firebase/firestore";
 import { DollarSign, Target, ShoppingCart, Music } from "lucide-react";
 

@@ -4,7 +4,7 @@ import React, { useState, useRef, useEffect } from "react";
 import Layout from "@/components/layout";
 import { useToast } from "@/hooks/use-toast";
 import { VoiceUploadZone } from "@/components/voice-upload-zone";
-import { db } from "@/lib/firebase";
+import { db } from "@/core/firebase";
 import { 
   collection, query, where, onSnapshot, doc, 
   setDoc, deleteDoc, updateDoc 

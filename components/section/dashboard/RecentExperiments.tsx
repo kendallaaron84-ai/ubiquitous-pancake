@@ -2,7 +2,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { cn } from "@/lib/utils"
+import { cn } from "@/core/utils"
 import { Check, Loader, X } from "lucide-react" // icons
 
 const experiments = [

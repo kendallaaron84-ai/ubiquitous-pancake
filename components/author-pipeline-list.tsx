@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { doc, deleteDoc, updateDoc } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db } from "@/core/firebase";
 // 🔑 INJECT: Added UI icons for the asset tray
 import { Trash2, RefreshCw, ChevronDown, ChevronUp, Copy, ExternalLink } from "lucide-react";
 

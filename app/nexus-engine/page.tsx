@@ -6,7 +6,7 @@ import { AuthorIntakeForm } from "@/components/author-intake-form";
 import { BrandProfileModal } from "@/components/brand-profile-modal"; 
 import { AdminControlsModal } from "@/components/admin-controls-modal"; 
 import { AuthorPipelineList } from "@/components/author-pipeline-list";
-import { db } from "@/lib/firebase";
+import { db } from "@/core/firebase";
 import { collection, query, where, onSnapshot, orderBy } from "firebase/firestore";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 

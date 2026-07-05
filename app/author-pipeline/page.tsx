@@ -5,7 +5,7 @@ import Layout from "@/components/layout";
 import { AudioNarrationTracker } from "@/components/audio-narration-tracker";
 import { AuthorIntakeForm } from "@/components/author-intake-form";
 import { AuthorPipelineList } from "@/components/author-pipeline-list";
-import { db } from "@/lib/firebase";
+import { db } from "@/core/firebase";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
 import { BookOpen } from "lucide-react";
 

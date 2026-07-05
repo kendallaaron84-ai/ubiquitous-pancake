@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { db } from "@/lib/firebase";
+import { db } from "@/core/firebase";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { Sparkles, FileText, Headphones, Loader2 } from "lucide-react";
 

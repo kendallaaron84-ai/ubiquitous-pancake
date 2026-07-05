@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { auth } from "@/core/firebase";
 import { Logo } from "@/components/elements/logo";
 import { useToast } from "@/hooks/use-toast";
 import { Input } from "@/components/ui/input";
