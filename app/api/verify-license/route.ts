@@ -1,61 +1,134 @@
-// app/api/publications/[id]/route.ts
-import { NextResponse } from "next/server";
+import { NextResponse } from 'next/server';
+import { adminDb } from '@/core/firebase-admin';
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
 
-export async function GET(
-  request: Request,
-  { params }: { params: { id: string } }
-) {
+// 1. Mandatory CORS Headers for Cross-Origin WordPress Requests
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*', // Allows any client WordPress domain to make the handshake
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Studio-Key, Authorization, Origin',
+};
+
+// 2. Preflight OPTIONS Handler (Crucial for bypassing browser cross-origin blocks)
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: CORS_HEADERS,
+  });
+}
+
+// 3. The Core Verification & Domain-Locking Gate
+export async function POST(request: Request) {
   try {
-    const { id } = params;
+    // Intercept the Studio Key sent by the WordPress plugin activation settings
+    const studioKey = request.headers.get('x-studio-key');
+    
+    // Parse the payload to find out who is knocking on our door
+    const body = await request.json().catch(() => ({}));
+    const { domain } = body; // The WP plugin can pass its home URL (e.g., "https://my-wordpress-site.com")
 
-    // 🔥 DYNAMIC RUNTIME IMPORT: Keeps Firebase isolated from the static build engine
-    const admin = require("firebase-admin");
+    // Safety Gate 1: Check for the key
+    if (!studioKey) {
+      console.warn('⚠️ License verification blocked: Missing X-Studio-Key header.');
+      return NextResponse.json(
+        { error: 'Missing X-Studio-Key header. Unauthorized.' },
+        { status: 401, headers: CORS_HEADERS }
+      );
+    }
 
-    if (!admin || !admin.apps || !admin.apps.length) {
+    // Determine the origin/domain making the request to lock/verify the license
+    const referer = request.headers.get('referer');
+    const requestOrigin = request.headers.get('origin');
+    
+    // Fallback order: Explicitly passed domain in body -> Origin Header -> Referer Header -> "Unknown Site"
+    let clientDomain = domain || requestOrigin || referer || '';
+    
+    // Clean up domain (remove paths, query parameters, trailing slashes, and protocol if necessary)
+    if (clientDomain) {
       try {
-        admin.initializeApp({
-          credential: admin.credential.applicationDefault(),
-        });
+        const parsedUrl = new URL(clientDomain);
+        clientDomain = parsedUrl.origin; // e.g., "https://my-wordpress-site.com"
       } catch (e) {
-        console.warn("⚠️ Firebase Admin fallback initialization triggered during build pass.");
-        return NextResponse.json({ message: "Database offline during build check." }, { status: 500 });
+        // Fallback to raw string cleaning if URL parsing fails
+        clientDomain = clientDomain.replace(/\/$/, '').trim();
       }
     }
 
-    const db = admin.firestore();
+    console.log(`🔑 Verification request received for Key: ${studioKey} from Site: ${clientDomain}`);
 
-    // Fetch live validation data straight from your Firebase cloud ledger
-    const docRef = db.collection("products").doc(id);
-    const docSnap = await docRef.get();
+    // 4. Query Firestore for the corresponding license doc
+    const licenseRef = adminDb.collection('licenses').doc(studioKey);
+    const licenseDoc = await licenseRef.get();
 
-    if (!docSnap.exists) {
-      return NextResponse.json({ message: "Publication profile missing." }, { status: 404 });
+    // Safety Gate 2: Verify the key exists in our database
+    if (!licenseDoc.exists) {
+      console.warn(`❌ Key ${studioKey} does not exist in our registry.`);
+      return NextResponse.json(
+        { error: 'Invalid license key. This key does not exist.' },
+        { status: 403, headers: CORS_HEADERS }
+      );
     }
 
-    const data = docSnap.data();
+    const licenseData = licenseDoc.data();
 
-    // Map the studio schema into a format that bloom-player.js loops through out-of-the-box
-    const chaptersPayload = (data?.studioTracks || []).map((track: any) => ({
-      id: track.id,
-      title: track.title,
-      url: track.securedPlaybackUrl || `https://storage.googleapis.com/koba-ai-processing-vault/audio-sources/${track.fileName}`,
-      transcript_file_url: track.transcriptUrl || "" // Bound tightly for your European Accessibility Act highlights
-    }));
+    // Safety Gate 3: Check if the license is globally active
+    if (!licenseData || licenseData.status !== 'active') {
+      console.warn(`⚠️ Key ${studioKey} is registered but has status: ${licenseData?.status || 'unknown'}`);
+      return NextResponse.json(
+        { error: 'This license key is currently inactive or suspended.' },
+        { status: 403, headers: CORS_HEADERS }
+      );
+    }
 
-    // Output formatting matching koba-i-audio.php expectations
+    // 5. Intelligent Domain Locking (Multi-Tenant Protection)
+    const currentLockedWebsite = licenseData.associatedWebsite;
+
+    if (!currentLockedWebsite) {
+      // SCENARIO A: The key is fresh and has never been activated. Lock it to this domain!
+      if (clientDomain && clientDomain !== 'unknown') {
+        console.log(`🔒 First activation: Locking License [${studioKey}] to Domain: ${clientDomain}`);
+        
+        await licenseRef.update({
+          associatedWebsite: clientDomain,
+          activatedAt: new Date().toISOString()
+        });
+      } else {
+        console.warn(`⚠️ Fresh license key activation received with no identifiable domain.`);
+      }
+    } else {
+      // SCENARIO B: The key is already locked to a website. Check if this request is authorized!
+      if (clientDomain && clientDomain !== currentLockedWebsite) {
+        console.warn(`🚨 Security Violation: Key ${studioKey} is locked to ${currentLockedWebsite}, but request came from ${clientDomain}!`);
+        return NextResponse.json(
+          { 
+            error: 'License violation. This key is already active on another website. Please contact support to release the domain lock.',
+            lockedTo: currentLockedWebsite
+          },
+          { status: 403, headers: CORS_HEADERS }
+        );
+      }
+    }
+
+    // 6. Return Secure Authorization Token
     return NextResponse.json({
-      id: docSnap.id,
-      title: data?.title || "Sovereign Audio Delivery",
-      authorName: data?.authorName || "Unknown Author",
-      coverArtUrl: data?.coverArtUrl || "",
-      bgImageUrl: data?.bgImageUrl || "",
-      chapters: chaptersPayload
+      authorized: true,
+      licenseType: licenseData.type || 'audiobook_plugin',
+      authorId: licenseData.authorId || null,
+      authorEmail: licenseData.authorEmail || null,
+      associatedWebsite: clientDomain || currentLockedWebsite || null,
+      activatedAt: licenseData.activatedAt || new Date().toISOString(),
+      message: "License verified successfully. Premium features activated."
+    }, { 
+      status: 200, 
+      headers: CORS_HEADERS 
     });
 
   } catch (error: any) {
-    console.error("❌ Publications Dynamic Route Error:", error);
-    return NextResponse.json({ error: "Secure sync tunnel interrupted." }, { status: 500 });
+    console.error('🔥 Verify License Handshake Error:', error);
+    return NextResponse.json(
+      { error: 'Internal Server Error', details: error.message },
+      { status: 500, headers: CORS_HEADERS }
+    );
   }
 }
