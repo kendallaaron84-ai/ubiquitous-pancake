@@ -33,7 +33,7 @@ export const dynamic = 'force-dynamic';
 
 // Initialize Stripe (Ensure STRIPE_SECRET_KEY is in your Vercel env variables)
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: '2024-04-10', // Adjust to match your Stripe dashboard API version
+  apiVersion: '2026-05-27.dahlia', // Adjust to match your Stripe dashboard API version
 });
 
 // 1. Cryptographically Secure License Generator
