@@ -1,7 +1,7 @@
 // app/api/auth/sms-verify/route.ts
 import { NextResponse } from "next/server";
 import twilio from "twilio";
-import { adminDb, adminAuth } from '@/lib/firebase-admin';
+import { adminDb, adminAuth } from '@/core/firebase-admin';
 
 export const dynamic = 'force-dynamic';
 

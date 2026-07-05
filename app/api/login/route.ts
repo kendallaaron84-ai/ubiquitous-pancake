@@ -1,7 +1,7 @@
 // app/api/login/route.ts
 import { NextResponse } from "next/server";
 // 🚀 FIXED: Stripped all local fs/path/firebase-admin imports
-import { adminAuth } from '@/lib/firebase-admin';
+import { adminAuth } from '@/core/firebase-admin';
 
 export const dynamic = "force-dynamic";
 

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { adminDb } from '@/lib/firebase-admin';
+import { adminDb } from '@/core/firebase-admin';
 
 // 🚀 FIXED: Tell Vercel this is a live API, do not prerender it during build
 export const dynamic = 'force-dynamic';

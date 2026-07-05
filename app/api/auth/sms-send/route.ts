@@ -1,7 +1,7 @@
 // app/api/auth/sms-send/route.ts
 import { NextResponse } from "next/server";
 import twilio from "twilio";
-import { adminAuth, adminDb } from '@/lib/firebase-admin';
+import { adminAuth, adminDb } from '@/core/firebase-admin';
 
 const corsHeaders = {
   // 🚀 FIXED: Opened CORS so Vercel production can actually talk to this API

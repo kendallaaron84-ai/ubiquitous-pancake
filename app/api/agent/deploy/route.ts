@@ -5,7 +5,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import path from "path";
 import fs from "fs";
-import { adminStorage } from '@/lib/firebase-admin';
+import { adminStorage } from '@/core/firebase-admin';
 
 export const dynamic = "force-dynamic";
 

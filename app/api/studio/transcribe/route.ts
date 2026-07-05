@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 // 🚀 FIXED: Imported the secure adminDb and adminStorage instances
-import { adminDb, adminStorage } from '@/lib/firebase-admin';
+import { adminDb, adminStorage } from '@/core/firebase-admin';
 
 export const dynamic = "force-dynamic";
 

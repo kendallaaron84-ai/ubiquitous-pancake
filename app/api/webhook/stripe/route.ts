@@ -1,7 +1,7 @@
 import { headers } from 'next/headers';
 import { NextResponse } from 'next/server';
 import Stripe from 'stripe';
-import { adminDb } from '@/lib/firebase-admin';
+import { adminDb } from '@/core/firebase-admin';
 
 export const dynamic = 'force-dynamic';
 

@@ -1,6 +1,6 @@
 // app/api/verify-entitlement/route.ts
 import { NextResponse } from "next/server";
-import { adminStorage, adminDb } from '@/lib/firebase-admin';
+import { adminStorage, adminDb } from '@/core/firebase-admin';
 
 export const dynamic = "force-dynamic";
 
