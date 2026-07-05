@@ -1,13 +1,11 @@
 // app/api/auth/sms-send/route.ts
 import { NextResponse } from "next/server";
 import twilio from "twilio";
-import { initializeApp, getApps, cert } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
-import path from "path";
-import fs from "fs";
+import { adminAuth, adminDb } from '@/lib/firebase-admin';
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "http://koba-dev.local",
+  // 🚀 FIXED: Opened CORS so Vercel production can actually talk to this API
+  "Access-Control-Allow-Origin": "*", 
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Allow-Credentials": "true",
@@ -26,21 +24,8 @@ export async function POST(request: Request) {
     if (cleanPhone.length === 10) cleanPhone = `+1${cleanPhone}`;
     else cleanPhone = `+${cleanPhone}`;
 
-    // 2. Initialize Firebase
-    if (getApps().length === 0) {
-      const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
-      if (fs.existsSync(keyPath)) {
-        initializeApp({
-          credential: cert(JSON.parse(fs.readFileSync(keyPath, "utf8"))),
-          projectId: JSON.parse(fs.readFileSync(keyPath, "utf8")).project_id,
-        });
-      } else {
-        initializeApp({ projectId: "jubilee-command-center---dev" });
-      }
-    }
-
-    const db = getFirestore();
-    const entitlementsRef = db.collection("entitlements");
+    // 🚀 FIXED: Swapped the undefined getFirestore() for the centralized adminDb
+    const entitlementsRef = adminDb.collection("entitlements");
 
     // 3. Global Authentication (Removed Asset Filtering)
     // Now we check if the user exists ANYWHERE in your ecosystem

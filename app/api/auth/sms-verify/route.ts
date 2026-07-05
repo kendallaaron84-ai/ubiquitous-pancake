@@ -1,15 +1,13 @@
 // app/api/auth/sms-verify/route.ts
 import { NextResponse } from "next/server";
 import twilio from "twilio";
-import { initializeApp, getApps, cert } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
-import path from "path";
-import fs from "fs";
+import { adminDb, adminAuth } from '@/lib/firebase-admin';
 
 export const dynamic = 'force-dynamic';
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "http://koba-dev.local",
+  // 🚀 FIXED: Opened CORS so the Vercel frontend can communicate with this API
+  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Allow-Credentials": "true",
@@ -24,15 +22,6 @@ export async function POST(request: Request) {
     if (cleanPhone.length === 10) cleanPhone = `+1${cleanPhone}`;
     else cleanPhone = `+${cleanPhone}`;
 
-    // 1. Re-initialize Firebase (Fixes 'getFirestore not defined')
-    if (getApps().length === 0) {
-        const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
-        initializeApp({
-            credential: cert(JSON.parse(fs.readFileSync(keyPath, "utf8"))),
-            projectId: "jubilee-command-center---dev"
-        });
-    }
-
     // 2. Verify with Twilio
     const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
     const check = await client.verify.v2
@@ -40,8 +29,8 @@ export async function POST(request: Request) {
       .verificationChecks.create({ to: cleanPhone, code: code.trim() });
 
     if (check.status === "approved") {
-      const db = getFirestore();
-      const entitlements = await db.collection("entitlements")
+      // 🚀 FIXED: Using adminDb directly
+      const entitlements = await adminDb.collection("entitlements")
           .where("userPhone", "==", cleanPhone)
           .where("status", "==", "active")
           .limit(1)

@@ -5,6 +5,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import path from "path";
 import fs from "fs";
+import { adminStorage } from '@/lib/firebase-admin';
 
 export const dynamic = "force-dynamic";
 
@@ -53,7 +54,7 @@ export async function POST(request: Request) {
 
     // 2. Storage Initialization (Locate the audio/media file)
     const storage = getStorage(); 
-    const bucket = storage.bucket("jubilee-command-center---dev.firebasestorage.app");
+    const bucket = adminStorage.bucket();
     
     const folderPrefix = `studio/${assetKey}/`;
     const [files] = await bucket.getFiles({ prefix: folderPrefix });

@@ -1,47 +1,41 @@
-import { initializeApp, getApps, getApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
+import { getStorage } from 'firebase-admin/storage';
 
-const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-};
-
-let app;
-
-// 🚀 FIXED: Strict Environment Isolation
-if (typeof window === "undefined") {
-  // WE ARE ON THE VERCEL SERVER (Build Phase or SSR)
-  // Safely mock initialization so the compiler doesn't crash
-  if (getApps().length === 0) {
-    app = initializeApp({
-        apiKey: "build-phase-bypass",
-        projectId: "author-jubilee-command-center"
-    }, "server-bypass");
-  } else {
-    app = getApp("server-bypass");
-  }
-} else {
-  // WE ARE IN THE LIVE BROWSER
-  // Enforce real keys. If this fails, the environment variables were not baked in.
-  if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "build-phase-bypass") {
-    console.error("❌ CRITICAL: NEXT_PUBLIC_FIREBASE_API_KEY is completely missing from the browser bundle. Check Vercel Environment Variables.");
-  }
-  
-  if (getApps().length === 0) {
-    app = initializeApp(firebaseConfig);
-  } else {
-    app = getApp();
+// 🚀 FIXED: Safely check initialized apps using the modular App Router method
+if (getApps().length === 0) {
+  try {
+    if (process.env.FIREBASE_PRIVATE_KEY) {
+      initializeApp({
+        credential: cert({
+          projectId: process.env.FIREBASE_PROJECT_ID || "author-jubilee-command-center",
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          // Safely handles the multi-line private key format from Vercel
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+        }),
+        // 🚀 CRITICAL: Added the storage bucket from your other file
+        storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+      });
+      console.log("🚀 Firebase Admin SDK initialized seamlessly.");
+    } else {
+      console.warn("⚠️ FIREBASE_PRIVATE_KEY is missing. Skipping init during static build.");
+    }
+  } catch (error) {
+    console.error("❌ Firebase Admin SDK critical initialization failure:", error);
   }
 }
 
-const auth = getAuth(app);
-const db = getFirestore(app);
-const storage = getStorage(app);
+const adminDb = getFirestore();
+const adminAuth = getAuth();
+const adminStorage = getStorage();
 
-export { app, auth, db, storage };
+// Exporting an 'admin' fallback object just in case any of your legacy files still import it
+const admin = {
+    auth: () => adminAuth,
+    firestore: () => adminDb,
+    storage: () => adminStorage
+};
+
+// We export both names (auth/adminAuth) so we don't break any of your existing imports
+export { admin, adminAuth as auth, adminAuth, adminDb, adminStorage as storage, adminStorage };

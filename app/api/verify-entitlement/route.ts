@@ -1,7 +1,6 @@
 // app/api/verify-entitlement/route.ts
 import { NextResponse } from "next/server";
-import path from "path";
-import fs from "fs";
+import { adminStorage, adminDb } from '@/lib/firebase-admin';
 
 export const dynamic = "force-dynamic";
 
@@ -17,23 +16,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ authenticated: false, error: "Missing identity parameters." }, { status: 400 });
     }
 
-    const firebaseAdmin = require("firebase-admin");
-    const admin = firebaseAdmin.default || firebaseAdmin;
-
-    if (!admin.apps.length) {
-      const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
-      if (fs.existsSync(keyPath)) {
-        const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
-        admin.initializeApp({
-          credential: admin.credential.cert(serviceAccount),
-          projectId: serviceAccount.project_id,
-          storageBucket: "jubilee-command-center---dev.appspot.com"
-        });
-      }
-    }
-
-    const db = admin.firestore();
-    const entitlementsRef = db.collection("entitlements");
+    // 🚀 FIXED: Use the centralized adminDb instance directly
+    const entitlementsRef = adminDb.collection("entitlements");
     let queryRef = entitlementsRef.where("assetKey", "==", assetKey).where("status", "==", "active");
 
     if (activeEmail) {
@@ -54,17 +38,22 @@ export async function POST(request: Request) {
     let bookTitleFallback = "Sovereign Publication Track";
 
     try {
-      const productDoc = await db.collection("products").doc(assetKey).get();
+      // 🚀 FIXED: Use adminDb here as well
+      const productDoc = await adminDb.collection("products").doc(assetKey).get();
       if (productDoc.exists) {
         const pData = productDoc.data();
         if (pData.studioTracks && pData.studioTracks.length > 0) productTracksFallback = pData.studioTracks;
         if (pData.title) bookTitleFallback = pData.title;
       }
-    } catch (err) {}
+    } catch (err) {
+      console.error("Product fetch error:", err);
+    }
 
-    const bucket = admin.storage().bucket("jubilee-command-center---dev.appspot.com");
+    // 🚀 FIXED: Empty parentheses automatically pull the environment-correct bucket
+    const bucket = adminStorage.bucket();
     const secureFile = bucket.file(`vault/audiobooks/${assetKey}.mp3`);
     let streamUrl = null;
+    
     try {
       const [generatedUrl] = await secureFile.getSignedUrl({
         version: "v4",
@@ -72,7 +61,9 @@ export async function POST(request: Request) {
         expires: Date.now() + 2 * 60 * 60 * 1000, 
       });
       streamUrl = generatedUrl;
-    } catch (err) {}
+    } catch (err) {
+      console.error("Signed URL generation error:", err);
+    }
 
     return NextResponse.json({
       authenticated: true,

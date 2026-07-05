@@ -1,8 +1,8 @@
 // app/api/studio/transcribe/route.ts
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
-import path from "path";
-import fs from "fs";
+// 🚀 FIXED: Imported the secure adminDb and adminStorage instances
+import { adminDb, adminStorage } from '@/lib/firebase-admin';
 
 export const dynamic = "force-dynamic";
 
@@ -23,26 +23,11 @@ export async function POST(request: Request) {
       }, { status: 500 });
     }
 
-    // 2. Initialize Firebase Admin
-    const { getApps, initializeApp, cert } = require("firebase-admin/app");
-    const { getFirestore } = require("firebase-admin/firestore");
-    const { getStorage } = require("firebase-admin/storage");
+    // ❌ DELETED: The entire dynamic require("firebase-admin") block.
 
-    if (getApps().length === 0) {
-      const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
-      if (fs.existsSync(keyPath)) {
-        const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
-        initializeApp({
-          credential: cert(serviceAccount),
-          storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "jubilee-command-center---dev.appspot.com"
-        });
-      } else {
-        initializeApp({ projectId: "jubilee-command-center---dev" });
-      }
-    }
-
-    const db = getFirestore();
-    const bucket = getStorage().bucket();
+    // 🚀 FIXED: Use the centralized instances directly
+    const db = adminDb;
+    const bucket = adminStorage.bucket();
 
     // 3. Retrieve the master asset and its tracks
     const productRef = db.collection("products").doc(assetId);

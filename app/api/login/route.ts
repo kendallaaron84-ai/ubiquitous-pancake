@@ -1,9 +1,7 @@
 // app/api/login/route.ts
 import { NextResponse } from "next/server";
-import { getApps, initializeApp, cert } from "firebase-admin/app";
-import { getAuth } from "firebase-admin/auth";
-import path from "path";
-import fs from "fs";
+// 🚀 FIXED: Stripped all local fs/path/firebase-admin imports
+import { adminAuth } from '@/lib/firebase-admin';
 
 export const dynamic = "force-dynamic";
 
@@ -15,26 +13,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No identity token provided." }, { status: 400 });
     }
 
-    if (getApps().length === 0) {
-      const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
-      if (fs.existsSync(keyPath)) {
-        const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
-        initializeApp({
-          credential: cert(serviceAccount),
-          projectId: serviceAccount.project_id,
-        });
-      } else {
-        initializeApp({ projectId: "jubilee-command-center---dev" });
-      }
-    }
-
-    const firebaseAuth = getAuth();
+    // 🚀 FIXED: Use the centralized adminAuth instance directly
     // 1. Verify the incoming short-lived client ID token
-    const decodedToken = await firebaseAuth.verifyIdToken(idToken);
+    const decodedToken = await adminAuth.verifyIdToken(idToken);
     
     // 2. Create the secure Session Cookie (Valid for 5 days)
     const expiresIn = 60 * 60 * 24 * 5 * 1000; 
-    const sessionCookie = await firebaseAuth.createSessionCookie(idToken, { expiresIn });
+    const sessionCookie = await adminAuth.createSessionCookie(idToken, { expiresIn });
 
     const response = NextResponse.json({ 
       success: true, 

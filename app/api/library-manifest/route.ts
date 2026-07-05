@@ -1,9 +1,6 @@
 // app/api/library-manifest/route.ts
 import { NextResponse } from "next/server";
-import { getApps, initializeApp, cert } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
-import path from "path";
-import fs from "fs";
+import { adminDb, adminAuth } from '@/lib/firebase-admin';
 
 export const dynamic = "force-dynamic";
 
@@ -12,17 +9,8 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get("userId");
 
-    if (getApps().length === 0) {
-      const keyPath = path.resolve(process.cwd(), "secrets/firebase-service-account.json");
-      if (fs.existsSync(keyPath)) {
-        initializeApp({
-          credential: cert(JSON.parse(fs.readFileSync(keyPath, "utf8"))),
-          projectId: "jubilee-command-center---dev"
-        });
-      }
-    }
-
-    const db = getFirestore();
+    // 🚀 FIXED: Replaced undefined getFirestore() with centralized adminDb
+    const db = adminDb;
     
     // 1. Fetch live products from your catalog database
     const snapshot = await db.collection("products").get();
@@ -71,7 +59,8 @@ export async function GET(request: Request) {
 
     return NextResponse.json({ manifest, ownedAssets }, {
       headers: {
-        "Access-Control-Allow-Origin": "http://koba-dev.local",
+        // 🚀 FIXED: Opened CORS so the Vercel frontend can fetch the library
+        "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Credentials": "true"
       }
     });
