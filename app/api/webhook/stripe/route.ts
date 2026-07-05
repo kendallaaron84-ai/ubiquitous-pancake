@@ -36,6 +36,8 @@ export async function POST(req: Request) {
     return new NextResponse(`Webhook Error: ${err.message}`, { status: 400 });
   }
 
+  console.log(`📦 Webhook received event: ${event.type}`);
+
   // 3. Process the Successful Checkout
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session;
@@ -83,6 +85,8 @@ export async function POST(req: Request) {
       for (const item of lineItems.data) {
         const productName = item.description.toLowerCase();
         
+        console.log(`🔍 Checking purchased item: "${productName}"`);
+        
         // STRICT MATCHING: Checking for the exact product names to prevent false positives
         const isAudioPlugin = productName.includes('koba-i audio player');
         const isEReader = productName.includes('jubilee works digital e-reader');
@@ -93,7 +97,10 @@ export async function POST(req: Request) {
           const customerName = session.customer_details?.name || 'Unknown Author';
           const authorId = session.client_reference_id || customerEmail; 
           
-          if (!authorId) continue;
+          if (!authorId) {
+            console.warn(`⚠️ Skipped provisioning for "${productName}" - No customer email or authorId found in checkout session.`);
+            continue;
+          }
 
           // Determine the prefix based on what they bought
           const prefix = isEReader && !isAudioPlugin ? 'KOBA-READER' : 'KOBA-AUDIO';
@@ -128,7 +135,7 @@ export async function POST(req: Request) {
             console.error('❌ Failed to provision author license:', dbError);
           }
         } else {
-          console.log(`ℹ️ Ignored product purchase: ${item.description} (Not a KOBA-I software product)`);
+          console.log(`ℹ️ Ignored product purchase: "${item.description}" (Does not match KOBA-I software target keywords)`);
         }
       }
 
@@ -136,5 +143,7 @@ export async function POST(req: Request) {
     }
   }
 
+  // Log unhandled events so you know if Stripe is sending the wrong event type
+  console.log(`🤷‍♂️ Ignored unhandled event type: ${event.type}`);
   return new NextResponse('Webhook processed successfully', { status: 200 });
 }
