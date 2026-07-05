@@ -78,68 +78,76 @@ export async function POST(req: Request) {
     // SCENARIO B: AUTHOR BUYING KOBA-I SOFTWARE (Intelligent Routing)
     // ====================================================================
     else {
-      // Reach back into Stripe and fetch the exact items they purchased
-      const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
-      
-      // Loop through the items to grant the correct licenses
-      for (const item of lineItems.data) {
-        const productName = item.description.toLowerCase();
+      try {
+        // Reach back into Stripe and fetch the exact items they purchased
+        const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
         
-        console.log(`🔍 Checking purchased item: "${productName}"`);
-        
-        // STRICT MATCHING: Checking for the exact product names to prevent false positives
-        const isAudioPlugin = productName.includes('koba-i audio player');
-        const isEReader = productName.includes('jubilee works digital e-reader');
-
-        // Only generate a key if they actually bought the software
-        if (isAudioPlugin || isEReader) {
-          const customerEmail = session.customer_details?.email;
-          const customerName = session.customer_details?.name || 'Unknown Author';
-          const authorId = session.client_reference_id || customerEmail; 
+        // Loop through the items to grant the correct licenses
+        for (const item of lineItems.data) {
+          const productName = item.description.toLowerCase();
+          const productId = typeof item.price?.product === 'string' ? item.price.product : '';
           
-          if (!authorId) {
-            console.warn(`⚠️ Skipped provisioning for "${productName}" - No customer email or authorId found in checkout session.`);
-            continue;
+          console.log(`🔍 Checking purchased item: "${productName}" (ProductID: ${productId})`);
+          
+          // 🎯 STRICT MATCHING: Checking for the exact Product ID or precise names
+          const isAudioPlugin = productId === 'prod_UpYvZLShITzyej' || productName.includes('koba-i audio player');
+          const isEReader = productName.includes('jubilee works digital e-reader');
+
+          // Only generate a key if they actually bought the software
+          if (isAudioPlugin || isEReader) {
+            const customerEmail = session.customer_details?.email;
+            const customerName = session.customer_details?.name || 'Unknown Author';
+            const authorId = session.client_reference_id || customerEmail; 
+            
+            if (!authorId) {
+              console.warn(`⚠️ Skipped provisioning for "${productName}" - No customer email or authorId found.`);
+              continue;
+            }
+
+            // Determine the prefix based on what they bought
+            const prefix = isEReader && !isAudioPlugin ? 'KOBA-READER' : 'KOBA-AUDIO';
+            const licenseType = isEReader && !isAudioPlugin ? 'ereader_plugin' : 'audiobook_plugin';
+            
+            const newStudioKey = generateSystemId(prefix);
+            
+            console.log(`✅ Provisioning [${newStudioKey}] (${licenseType}) for: ${customerEmail}`);
+
+            try {
+              await adminDb.collection('licenses').doc(newStudioKey).set({
+                studioKey: newStudioKey,
+                authorId: authorId,
+                authorEmail: customerEmail,
+                authorName: customerName,
+                status: 'active',
+                type: licenseType,
+                stripeSessionId: session.id,
+                productId: productId,
+                productName: item.description,
+                createdAt: new Date().toISOString(),
+                associatedWebsite: null
+              });
+
+              await adminDb.collection('users').doc(authorId).set({
+                email: customerEmail,
+                name: customerName,
+                hasActiveLicense: true,
+                lastPurchaseDate: new Date().toISOString(),
+              }, { merge: true });
+
+            } catch (dbError) {
+              console.error('❌ Failed to provision author license:', dbError);
+            }
+          } else {
+            console.log(`ℹ️ Ignored product purchase: "${item.description}" (Does not match KOBA-I Product IDs)`);
           }
-
-          // Determine the prefix based on what they bought
-          const prefix = isEReader && !isAudioPlugin ? 'KOBA-READER' : 'KOBA-AUDIO';
-          const licenseType = isEReader && !isAudioPlugin ? 'ereader_plugin' : 'audiobook_plugin';
-          
-          const newStudioKey = generateSystemId(prefix);
-          
-          console.log(`✅ Provisioning [${newStudioKey}] (${licenseType}) for: ${customerEmail}`);
-
-          try {
-            await adminDb.collection('licenses').doc(newStudioKey).set({
-              studioKey: newStudioKey,
-              authorId: authorId,
-              authorEmail: customerEmail,
-              authorName: customerName,
-              status: 'active',
-              type: licenseType,
-              stripeSessionId: session.id,
-              productName: item.description,
-              createdAt: new Date().toISOString(),
-              associatedWebsite: null
-            });
-
-            await adminDb.collection('users').doc(authorId).set({
-              email: customerEmail,
-              name: customerName,
-              hasActiveLicense: true,
-              lastPurchaseDate: new Date().toISOString(),
-            }, { merge: true });
-
-          } catch (dbError) {
-            console.error('❌ Failed to provision author license:', dbError);
-          }
-        } else {
-          console.log(`ℹ️ Ignored product purchase: "${item.description}" (Does not match KOBA-I software target keywords)`);
         }
-      }
 
-      return NextResponse.json({ processed: true }, { status: 200 });
+        return NextResponse.json({ processed: true }, { status: 200 });
+
+      } catch (err: any) {
+        console.error('🔥 Server Error processing line items:', err);
+        return new NextResponse(`Internal Server Error: ${err.message}`, { status: 500 });
+      }
     }
   }
 
