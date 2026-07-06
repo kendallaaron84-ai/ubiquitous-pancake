@@ -1,46 +1,63 @@
 // Filepath: app/api/login/route.ts
 import { NextResponse } from "next/server";
-import { adminDb, adminAuth } from '@/core/firebase-admin'; // 🚀 Direct, modular imports!
+import { adminDb, adminAuth } from "@/core/firebase-admin";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    // Safely check if the body has content to prevent parsing crashes
+    // 1. Hardened Request Body Validation Gate
     const text = await request.text();
-    if (!text) {
-      return NextResponse.json({ error: "Empty request payload sent to handshake" }, { status: 400 });
+    if (!text || text.trim() === "") {
+      return NextResponse.json(
+        { success: false, error: "Empty authorization handshake payload." },
+        { status: 400 }
+      );
     }
 
-    const { idToken } = JSON.parse(text);
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch (parseBodyErr) {
+      return NextResponse.json(
+        { success: false, error: "Malformed request format. Valid JSON required." },
+        { status: 400 }
+      );
+    }
 
+    const { idToken } = payload;
     if (!idToken) {
-      return NextResponse.json({ error: "Missing identity token" }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "Identity exchange token is required." },
+        { status: 400 }
+      );
     }
 
-    // 1. Verify the client-side ID Token using the centralized modular Auth engine
+    // 2. Decode Client-Side Token through Modular Admin Auth Layer
     let decodedToken;
     try {
       decodedToken = await adminAuth.verifyIdToken(idToken);
     } catch (verifyErr: any) {
       console.error("🚨 ID Token Verification Failed in Admin SDK:", verifyErr.message);
-      return NextResponse.json({ 
-        success: false,
-        error: "Invalid client identity token", 
-        details: verifyErr.message 
-      }, { status: 401 });
+      return NextResponse.json(
+        { success: false, error: "Invalid identity token.", details: verifyErr.message },
+        { status: 401 }
+      );
     }
 
     const email = decodedToken.email;
     if (!email) {
-      return NextResponse.json({ error: "Email missing from token properties" }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "Profile missing valid email claims." },
+        { status: 400 }
+      );
     }
 
-    // 2. Confirm user exists in Firestore
+    // 3. Multi-Tenant Lookup and Auto-Provisioning Logic
     let userDoc = await adminDb.collection("users").doc(email).get();
     let userData = userDoc.exists ? userDoc.data() : null;
 
-    // Loose lookup 1: Search by the email property if direct document ID fetch misses
+    // Search secondary index if direct Document ID misses
     if (!userData) {
       const userQuery = await adminDb.collection("users").where("email", "==", email).get();
       if (!userQuery.empty) {
@@ -49,16 +66,16 @@ export async function POST(request: Request) {
       }
     }
 
-    // Loose lookup 2: Auto-Provisioning if active product license exists
+    // Dynamic Provisioning Loop: Check for an active Stripe subscription license
     if (!userData) {
-      console.log(`🔍 Checking licenses for Google Sign-In verification of email: ${email}`);
+      console.log(`🔍 Checking license files for auto-provisioning: ${email}`);
       const licenseQuery = await adminDb.collection("licenses")
         .where("authorEmail", "==", email)
         .where("status", "==", "active")
         .get();
 
       if (!licenseQuery.empty) {
-        console.log(`🎯 Auto-Provisioning: Active license found for ${email}. Constructing Firestore profile...`);
+        console.log(`🎯 Auto-Provisioning: Found active asset contract for ${email}. Building profile record...`);
         const licenseData = licenseQuery.docs[0].data();
         
         userData = {
@@ -70,27 +87,27 @@ export async function POST(request: Request) {
           createdAt: new Date().toISOString()
         };
 
-        // Write row atomically
+        // Write row atomically to users collection
         await adminDb.collection("users").doc(email).set(userData);
       } else {
-        console.warn(`⚠️ Multi-tenant lock: No matching active license found for ${email}. Sign-in blocked.`);
-        return NextResponse.json({ 
-          success: false,
-          error: "Unauthorized profile. Active product license required." 
-        }, { status: 403 });
+        console.warn(`⚠️ Multi-tenant lock: Access denied for ${email}. Active product contract required.`);
+        return NextResponse.json(
+          { success: false, error: "Unauthorized profile workspace. Active product license required." },
+          { status: 403 }
+        );
       }
     }
 
-    // Double check active license state
+    // Confirm execution permission entitlement state
     if (!userData.hasActiveLicense) {
-      console.warn(`⚠️ Multi-tenant lock: Profile ${email} exists but lacks active license flag.`);
-      return NextResponse.json({ 
-        success: false,
-        error: "Active license required to access the dashboard." 
-      }, { status: 403 });
+      console.warn(`⚠️ Multi-tenant lock: Profile ${email} is present but lacks an active license flag.`);
+      return NextResponse.json(
+        { success: false, error: "Access Denied. Your license parameters are suspended or inactive." },
+        { status: 403 }
+      );
     }
 
-    // 3. Generate a secure server-side session token
+    // 4. Issue a Secured Server-Side Custom Token Session
     const secureToken = await adminAuth.createCustomToken(decodedToken.uid);
 
     const response = NextResponse.json({
@@ -103,22 +120,21 @@ export async function POST(request: Request) {
       }
     }, { status: 200 });
 
-    // Set server-side session-token cookie
+    // Enforce Production HttpOnly Security Policies
     response.cookies.set("session-token", secureToken, {
       path: "/",
-      maxAge: 86400, // 24 hours
+      maxAge: 86400, // 24 Hours
       sameSite: "strict",
-      secure: true // Enforced secure for production environments
+      secure: true
     });
 
     return response;
 
   } catch (err: any) {
     console.error("🔥 Identity exchange processing failed:", err);
-    return NextResponse.json({ 
-      success: false,
-      error: "Server rejected identity exchange token verification", 
-      details: err.message 
-    }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: "Server rejected identity exchange token verification.", details: err.message },
+      { status: 500 }
+    );
   }
 }
