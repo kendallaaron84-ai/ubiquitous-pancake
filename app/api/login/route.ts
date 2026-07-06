@@ -1,6 +1,6 @@
 // Filepath: app/api/login/route.ts
 import { NextResponse } from "next/server";
-import { adminDb } from '@/core/firebase-admin'; // 🚀 Guarantees Firebase Admin is initialized centrally!
+import { adminDb, adminAuth } from '@/core/firebase-admin'; // 🚀 Direct, unified modular imports!
 
 export const dynamic = "force-dynamic";
 
@@ -12,11 +12,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing identity token" }, { status: 400 });
     }
 
-    // 1. DYNAMIC RUNTIME HANDSHAKE: Inherits initialized state from @/core/firebase-admin
-    const admin = require("firebase-admin");
-    const adminAuth = admin.auth();
-
-    // 2. Verify the client-side ID Token (e.g. from Email/Password or Google login)
+    // 1. Verify the client-side ID Token using the centralized modular Auth engine
     let decodedToken;
     try {
       decodedToken = await adminAuth.verifyIdToken(idToken);
@@ -30,7 +26,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Email missing from token properties" }, { status: 400 });
     }
 
-    // 3. Multi-tenant Check: Confirm user exists in Firestore
+    // 2. Multi-tenant Check: Confirm user exists in Firestore
     let userDoc = await adminDb.collection("users").doc(email).get();
     let userData = userDoc.exists ? userDoc.data() : null;
 
@@ -60,7 +56,7 @@ export async function POST(request: Request) {
           email: email,
           name: licenseData.authorName || "Sovereign Author",
           hasActiveLicense: true,
-          authConfigured: true, // Social auth is already fully configured
+          authConfigured: true, 
           lastPurchaseDate: licenseData.createdAt || new Date().toISOString(),
           createdAt: new Date().toISOString()
         };
@@ -79,7 +75,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Active license required to access the dashboard." }, { status: 403 });
     }
 
-    // 4. Generate a secure server-side session token
+    // 3. Generate a secure server-side session token
     const secureToken = await adminAuth.createCustomToken(decodedToken.uid);
 
     const response = NextResponse.json({
@@ -97,7 +93,7 @@ export async function POST(request: Request) {
       path: "/",
       maxAge: 86400, // 24 hours
       sameSite: "strict",
-      secure: process.env.NODE_ENV === "production"
+      secure: true // Enforced secure for production environments
     });
 
     return response;
