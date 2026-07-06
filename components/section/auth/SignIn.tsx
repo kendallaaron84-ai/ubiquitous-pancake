@@ -31,6 +31,7 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
   // 🚀 Standard Auth Handshake Token Exchange with Next.js Backend
   const handleTokenExchange = async (idToken: string) => {
     try {
+      // FORCE strict pathing to the API route, preventing 405 errors on the UI route
       const response = await fetch("/api/login", {
         method: "POST",
         headers: {
@@ -41,10 +42,13 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
 
       const text = await response.text()
       let data;
+      
+      // Defensive parsing to catch HTML responses (like 405 Method Not Allowed)
       try {
         data = JSON.parse(text)
       } catch (jsonErr) {
-        throw new Error("Server returned a non-JSON response during identity handshake.")
+        console.error("🚨 Server did not return valid JSON payload:", text)
+        throw new Error(`Server returned status code: ${response.status}`)
       }
 
       if (!response.ok || !data.success) {
@@ -130,39 +134,67 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
   }
 
   return (
-    <div className="flex flex-col justify-center h-full">
-      <CardHeader className="space-y-1 pb-6">
-        <CardTitle className="text-2xl font-bold">Sign In</CardTitle>
+    <div className="flex flex-col justify-center h-full bg-[#2d3b5e] rounded-xl overflow-hidden shadow-2xl border border-[#40527c]">
+      <CardHeader className="space-y-1 pb-6 px-6 sm:px-10 pt-8 border-b border-[#40527c]/50">
+        
+        {/* Brand Logos */}
+        <div className="flex items-center justify-center gap-3 mb-6">
+          <img 
+            src="/KOBA-I Audio Logo Latest.png" 
+            alt="KOBA-I Icon" 
+            className="w-12 h-12 object-contain drop-shadow-md" 
+          />
+          {/* Subtle light background behind the text logo ensures the dark text pops against the navy card */}
+          <div className="bg-white/90 px-3 py-1.5 rounded-md shadow-sm flex items-center justify-center">
+            <img 
+              src="/logo-text.png.png" 
+              alt="KOBA-I Audio" 
+              className="h-5 object-contain" 
+            />
+          </div>
+        </div>
+
+        {/* Mockup Typography */}
+        <div className="space-y-1 mt-4 text-center">
+          <CardTitle className="text-xl sm:text-2xl font-semibold tracking-wide text-white">
+            Secure Studio Portal
+          </CardTitle>
+          <p className="text-sm text-slate-300 font-medium">
+            Authenticate Session
+          </p>
+        </div>
       </CardHeader>
-      <CardContent className="px-6 pb-4 flex-grow">
-        {/* Custom React Error Alert Card - Eliminating crashing raw alerts */}
+
+      <CardContent className="px-6 sm:px-10 py-6 flex-grow">
+        {/* Custom React Error Alert Card */}
         {errorMsg && (
-          <div className="mb-4 p-3 rounded bg-destructive/15 border border-destructive/30 text-destructive text-sm leading-relaxed">
+          <div className="mb-6 p-4 rounded-md bg-red-900/40 border border-red-500/50 text-red-200 text-sm leading-relaxed shadow-inner">
             {errorMsg}
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="flex flex-col h-full justify-center">
           <div className="grid w-full items-center gap-4">
-            <div className="flex flex-col space-y-1.5">
-              <Label htmlFor="email">Email</Label>
+            <div className="flex flex-col space-y-2">
+              <Label htmlFor="email" className="text-slate-200 font-medium">Email Address</Label>
               <Input
                 id="email"
                 type="email"
-                placeholder="Enter your email"
+                placeholder="operator@koba-i.com"
                 value={emailInput}
                 onChange={(e) => setEmailInput(e.target.value)}
                 disabled={loading}
                 required
+                className="bg-[#222b45] border-[#40527c] text-white placeholder:text-slate-500 focus-visible:ring-[#8b4528] focus-visible:border-[#8b4528] transition-all"
               />
             </div>
-            <div className="flex flex-col space-y-1.5">
+            <div className="flex flex-col space-y-2">
               <div className="flex items-center justify-between">
-                <Label htmlFor="password">Password</Label>
+                <Label htmlFor="password" className="text-slate-200 font-medium">Security Password</Label>
                 <Button 
                   type="button" 
                   variant="link" 
-                  className="h-auto p-0 text-xs text-muted-foreground"
+                  className="h-auto p-0 text-xs text-[#8b4528] hover:text-[#a65331]"
                   onClick={() => onStateChange("reset")}
                 >
                   Forgot Password?
@@ -176,41 +208,46 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
                 onChange={(e) => setPassword(e.target.value)}
                 disabled={loading}
                 required
+                className="bg-[#222b45] border-[#40527c] text-white placeholder:text-slate-500 focus-visible:ring-[#8b4528] focus-visible:border-[#8b4528] transition-all"
               />
             </div>
           </div>
           
-          <Button className="w-full mt-6" type="submit" disabled={loading}>
+          <Button 
+            className="w-full mt-8 bg-[#8b4528] hover:bg-[#723820] text-white font-semibold py-6 shadow-lg hover:shadow-xl transition-all" 
+            type="submit" 
+            disabled={loading}
+          >
             {loading ? "Authenticating..." : "Sign In"}
           </Button>
 
-          <div className="relative my-4">
+          <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
-              <span className="w-full border-t" />
+              <span className="w-full border-t border-[#40527c]" />
             </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-background px-2 text-muted-foreground">Or continue with</span>
+            <div className="relative flex justify-center text-xs uppercase font-semibold">
+              <span className="bg-[#2d3b5e] px-3 text-slate-400">Or continue with</span>
             </div>
           </div>
 
           <Button 
             type="button" 
             variant="outline" 
-            className="w-full" 
+            className="w-full bg-[#222b45] border-[#40527c] text-white hover:bg-[#1a2138] hover:text-white py-6 transition-all" 
             onClick={handleGoogleSignIn}
             disabled={loading}
           >
-            <svg className="mr-2 h-4 w-4" aria-hidden="true" focusable="false" data-prefix="fab" data-icon="google" role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 488 512">
+            <svg className="mr-3 h-5 w-5" aria-hidden="true" focusable="false" data-prefix="fab" data-icon="google" role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 488 512">
               <path fill="currentColor" d="M488 261.8C488 403.3 391.1 504 248 504 110.8 504 0 393.2 0 256S110.8 8 248 8c66.8 0 123 24.5 166.3 64.9l-67.5 64.9C258.5 152.6 240 148 224 148c-66.8 0-121.4 54.3-121.4 121.4s54.6 121.4 121.4 121.4c76.2 0 111.7-54.7 116.2-83h-116.2v-85.3h203.2c2.1 11 3 22.6 3 34.7z"></path>
             </svg>
             Sign In with Google
           </Button>
         </form>
       </CardContent>
-      <CardFooter className="flex flex-col sm:flex-row justify-between gap-2 px-6 py-4 border-t mt-auto">
-        <div className="text-sm text-muted-foreground">
+      <CardFooter className="flex flex-col sm:flex-row justify-center gap-2 px-6 py-6 bg-[#222b45]/50 border-t border-[#40527c]/50 mt-auto">
+        <div className="text-sm text-slate-300">
           Don&apos;t have an account?{" "}
-          <Button variant="link" className="h-auto p-0 font-semibold" onClick={() => onStateChange("signup")}>
+          <Button variant="link" className="h-auto p-0 font-bold text-[#8b4528] hover:text-[#a65331]" onClick={() => onStateChange("signup")}>
             Sign Up
           </Button>
         </div>
@@ -218,3 +255,4 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
     </div>
   )
 }
+```
