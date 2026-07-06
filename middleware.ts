@@ -1,41 +1,37 @@
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
 
 export function middleware(request: NextRequest) {
-  // 1. Grab the active session cookie from the browser incoming request
-  const sessionToken = request.cookies.get("__session")?.value;
   const { pathname } = request.nextUrl;
 
-  // 2. Add /welcome to the explicit Public Bypass List
-  const isAuthPage = pathname.startsWith("/signin") || pathname.startsWith("/welcome");
-  
-  const isPublicAsset = 
-    pathname.startsWith("/_next") || 
-    pathname.startsWith("/api") || 
-    pathname.endsWith(".png") || 
-    pathname.endsWith(".jpg") || 
-    pathname.endsWith(".ico");
+  // 🚀 PATHWAY EXCEPTIONS: Prevent middleware from blocking or redirecting setup-password or activate routes
+  const isPublicRoute = 
+    pathname.startsWith('/signin') || 
+    pathname.startsWith('/setup-password') || 
+    pathname.startsWith('/api/auth/activate') ||
+    pathname.startsWith('/api/webhook') ||
+    pathname.startsWith('/_next') ||
+    pathname.endsWith('.png') ||
+    pathname.endsWith('.jpg') ||
+    pathname.endsWith('.svg') ||
+    pathname.endsWith('.ico');
 
-  if (isPublicAsset) {
+  if (isPublicRoute) {
     return NextResponse.next();
   }
 
-  // 3. If the user is unauthenticated and tries to access locked dashboard areas, bounce to gate
-  if (!sessionToken && !isAuthPage) {
-    const loginUrl = new URL("/signin", request.url);
+  // Retrieve user session verification flags (custom-engineered for dashboard.koba-i.com)
+  const sessionToken = request.cookies.get('session-token');
+
+  if (!sessionToken) {
+    // Redirect unauthenticated dashboard users cleanly to sign-in page
+    const loginUrl = new URL('/signin', request.url);
     return NextResponse.redirect(loginUrl);
   }
 
-  // 4. If they are signed in and try to hit /signin, route them to dashboard root
-  if (sessionToken && pathname.startsWith("/signin")) {
-    const dashboardUrl = new URL("/", request.url);
-    return NextResponse.redirect(dashboardUrl);
-  }
-
-  // Allow the request to pass through unimpeded
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };

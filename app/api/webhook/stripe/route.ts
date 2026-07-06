@@ -1,3 +1,4 @@
+// Filepath: app/api/webhook/stripe/route.ts
 import { headers } from 'next/headers';
 import { NextResponse } from 'next/server';
 import Stripe from 'stripe';
@@ -167,14 +168,22 @@ export async function POST(req: Request) {
                 associatedWebsite: null
               });
 
+              // Write user data setting authConfigured to false
               await adminDb.collection('users').doc(authorId).set({
                 email: customerEmail,
                 name: customerName,
                 hasActiveLicense: true,
+                authConfigured: false, // Seeding password setup pending flag
                 lastPurchaseDate: new Date().toISOString(),
               }, { merge: true });
 
+              // Construct the dynamic onboarding redirect link
+              const host = req.headers.get('host') || 'bug-free-robot-khaki.vercel.app';
+              const protocol = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
+              const activationLink = `${protocol}://${host}/setup-password?email=${encodeURIComponent(customerEmail)}&license=${newStudioKey}`;
+
               console.log(`✅ SUCCESS: License ${newStudioKey} successfully written to Firestore.`);
+              console.log(`🔗 KOBA-I AUDIO ONBOARDING LINK GENERATED: ${activationLink}`);
 
             } catch (dbError: any) {
               console.error('🚨 FIREBASE WRITE ERROR:', dbError.message);
