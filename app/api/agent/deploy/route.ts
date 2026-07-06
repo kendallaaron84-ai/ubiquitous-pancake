@@ -1,10 +1,4 @@
-import { NextResponse } from "next/server";
-import { adminDb } from '@/core/firebase-admin';
-import fs from 'fs';
-import path from 'path';
-
-export const dynamic = "force-dynamic";
-
+// ... existing code ...
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -17,81 +11,42 @@ export async function POST(request: Request) {
       type, 
       price, 
       studioTracks, 
-      ebookPayload 
+      ebookPayload,
+      authorEmail // 🚀 ADDED: We now require the frontend to pass the user's email
     } = body;
     
     // Safety check on incoming payload
     if (!assetKey) {
-      console.warn("⚠️ Deployment blocked: Missing assetKey in request body.");
-      return NextResponse.json({ error: "Missing required parameter: assetKey" }, { status: 400 });
-    }
-
-    // 1. PREFIX ENFORCEMENT (Resolving Technical Debt & Layout Collisions)
-    const mediaType = type || "audiobook";
+// ... existing code ...
     const expectedPrefix = mediaType === "ebook" ? "ebk_" : "abk_";
     
     if (!assetKey.startsWith(expectedPrefix)) {
-      const errorMsg = `Prefix enforcement violation: Asset key "${assetKey}" must start with "${expectedPrefix}" for media type "${mediaType}".`;
-      console.warn(`⚠️ Validation Failed: ${errorMsg}`);
+// ... existing code ...
+    let existingProductData = null;
+    if (existingProduct.exists) {
+      existingProductData = existingProduct.data();
+    }
+
+    // 🚀 DYNAMIC PRODUCTION LOGIC: Fetch actual user profile from Firestore
+    let userRecord = null;
+    if (authorEmail) {
+      const userDoc = await adminDb.collection("users").doc(authorEmail).get();
+      if (userDoc.exists) {
+        userRecord = userDoc.data();
+      }
+    }
+
+    // 🚀 BUSINESS LOGIC: Enforce the $0.50 Stripe ID Rule
+    const finalPrice = price !== undefined ? price : existingProductData?.price || 0.00;
+    const stripeId = userRecord?.stripeCustomerId || existingProductData?.stripeConnectId || null;
+
+    if (finalPrice >= 0.50 && !stripeId) {
+      console.warn(`⚠️ Deployment blocked: Product priced at $${finalPrice} but no Stripe ID found for ${authorEmail}`);
       return NextResponse.json({ 
-        error: errorMsg,
-        requirements: {
-          audiobook: "abk_YOUR_KEY",
-          ebook: "ebk_YOUR_KEY"
-        }
+        error: "A validated Stripe Account ID is required to list products above $0.00. Please complete your billing setup." 
       }, { status: 400 });
     }
 
-    console.log(`🚀 Launching Agent Deployment sequence for Asset: ${assetKey} ("${bookTitle || 'Sovereign Audio'}")`);
-
-    // 2. PHYSICAL FILE WRITING SAFEGUARD (Active FS Writer Block)
-    // Attempts to programmatically write localized dynamic pages to disk if the environment supports hot-reloads,
-    // falling back gracefully to Next.js dynamic routing if operating on read-only serverless nodes (like Vercel production).
-    try {
-      const targetDir = path.join(process.cwd(), 'app', 'library', assetKey);
-      
-      // Check if target directory exists, if not, create it
-      if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true });
-      }
-
-      const targetPagePath = path.join(targetDir, 'page.tsx');
-      const dynamicPageTemplate = `// Dynamically generated page wrapper for ${bookTitle || 'Sovereign Publication'}
-import CanvasPage from '../[productId]/page';
-
-export default function Page() {
-  return <CanvasPage params={{ productId: "${assetKey}" }} />;
-}
-`;
-      // Write the physical file
-      fs.writeFileSync(targetPagePath, dynamicPageTemplate, 'utf8');
-      console.log(`📝 Physical file safeguard active: Localized dynamic page compiled on disk at: ${targetPagePath}`);
-    } catch (fsErr: any) {
-      // Graceful fallback for serverless nodes
-      console.log(`ℹ️ Graceful Safeguard Active: Operating on a read-only serverless node or hosting cluster. Bypassing hot-reload compiler. Runtime dynamic fallback route handles page mounting. Details: ${fsErr.message}`);
-    }
-
-    // Unified database instance inherited directly from your central Admin SDK core
-    const db = adminDb;
-    if (!db) {
-      throw new Error("adminDb is undefined. The central Firebase Admin SDK failed to export correctly.");
-    }
-
-    let existingProductData: any = null;
-    const productDocRef = db.collection("products").doc(assetKey);
-
-    // 3. Dynamic Database Provisioning: Safely read and merge existing parameters
-    try {
-      const existingDoc = await productDocRef.get();
-      if (existingDoc.exists) {
-        existingProductData = existingDoc.data();
-        console.log(`ℹ️ Existing record found for product: ${assetKey}. Merging metadata...`);
-      }
-    } catch (readErr: any) {
-      console.warn("⚠️ Failed to read existing product document (continuing write):", readErr.message);
-    }
-
-    // Sanitize and save pristine, production-ready schema to products collection
     let dbProductData: any = {};
     try {
       dbProductData = {
@@ -100,18 +55,18 @@ export default function Page() {
         coverArtUrl: coverUrl || existingProductData?.coverArtUrl || "",
         bgImageUrl: bgImageUrl || existingProductData?.bgImageUrl || "",
         type: mediaType,
-        price: price !== undefined ? price : existingProductData?.price || 0.00,
+        price: finalPrice,
         studioTracks: studioTracks || existingProductData?.studioTracks || [],
         ebookPayload: ebookPayload || existingProductData?.ebookPayload || null,
         
-        // Multi-tenant protection: Bind it strictly to the current session owner
-        authorId: existingProductData?.authorId || "kendall.aaron@koba-i.com",
-        authorName: existingProductData?.authorName || "Kendall Aaron",
-        stripeConnectId: existingProductData?.stripeConnectId || "acct_1TdEzNAfHyixYIkp",
+        // 🚀 DYNAMIC MULTI-TENANT BINDING: No more hardcoded strings!
+        authorId: userRecord?.email || existingProductData?.authorId || "Unknown Author",
+        authorName: userRecord?.name || existingProductData?.authorName || "Sovereign Author",
+        stripeConnectId: stripeId, 
         synopsis: existingProductData?.synopsis || "Sovereign Publication Asset",
         
-        // Ensure the Studio Key remains attached so the WordPress Catalog can query it
-        studioKey: existingProductData?.studioKey || "JUBI-TEST-1234-5678", 
+        // 🚀 RELATIONAL MAPPING: Binds product directly to your unique Studio Key
+        studioKey: userRecord?.studioKey || existingProductData?.studioKey || null, 
         updatedAt: new Date().toISOString()
       };
 
