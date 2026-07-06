@@ -4,10 +4,12 @@ import type { NextRequest } from 'next/server';
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // 🚀 PATHWAY EXCEPTIONS: Prevent middleware from blocking or redirecting setup-password or activate routes
+  // 🚀 PATHWAY EXCEPTIONS: Prevent middleware from blocking or redirecting auth routes
   const isPublicRoute = 
     pathname.startsWith('/signin') || 
+    pathname.startsWith('/signup') || 
     pathname.startsWith('/setup-password') || 
+    pathname.startsWith('/api/login') || // <-- THIS IS THE FIX. Bypasses the 405 redirect loop.
     pathname.startsWith('/api/auth/activate') ||
     pathname.startsWith('/api/webhook') ||
     pathname.startsWith('/_next') ||
