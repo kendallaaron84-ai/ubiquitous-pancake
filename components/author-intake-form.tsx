@@ -28,10 +28,20 @@ export function AuthorIntakeForm() {
 
     setIsSubmitting(true);
     try {
-      // 1. Identify the active operator
-      const userEmail = auth.currentUser?.email || "kendallaaron84@gmail.com";
+      // 🚀 STRICT MULTI-TENANT AUTH GATE (No fallbacks)
+      const userEmail = auth.currentUser?.email;
       
-      // 2. Inject payload directly into the Cloud Run execution matrix
+      if (!userEmail) {
+        toast({ 
+          title: "Authentication Error", 
+          description: "Active session dropped. You must be securely logged in to deploy a blueprint.", 
+          variant: "destructive" 
+        });
+        setIsSubmitting(false);
+        return;
+      }
+      
+      // 2. Inject payload directly into the Cloud Run execution matrix, strictly scoped to the active tenant
       await addDoc(collection(db, "content_blueprints"), {
         authorEmail: userEmail,
         topicTitle: formData.title,
@@ -40,81 +50,82 @@ export function AuthorIntakeForm() {
         targetAudience: formData.audience,
         synopsis: formData.description,
         executionState: "initializing",
-        currentStage: 1, // Triggers the visual narration tracker
-        queuePosition: Math.floor(Math.random() * 5) + 1, // Simulated queue line
         createdAt: serverTimestamp(),
       });
 
-      toast({
-        title: "Pipeline Triggered",
-        description: `"${formData.title}" added to the execution matrix.`,
+      toast({ 
+        title: "Blueprint Deployed", 
+        description: "Your content matrix has been pushed to the processing queue." 
       });
 
-      // 3. Clear the form for the next book
+      // Clear the form for the next request
       setFormData({ title: "", brand: "personal", audience: "", description: "" });
+      
     } catch (error: any) {
-      console.error("Pipeline Injection Failed:", error);
-      toast({ title: "Pipeline Fault", description: error.message, variant: "destructive" });
+      console.error("Pipeline submission error:", error);
+      toast({ 
+        title: "Deployment Failed", 
+        description: error.message || "Failed to push blueprint to the cloud.", 
+        variant: "destructive" 
+      });
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} className="bg-card border border-border rounded-2xl p-6 shadow-xl space-y-6 relative overflow-hidden">
-      
-      <div className="flex items-center gap-3 border-b border-border pb-4">
-        <div className="p-2.5 bg-emerald-500/10 rounded-xl border border-emerald-500/20">
+    <div className="bg-card border border-border rounded-xl overflow-hidden shadow-lg">
+      <div className="p-5 border-b border-border bg-slate-950/40">
+        <h2 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-emerald-500" />
-        </div>
-        <div>
-          <h2 className="text-lg font-bold tracking-tight text-white">Generation Pipeline</h2>
-          <p className="text-xs text-muted-foreground">Queue a new manuscript or content blueprint.</p>
-        </div>
+          Content Deployment Engine
+        </h2>
+        <p className="text-xs text-muted-foreground mt-1">Configure narrative constraints and initiate the Gemini processing pipeline.</p>
       </div>
 
-      <div className="space-y-4">
-        {/* Project Title */}
+      <div className="p-5 space-y-5">
+        {/* Topic / Title */}
         <div className="space-y-1.5">
           <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <FileText className="w-3 h-3" /> Project Title
+            <FileText className="w-3 h-3" /> Working Title / Topic Directive
           </label>
           <input 
             type="text" 
+            required
             value={formData.title}
             onChange={(e) => setFormData({...formData, title: e.target.value})}
-            className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors"
-            placeholder="e.g. Duncan the Man Hunter - Chapter 2"
+            className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-3 text-sm font-semibold text-white focus:outline-none focus:border-emerald-500/50 transition-colors"
+            placeholder="e.g. 5 Reasons Audiobooks Outsell Print"
           />
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Brand Allocation */}
+        <div className="grid grid-cols-2 gap-4">
+          {/* Brand Voice Allocation */}
           <div className="space-y-1.5">
             <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Briefcase className="w-3 h-3" /> Brand Vector
+              <Briefcase className="w-3 h-3" /> Voice Allocation
             </label>
             <select 
               value={formData.brand}
               onChange={(e) => setFormData({...formData, brand: e.target.value})}
-              className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none"
+              className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors appearance-none"
             >
-              <option value="personal">Personal Brand (Default)</option>
-              <option value="koba">KOBA-I Commercial</option>
-              <option value="jubilee">Jubilee Works</option>
+              <option value="personal">Personal Author Brand</option>
+              <option value="book_lore">Book Specific Lore</option>
+              <option value="technical">Technical / Analytical</option>
             </select>
           </div>
 
           {/* Target Audience */}
           <div className="space-y-1.5">
             <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Users className="w-3 h-3" /> Target Demographic
+              <Users className="w-3 h-3" /> Target Audience
             </label>
             <input 
               type="text" 
               value={formData.audience}
               onChange={(e) => setFormData({...formData, audience: e.target.value})}
-              className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors"
+              className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors"
               placeholder="e.g. Noir Thriller Fans"
             />
           </div>
@@ -137,8 +148,9 @@ export function AuthorIntakeForm() {
       <div className="pt-2 border-t border-border">
         <button 
           type="submit" 
+          onClick={handleSubmit}
           disabled={isSubmitting}
-          className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
+          className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50"
         >
           {isSubmitting ? (
             <span className="animate-pulse">Initializing Blueprint...</span>
@@ -147,7 +159,6 @@ export function AuthorIntakeForm() {
           )}
         </button>
       </div>
-
-    </form>
+    </div>
   );
 }
