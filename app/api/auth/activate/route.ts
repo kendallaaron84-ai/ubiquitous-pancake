@@ -1,6 +1,6 @@
 // Filepath: app/api/auth/activate/route.ts
 import { NextResponse } from 'next/server';
-import { adminDb } from '@/core/firebase-admin';
+import { adminDb } from '@/core/firebase-admin'; // 🚀 Guarantees Firebase Admin is initialized centrally!
 
 export const dynamic = 'force-dynamic';
 
@@ -28,8 +28,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'This license key is currently inactive.' }, { status: 403 });
     }
 
-    // Secure owner mapping verification
-    if (licenseData.authorEmail.toLowerCase() !== email.toLowerCase()) {
+    // Secure owner mapping verification (checks field case-insensitively)
+    const authorEmail = licenseData.authorEmail || '';
+    if (authorEmail.toLowerCase() !== email.toLowerCase()) {
       return NextResponse.json({ error: 'The license key ownership mismatch.' }, { status: 403 });
     }
 
@@ -48,21 +49,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'This profile is already activated. Please log in directly.' }, { status: 409 });
     }
 
-    // 4. DYNAMIC RUNTIME IMPORT: Safely bypasses Next.js static build checks on Vercel
+    // 4. DYNAMIC RUNTIME IMPORT: Inherits initialized state from @/core/firebase-admin safely
     const admin = require('firebase-admin');
-    if (!admin || !admin.apps) {
-      throw new Error("Failed to load firebase-admin module at runtime.");
-    }
-
-    if (admin.apps.length === 0) {
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-        }),
-      });
-    }
     const adminAuth = admin.auth();
 
     // 5. ATOMIC USER PROVISIONING: Setup Credentials in Firebase Auth

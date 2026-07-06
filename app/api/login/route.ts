@@ -1,30 +1,8 @@
 // Filepath: app/api/login/route.ts
 import { NextResponse } from "next/server";
+import { adminDb } from '@/core/firebase-admin'; // 🚀 Guarantees Firebase Admin is initialized centrally!
 
 export const dynamic = "force-dynamic";
-
-// 1. Bulletproof PEM Private Key Sanitizer
-function sanitizePrivateKey(key: string | undefined): string | undefined {
-  if (!key) return undefined;
-  let cleaned = key.trim();
-  
-  // Remove wrapping double or single quotes added by Vercel environment parser
-  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
-    cleaned = cleaned.slice(1, -1);
-  }
-  if (cleaned.startsWith("'") && cleaned.endsWith("'")) {
-    cleaned = cleaned.slice(1, -1);
-  }
-  
-  // Standardize backslash newline escapes to literal linebreaks
-  cleaned = cleaned.replace(/\\n/g, '\n');
-  
-  // Enforce correct cryptographic boundaries
-  if (!cleaned.includes("-----BEGIN PRIVATE KEY-----")) {
-    cleaned = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
-  }
-  return cleaned;
-}
 
 export async function POST(request: Request) {
   try {
@@ -34,29 +12,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing identity token" }, { status: 400 });
     }
 
-    // 2. DYNAMIC RUNTIME REQUIRE: Protects Next.js compiler from static build crashes
+    // 1. DYNAMIC RUNTIME HANDSHAKE: Inherits initialized state from @/core/firebase-admin
     const admin = require("firebase-admin");
-    if (!admin || !admin.apps) {
-      throw new Error("Failed to load firebase-admin at runtime.");
-    }
-
-    const formattedKey = sanitizePrivateKey(process.env.FIREBASE_PRIVATE_KEY);
-    const apps = admin.apps || [];
-
-    if (apps.length === 0) {
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: formattedKey,
-        }),
-      });
-    }
-
     const adminAuth = admin.auth();
-    const adminDb = admin.firestore();
 
-    // 3. Verify client identity token
+    // 2. Verify the client-side ID Token (e.g. from Email/Password or Google login)
     let decodedToken;
     try {
       decodedToken = await adminAuth.verifyIdToken(idToken);
@@ -70,11 +30,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Email missing from token properties" }, { status: 400 });
     }
 
-    // 4. Multi-tenant Authorization Checklist
+    // 3. Multi-tenant Check: Confirm user exists in Firestore
     let userDoc = await adminDb.collection("users").doc(email).get();
     let userData = userDoc.exists ? userDoc.data() : null;
 
-    // Loose lookup 1: Search by email property if direct doc ID matches miss
+    // Loose lookup 1: Search by the email property if direct document ID fetch misses
     if (!userData) {
       const userQuery = await adminDb.collection("users").where("email", "==", email).get();
       if (!userQuery.empty) {
@@ -83,7 +43,8 @@ export async function POST(request: Request) {
       }
     }
 
-    // Loose lookup 2: Auto-provision profile on-the-fly for social login (Google)
+    // Loose lookup 2: If they don't have a user record yet, check if they purchased a license on Stripe
+    // 🚀 GOOGLE SIGN-IN AUTO-PROVISIONING: Automatically create their user doc if they have an active license!
     if (!userData) {
       console.log(`🔍 Checking licenses for Google Sign-In verification of email: ${email}`);
       const licenseQuery = await adminDb.collection("licenses")
@@ -99,12 +60,12 @@ export async function POST(request: Request) {
           email: email,
           name: licenseData.authorName || "Sovereign Author",
           hasActiveLicense: true,
-          authConfigured: true, // Social auth is configured by default
+          authConfigured: true, // Social auth is already fully configured
           lastPurchaseDate: licenseData.createdAt || new Date().toISOString(),
           createdAt: new Date().toISOString()
         };
 
-        // Save record atomically
+        // Write row atomically
         await adminDb.collection("users").doc(email).set(userData);
       } else {
         console.warn(`⚠️ Multi-tenant lock: No matching active license found for ${email}. Sign-in blocked.`);
@@ -112,13 +73,13 @@ export async function POST(request: Request) {
       }
     }
 
-    // Validate license compliance
+    // Double check active license state
     if (!userData.hasActiveLicense) {
       console.warn(`⚠️ Multi-tenant lock: Profile ${email} exists but lacks active license flag.`);
       return NextResponse.json({ error: "Active license required to access the dashboard." }, { status: 403 });
     }
 
-    // 5. Generate secure exchange session token
+    // 4. Generate a secure server-side session token
     const secureToken = await adminAuth.createCustomToken(decodedToken.uid);
 
     const response = NextResponse.json({
@@ -131,7 +92,7 @@ export async function POST(request: Request) {
       }
     }, { status: 200 });
 
-    // Deploy cookie payload
+    // Set server-side session-token cookie
     response.cookies.set("session-token", secureToken, {
       path: "/",
       maxAge: 86400, // 24 hours
@@ -143,14 +104,6 @@ export async function POST(request: Request) {
 
   } catch (err: any) {
     console.error("🔥 Identity exchange processing failed:", err);
-    return NextResponse.json({ 
-      error: "Server rejected identity exchange token verification", 
-      details: err.message,
-      environmentCheck: {
-        hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
-        hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
-        hasPrivateKey: !!process.env.FIREBASE_PRIVATE_KEY
-      }
-    }, { status: 500 });
+    return NextResponse.json({ error: "Server rejected identity exchange token verification", details: err.message }, { status: 500 });
   }
 }
