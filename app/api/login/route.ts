@@ -17,12 +17,17 @@ export async function POST(request: Request) {
       throw new Error("Failed to load firebase-admin at runtime.");
     }
 
+    // Secure key replacement to handle Vercel escape rules safely
+    const formattedPrivateKey = process.env.FIREBASE_PRIVATE_KEY
+      ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+      : undefined;
+
     if (admin.apps.length === 0) {
       admin.initializeApp({
         credential: admin.credential.cert({
           projectId: process.env.FIREBASE_PROJECT_ID,
           clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+          privateKey: formattedPrivateKey,
         }),
       });
     }
@@ -30,7 +35,7 @@ export async function POST(request: Request) {
     const adminAuth = admin.auth();
     const adminDb = admin.firestore();
 
-    // 2. Verify the client-side ID Token
+    // 2. Verify the client-side ID Token (e.g. from Email/Password or Google login)
     let decodedToken;
     try {
       decodedToken = await adminAuth.verifyIdToken(idToken);
@@ -44,17 +49,52 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Email missing from token properties" }, { status: 400 });
     }
 
-    // 3. Multi-tenant Check: Confirm user exists and has active licenses
-    const userDoc = await adminDb.collection("users").doc(email).get();
+    // 3. Multi-tenant Check: Confirm user exists in Firestore
+    let userDoc = await adminDb.collection("users").doc(email).get();
+    let userData = userDoc.exists ? userDoc.data() : null;
 
-    if (!userDoc.exists) {
-      console.warn(`⚠️ Multi-tenant lock: Profile not found for ${email}. Sign-in blocked.`);
-      return NextResponse.json({ error: "Unauthorized access profile. Check your license." }, { status: 403 });
+    // Loose lookup 1: Search by the email property if direct document ID fetch misses
+    if (!userData) {
+      const userQuery = await adminDb.collection("users").where("email", "==", email).get();
+      if (!userQuery.empty) {
+        userDoc = userQuery.docs[0];
+        userData = userDoc.data();
+      }
     }
 
-    const userData = userDoc.data();
-    if (!userData || !userData.hasActiveLicense) {
-      console.warn(`⚠️ Multi-tenant lock: Profile ${email} exists but lacks an active license flag.`);
+    // Loose lookup 2: If they don't have a user record yet, check if they purchased a license on Stripe
+    // 🚀 GOOGLE SIGN-IN AUTO-PROVISIONING: Automatically create their user doc if they have an active license!
+    if (!userData) {
+      console.log(`🔍 Checking licenses for Google Sign-In verification of email: ${email}`);
+      const licenseQuery = await adminDb.collection("licenses")
+        .where("authorEmail", "==", email)
+        .where("status", "==", "active")
+        .get();
+
+      if (!licenseQuery.empty) {
+        console.log(`🎯 Auto-Provisioning: Active license found for ${email}. Constructing Firestore profile...`);
+        const licenseData = licenseQuery.docs[0].data();
+        
+        userData = {
+          email: email,
+          name: licenseData.authorName || "Sovereign Author",
+          hasActiveLicense: true,
+          authConfigured: true, // Social auth is already fully configured
+          lastPurchaseDate: licenseData.createdAt || new Date().toISOString(),
+          createdAt: new Date().toISOString()
+        };
+
+        // Write row atomically
+        await adminDb.collection("users").doc(email).set(userData);
+      } else {
+        console.warn(`⚠️ Multi-tenant lock: No matching active license found for ${email}. Sign-in blocked.`);
+        return NextResponse.json({ error: "Unauthorized profile. Active product license required." }, { status: 403 });
+      }
+    }
+
+    // Double check active license state
+    if (!userData.hasActiveLicense) {
+      console.warn(`⚠️ Multi-tenant lock: Profile ${email} exists but lacks active license flag.`);
       return NextResponse.json({ error: "Active license required to access the dashboard." }, { status: 403 });
     }
 
