@@ -23,8 +23,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'The provided license key was not found.' }, { status: 403 });
     }
 
-    const licenseData = licenseDoc.data();
-    if (!licenseData || licenseData.status !== 'active') {
+    const licenseData = licenseDoc.data() || {};
+    if (licenseData.status !== 'active') {
       return NextResponse.json({ error: 'This license key is currently inactive.' }, { status: 403 });
     }
 
@@ -34,15 +34,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'The license key ownership mismatch.' }, { status: 403 });
     }
 
-    // 3. Verify user is in setup mode
+    // 3. Verify user profile exist - Self-Healing Implementation
     const userDocRef = adminDb.collection('users').doc(email);
     const userDoc = await userDocRef.get();
 
-    if (!userDoc.exists) {
-      return NextResponse.json({ error: 'User record was not initialized. Check purchase webhook.' }, { status: 404 });
-    }
+    let userData = userDoc.exists ? userDoc.data() : null;
 
-    const userData = userDoc.data() || {};
+    // 🚀 SELF-HEALING BLOCK: If the user record does not exist or lacks fields, reconstruct it safely!
+    if (!userData) {
+      console.log(`🎯 Self-Healing: Active license found for ${email} but user row is missing. Auto-provisioning...`);
+      userData = {
+        email: email,
+        name: licenseData.authorName || 'Sovereign Author',
+        hasActiveLicense: true,
+        authConfigured: false,
+        createdAt: new Date().toISOString()
+      };
+      await userDocRef.set(userData);
+    }
     
     // Safety lock: prevent re-claiming or rewriting password via this endpoint after activation
     if (userData.authConfigured === true) {
@@ -76,7 +85,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // 6. Update the Database configuration state
+    // 6. Update the Database configuration state to finalize claims setup
     await userDocRef.set({
       authConfigured: true,
       lastLoginDate: new Date().toISOString()
