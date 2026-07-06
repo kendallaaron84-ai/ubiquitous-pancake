@@ -153,7 +153,7 @@ export async function POST(req: Request) {
                 throw new Error("adminDb is undefined. The Firebase Admin SDK failed to initialize correctly.");
               }
 
-              // Perform writes
+              // 1. Write the license key to Firestore
               await adminDb.collection('licenses').doc(newStudioKey).set({
                 studioKey: newStudioKey,
                 authorId: authorId,
@@ -168,33 +168,61 @@ export async function POST(req: Request) {
                 associatedWebsite: null
               });
 
-              // Write user data setting authConfigured to false
+              // 2. Seed the user profile document in Firestore
               await adminDb.collection('users').doc(authorId).set({
                 email: customerEmail,
                 name: customerName,
                 hasActiveLicense: true,
-                authConfigured: false, // Seeding password setup pending flag
+                authConfigured: false, // Setup is pending password change
                 lastPurchaseDate: new Date().toISOString(),
               }, { merge: true });
 
-              // Construct the dynamic onboarding redirect link
+              // 3. DYNAMIC RUNTIME IMPORT: Safely initialize Admin Auth inside serverless execution block
+              const admin = require('firebase-admin');
+              if (admin.apps.length === 0) {
+                admin.initializeApp({
+                  credential: admin.credential.cert({
+                    projectId: process.env.FIREBASE_PROJECT_ID,
+                    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+                    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+                  }),
+                });
+              }
+              const adminAuth = admin.auth();
+
+              // 4. PROGRAMMATIC AUTH PROVISIONING: Immediately create auth account using the license key as their temporary password!
+              let firebaseUser;
+              try {
+                firebaseUser = await adminAuth.getUserByEmail(customerEmail);
+                console.log(`ℹ️ Auth user ${customerEmail} already exists. Syncing password with key: ${newStudioKey}`);
+                await adminAuth.updateUser(firebaseUser.uid, { password: newStudioKey });
+              } catch (authErr: any) {
+                if (authErr.code === 'auth/user-not-found') {
+                  console.log(`🚀 Creating brand-new Auth credentials for ${customerEmail} with temp password: ${newStudioKey}`);
+                  firebaseUser = await adminAuth.createUser({
+                    email: customerEmail,
+                    password: newStudioKey,
+                    displayName: customerName,
+                    emailVerified: true
+                  });
+                } else {
+                  throw authErr;
+                }
+              }
+
+              // 5. Construct the dynamic onboarding setup redirect link
               const host = req.headers.get('host') || 'bug-free-robot-khaki.vercel.app';
               const protocol = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
               const activationLink = `${protocol}://${host}/setup-password?email=${encodeURIComponent(customerEmail)}&license=${newStudioKey}`;
 
-              console.log(`✅ SUCCESS: License ${newStudioKey} successfully written to Firestore.`);
+              console.log(`✅ SUCCESS: License ${newStudioKey} successfully written to Firestore and user created in Firebase Auth.`);
               console.log(`🔗 KOBA-I AUDIO ONBOARDING LINK GENERATED: ${activationLink}`);
 
             } catch (dbError: any) {
               console.error('🚨 FIREBASE WRITE ERROR:', dbError.message);
               return NextResponse.json({ 
                 error: 'Firebase Write Error', 
-                message: dbError.message,
-                credentialsCheck: {
-                  projectIdSet: !!process.env.FIREBASE_PROJECT_ID,
-                  clientEmailSet: !!process.env.FIREBASE_CLIENT_EMAIL,
-                  privateKeySet: !!process.env.FIREBASE_PRIVATE_KEY
-                }
+                message: dbError.message
               }, { status: 500 });
             }
           }
@@ -210,7 +238,7 @@ export async function POST(req: Request) {
 
       } catch (err: any) {
         console.error('🔥 Server Error processing line items:', err);
-        return NextResponse.json({ error: 'Line Items Fetch Error', details: err.message }, { status: 500 });
+        return new NextResponse(`Internal Server Error: ${err.message}`, { status: 500 });
       }
     }
   }
