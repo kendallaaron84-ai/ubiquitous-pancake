@@ -1,12 +1,18 @@
 // Filepath: app/api/login/route.ts
 import { NextResponse } from "next/server";
-import { adminDb, adminAuth } from '@/core/firebase-admin'; // 🚀 Direct, unified modular imports!
+import { adminDb, adminAuth } from '@/core/firebase-admin'; // 🚀 Direct, modular imports!
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const { idToken } = await request.json();
+    // Safely check if the body has content to prevent parsing crashes
+    const text = await request.text();
+    if (!text) {
+      return NextResponse.json({ error: "Empty request payload sent to handshake" }, { status: 400 });
+    }
+
+    const { idToken } = JSON.parse(text);
 
     if (!idToken) {
       return NextResponse.json({ error: "Missing identity token" }, { status: 400 });
@@ -18,7 +24,11 @@ export async function POST(request: Request) {
       decodedToken = await adminAuth.verifyIdToken(idToken);
     } catch (verifyErr: any) {
       console.error("🚨 ID Token Verification Failed in Admin SDK:", verifyErr.message);
-      return NextResponse.json({ error: "Invalid client identity token", details: verifyErr.message }, { status: 401 });
+      return NextResponse.json({ 
+        success: false,
+        error: "Invalid client identity token", 
+        details: verifyErr.message 
+      }, { status: 401 });
     }
 
     const email = decodedToken.email;
@@ -26,7 +36,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Email missing from token properties" }, { status: 400 });
     }
 
-    // 2. Multi-tenant Check: Confirm user exists in Firestore
+    // 2. Confirm user exists in Firestore
     let userDoc = await adminDb.collection("users").doc(email).get();
     let userData = userDoc.exists ? userDoc.data() : null;
 
@@ -39,8 +49,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // Loose lookup 2: If they don't have a user record yet, check if they purchased a license on Stripe
-    // 🚀 GOOGLE SIGN-IN AUTO-PROVISIONING: Automatically create their user doc if they have an active license!
+    // Loose lookup 2: Auto-Provisioning if active product license exists
     if (!userData) {
       console.log(`🔍 Checking licenses for Google Sign-In verification of email: ${email}`);
       const licenseQuery = await adminDb.collection("licenses")
@@ -65,14 +74,20 @@ export async function POST(request: Request) {
         await adminDb.collection("users").doc(email).set(userData);
       } else {
         console.warn(`⚠️ Multi-tenant lock: No matching active license found for ${email}. Sign-in blocked.`);
-        return NextResponse.json({ error: "Unauthorized profile. Active product license required." }, { status: 403 });
+        return NextResponse.json({ 
+          success: false,
+          error: "Unauthorized profile. Active product license required." 
+        }, { status: 403 });
       }
     }
 
     // Double check active license state
     if (!userData.hasActiveLicense) {
       console.warn(`⚠️ Multi-tenant lock: Profile ${email} exists but lacks active license flag.`);
-      return NextResponse.json({ error: "Active license required to access the dashboard." }, { status: 403 });
+      return NextResponse.json({ 
+        success: false,
+        error: "Active license required to access the dashboard." 
+      }, { status: 403 });
     }
 
     // 3. Generate a secure server-side session token
@@ -100,6 +115,10 @@ export async function POST(request: Request) {
 
   } catch (err: any) {
     console.error("🔥 Identity exchange processing failed:", err);
-    return NextResponse.json({ error: "Server rejected identity exchange token verification", details: err.message }, { status: 500 });
+    return NextResponse.json({ 
+      success: false,
+      error: "Server rejected identity exchange token verification", 
+      details: err.message 
+    }, { status: 500 });
   }
 }
