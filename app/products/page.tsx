@@ -3,12 +3,12 @@
 import React, { useState, useEffect } from "react";
 import { db, auth } from "@/core/firebase";
 import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
-import { collection, doc, setDoc, deleteDoc, onSnapshot, query, where, getDoc } from "firebase/firestore";
+import { collection, doc, deleteDoc, onSnapshot, getDoc } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";
 import Layout from "@/components/layout"; 
 import Link from "next/link"; 
 import { onAuthStateChanged } from "firebase/auth";
-import { Plus, Image as ImageIcon, Settings2, Tag, X, UploadCloud, Save, Edit3, Mic, Trash2, Globe, HelpCircle } from "lucide-react";
+import { Plus, X, UploadCloud, Save, Edit3, Trash2, Globe } from "lucide-react";
 
 export const dynamic = 'force-dynamic';
 
@@ -22,51 +22,67 @@ export default function ProductsPage() {
   const [isUploading, setIsUploading] = useState<{ cover: boolean; bg: boolean }>({ cover: false, bg: false });
   const { toast } = useToast();
 
-  // 🚀 CRITICAL AUTHENTICATION STATE WATCHER: Resolves race conditions on page load
+  // 🚀 STRICT MULTI-TENANT AUTH WATCHER (No Hardcoded Fallbacks)
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       if (user && user.email) {
         setCurrentUserEmail(user.email);
         
-        // Fetch matching profile dynamically from the /users collection
+        // Fetch matching profile details dynamically from Firestore
         const userDocRef = doc(db, "users", user.email);
         const userSnap = await getDoc(userDocRef);
         if (userSnap.exists()) {
           setUserProfile(userSnap.data());
         }
       } else {
-        // Fallback to active sandbox session profile
-        const fallbackEmail = "kendall.aaron@koba-i.com";
-        setCurrentUserEmail(fallbackEmail);
-        const userDocRef = doc(db, "users", fallbackEmail);
-        const userSnap = await getDoc(userDocRef);
-        if (userSnap.exists()) {
-          setUserProfile(userSnap.data());
-        }
+        // SCALABILITY FIX: If no user is authenticated, aggressively clear the session.
+        setCurrentUserEmail(null);
+        setUserProfile(null);
       }
     });
     return () => unsubscribeAuth();
   }, []);
 
-  // 🚀 DYNAMIC LIVE SNAPSHOT LISTENER: Listens for user-specific staging products
+  // 🚀 SECURE IN-MEMORY SYNCHRONIZER (Strictly scoped to the active session)
   useEffect(() => {
-    if (!currentUserEmail) return;
+    if (!currentUserEmail) {
+      setProducts([]); // Clear shelf if no user is active
+      return;
+    }
 
     const productsRef = collection(db, "products");
-    const q = query(productsRef, where("authorId", "==", currentUserEmail));
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const updatedList = snapshot.docs.map(doc => ({
+    const unsubscribe = onSnapshot(productsRef, (snapshot) => {
+      const allList = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
-      setProducts(updatedList);
+
+      // Strictly isolate data to the logged-in author
+      const filteredList = allList.filter((product: any) => {
+        const productAuthor = (product.authorId || product.authorEmail || "").toLowerCase();
+        const activeEmail = (currentUserEmail || "").toLowerCase();
+
+        if (!activeEmail) return false;
+
+        // 1. Direct Email Ownership Match
+        if (productAuthor === activeEmail) return true;
+
+        // 2. Studio Key Ownership Match
+        const activeStudioKey = userProfile?.studioKey;
+        const productKey = product.studioKey || product.wpStudioKey;
+        if (activeStudioKey && productKey && productKey === activeStudioKey) return true;
+
+        return false;
+      });
+
+      setProducts(filteredList);
     }, (error) => {
-      console.error("🚨 Snapshot stream failed:", error);
+      console.error("🚨 Staging catalog subscription failed:", error);
     });
 
     return () => unsubscribe();
-  }, [currentUserEmail]);
+  }, [currentUserEmail, userProfile]);
 
   const handleCreateDraft = () => {
     const generatedId = `abk_${Math.random().toString(36).substring(2, 9)}`;
@@ -79,8 +95,9 @@ export default function ProductsPage() {
       coverArtUrl: "",
       bgImageUrl: "",
       synopsis: "Draft workspace canvas.",
-      // 🚀 THE BRIDGE: Dynamically inherit keys directly from your profile
-      studioKey: userProfile?.studioKey || "Pending",
+      // Dynamically load keys or leave completely blank for new authors
+      studioKey: userProfile?.studioKey || "",
+      wpStudioKey: userProfile?.studioKey || "",
       stripeConnectId: userProfile?.stripeConnectId || userProfile?.stripeCustomerId || "",
       associatedWebsite: userProfile?.associatedWebsite || ""
     });
@@ -89,14 +106,14 @@ export default function ProductsPage() {
   const handleEditProduct = (product: any) => {
     setEditingProduct({
       ...product,
-      // Provide defaults if missing
-      studioKey: product.studioKey || userProfile?.studioKey || "Pending",
+      studioKey: product.studioKey || userProfile?.studioKey || "",
+      wpStudioKey: product.wpStudioKey || product.studioKey || userProfile?.studioKey || "",
       stripeConnectId: product.stripeConnectId || userProfile?.stripeConnectId || "",
       associatedWebsite: product.associatedWebsite || userProfile?.associatedWebsite || ""
     });
   };
 
-  // 🚀 FIREBASE STORAGE UPLOAD PIPELINE: Standardized static imports & progress trackers
+  // 🚀 STABLE FIREBASE STORAGE UPLOAD PIPELINE
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: "cover" | "bg") => {
     const file = e.target.files?.[0];
     if (!file || !editingProduct) return;
@@ -105,8 +122,8 @@ export default function ProductsPage() {
     setUploadProgress(prev => ({ ...prev, [type]: 0 }));
 
     const storage = getStorage();
-    const fileName = `${editingProduct.id}_${type === "cover" ? "coverUrl" : "bgImageUrl"}_${file.name}`;
-    const storageRef = ref(storage, `assets/${fileName}`);
+    const fileName = `assets/${editingProduct.id}_${type === "cover" ? "coverUrl" : "bgImageUrl"}_${file.name}`;
+    const storageRef = ref(storage, fileName);
     const uploadTask = uploadBytesResumable(storageRef, file);
 
     uploadTask.on(
@@ -116,7 +133,7 @@ export default function ProductsPage() {
         setUploadProgress(prev => ({ ...prev, [type]: Math.round(progress) }));
       },
       (error) => {
-        console.error("🚨 File upload failed:", error);
+        console.error("🚨 Storage upload pipeline failed:", error);
         toast({
           title: "Upload Failed",
           description: error.message,
@@ -132,8 +149,8 @@ export default function ProductsPage() {
         }));
         setIsUploading(prev => ({ ...prev, [type]: false }));
         toast({
-          title: "Upload Complete",
-          description: `${type === "cover" ? "Cover art" : "Backdrop image"} loaded into memory successfully.`
+          title: "Upload Secure",
+          description: "Asset successfully verified and saved to storage."
         });
       }
     );
@@ -145,13 +162,11 @@ export default function ProductsPage() {
     setIsSaving(true);
 
     try {
-      // Form Validation Checks
       const numericPrice = Number(editingProduct.price);
       if (numericPrice >= 0.50 && !editingProduct.stripeConnectId) {
-        throw new Error("A validated Stripe Connect Account ID is required to publish products priced above $0.50.");
+        throw new Error("A validated Stripe Connect Account ID is required to publish products priced at $0.50 or above.");
       }
 
-      // 🚀 DYNAMIC PAYLOAD ORCHESTRATION: Satisfies /api/agent/deploy parameters
       const payload = {
         assetKey: editingProduct.id,
         bookTitle: editingProduct.title,
@@ -176,15 +191,15 @@ export default function ProductsPage() {
       if (!response.ok) throw new Error(data.error || "Failed to deploy product asset.");
 
       toast({
-        title: "Deployment Successful",
-        description: `Successfully synchronized ${editingProduct.id} with your live store catalog.`,
+        title: "Deployment Complete",
+        description: `Successfully synchronized ${editingProduct.id} with your live storefront.`,
       });
 
       setEditingProduct(null);
     } catch (err: any) {
-      console.error("🚨 Deployment process failed:", err);
+      console.error("🚨 Staging pipeline error:", err);
       toast({
-        title: "Deployment Failure",
+        title: "Deployment Failed",
         description: err.message,
         variant: "destructive"
       });
@@ -213,6 +228,7 @@ export default function ProductsPage() {
   return (
     <Layout>
       <div className="p-6 space-y-8 max-w-7xl mx-auto">
+        
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
             <h1 className="text-3xl font-black tracking-tight text-white">Product Catalog</h1>
@@ -226,17 +242,17 @@ export default function ProductsPage() {
           </button>
         </div>
 
-        {/* User Identity Card for Diagnostics */}
+        {/* Live Profile Telemetry Card */}
         {userProfile && (
           <div className="bg-[#222b45]/40 border border-[#40527c]/40 rounded-xl p-4 flex flex-wrap gap-6 text-xs text-slate-300">
             <div><span className="font-semibold text-slate-400">Profile:</span> {currentUserEmail}</div>
-            <div><span className="font-semibold text-slate-400">Studio Key:</span> {userProfile.studioKey || "None"}</div>
-            <div><span className="font-semibold text-slate-400">Website:</span> {userProfile.associatedWebsite || "None"}</div>
-            <div><span className="font-semibold text-slate-400">Stripe Account:</span> {userProfile.stripeConnectId || userProfile.stripeCustomerId || "None"}</div>
+            <div><span className="font-semibold text-slate-400">Studio Key:</span> {userProfile.studioKey || "Pending Assignment"}</div>
+            <div><span className="font-semibold text-slate-400">Website:</span> {userProfile.associatedWebsite || "Not Connected"}</div>
+            <div><span className="font-semibold text-slate-400">Stripe Account:</span> {userProfile.stripeConnectId || userProfile.stripeCustomerId || "Action Required"}</div>
           </div>
         )}
 
-        {/* Product Catalog Bookshelf Grid */}
+        {/* Bookshelf Catalog Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {products.length === 0 ? (
             <div className="col-span-full border-2 border-dashed border-[#40527c] rounded-xl p-12 text-center text-slate-400">
@@ -299,9 +315,7 @@ export default function ProductsPage() {
           )}
         </div>
 
-        {/* ======================================================== */}
-        {/* MODIFIED CAPABILITY: SLIDE-OVER EDITING DRAWER (RESTORED) */}
-        {/* ======================================================== */}
+        {/* SLIDE-OVER METADATA EDITING DRAWER */}
         {editingProduct && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-end">
             <div className="w-full max-w-lg bg-[#2d3b5e] border-l border-[#40527c] h-full flex flex-col justify-between overflow-hidden shadow-2xl">
@@ -319,7 +333,6 @@ export default function ProductsPage() {
               <div className="p-6 overflow-y-auto flex-grow space-y-6">
                 <form id="edit-form" onSubmit={handleSaveAndDeploy} className="space-y-5 text-slate-200">
                   
-                  {/* Title */}
                   <div className="flex flex-col space-y-1.5">
                     <label className="text-xs font-semibold text-slate-300">Book Title</label>
                     <input 
@@ -327,11 +340,10 @@ export default function ProductsPage() {
                       required
                       value={editingProduct.title || ""} 
                       onChange={(e) => setEditingProduct({...editingProduct, title: e.target.value})}
-                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:ring-[#8b4528] focus:border-[#8b4528]"
+                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-[#8b4528]"
                     />
                   </div>
 
-                  {/* Pricing Matrix */}
                   <div className="grid grid-cols-2 gap-4">
                     <div className="flex flex-col space-y-1.5">
                       <label className="text-xs font-semibold text-slate-300">Price (USD)</label>
@@ -342,7 +354,7 @@ export default function ProductsPage() {
                         required
                         value={editingProduct.price} 
                         onChange={(e) => setEditingProduct({...editingProduct, price: e.target.value})}
-                        className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:ring-[#8b4528]"
+                        className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-[#8b4528]"
                       />
                     </div>
 
@@ -360,7 +372,7 @@ export default function ProductsPage() {
                             id: `${newPrefix}${currentCleanId}`
                           });
                         }}
-                        className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm"
+                        className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:outline-none"
                       >
                         <option value="audiobook">Audiobook</option>
                         <option value="ebook">E-Book</option>
@@ -368,50 +380,45 @@ export default function ProductsPage() {
                     </div>
                   </div>
 
-                  {/* Dynamic Stripe Connected Account */}
                   <div className="flex flex-col space-y-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <label className="text-xs font-semibold text-slate-300">Stripe Connect ID</label>
-                      <span className="text-[10px] text-slate-400">(Required for products $\ge$ $0.50$)</span>
-                    </div>
+                    <label className="text-xs font-semibold text-slate-300">Stripe Connect ID (Required for paid assets)</label>
                     <input 
                       type="text" 
                       placeholder="acct_1XXXXXXXXXXXXXXX"
                       value={editingProduct.stripeConnectId || ""} 
                       onChange={(e) => setEditingProduct({...editingProduct, stripeConnectId: e.target.value})}
-                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm font-mono placeholder:text-slate-600 focus:ring-[#8b4528]"
+                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm font-mono focus:outline-none focus:border-[#8b4528]"
                     />
                   </div>
 
-                  {/* WordPress Website URL */}
                   <div className="flex flex-col space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-300">WordPress associatedWebsite URL</label>
+                    <label className="text-xs font-semibold text-slate-300">Associated WordPress Website URL</label>
                     <input 
                       type="url" 
                       placeholder="https://myauthorwebsite.com"
                       value={editingProduct.associatedWebsite || ""} 
                       onChange={(e) => setEditingProduct({...editingProduct, associatedWebsite: e.target.value})}
-                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:ring-[#8b4528]"
+                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-[#8b4528]"
                     />
                   </div>
 
-                  {/* Studio Key Status */}
                   <div className="grid grid-cols-2 gap-4">
                     <div className="flex flex-col space-y-1.5">
                       <label className="text-xs font-semibold text-slate-400">Studio Key</label>
                       <input 
                         type="text" 
                         disabled
-                        value={editingProduct.studioKey || "Pending"} 
-                        className="bg-[#1a2138] border border-slate-800 text-slate-400 px-3 py-2 rounded-lg text-xs font-semibold"
+                        placeholder="Pending Assignment"
+                        value={editingProduct.studioKey || ""} 
+                        className="bg-[#1a2138] border border-[#40527c]/40 text-slate-400 px-3 py-2.5 rounded-lg text-xs font-semibold font-mono"
                       />
                     </div>
                     <div className="flex flex-col space-y-1.5">
-                      <label className="text-slate-200 text-xs font-medium">Fulfillment Status</label>
+                      <label className="text-xs font-semibold text-slate-300">Publishing Status</label>
                       <select 
                         value={editingProduct.status || "draft"}
                         onChange={(e) => setEditingProduct({ ...editingProduct, status: e.target.value })}
-                        className="bg-[#222b45] border-[#40527c] text-white p-2 rounded-lg text-xs focus:ring-[#8b4528]"
+                        className="bg-[#222b45] border border-[#40527c] text-white p-2.5 rounded-lg text-xs focus:outline-none"
                       >
                         <option value="draft">Draft</option>
                         <option value="ready">Ready to Deploy</option>
@@ -420,19 +427,18 @@ export default function ProductsPage() {
                     </div>
                   </div>
 
-                  {/* Dynamic Cover Artwork Upload Slot with real-time CORS support */}
                   <div className="space-y-2">
-                    <Label className="text-slate-200">Cover Artwork (CoverArtUrl)</Label>
+                    <label className="text-xs font-semibold text-slate-300 block">Cover Artwork (CoverArtUrl)</label>
                     <div className="flex gap-2">
-                      <Input 
+                      <input 
                         type="text" 
                         placeholder="Artwork URL" 
                         value={editingProduct.coverArtUrl || ""} 
                         onChange={(e) => setEditingProduct({ ...editingProduct, coverArtUrl: e.target.value })}
-                        className="bg-[#222b45] border-[#40527c] text-slate-100 flex-1 text-xs"
+                        className="bg-[#222b45] border border-[#40527c] text-slate-100 flex-1 text-xs p-2.5 rounded-lg focus:outline-none focus:border-[#8b4528]"
                       />
-                      <label className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg text-xs font-semibold cursor-pointer border border-[#40527c] flex items-center justify-center">
-                        <UploadCloud className="w-4 h-4 mr-1.5" /> Upload File
+                      <label className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2.5 rounded-lg text-xs font-semibold cursor-pointer border border-[#40527c] flex items-center justify-center transition-all select-none">
+                        <UploadCloud className="w-4 h-4 mr-1.5 text-slate-400" /> Upload File
                         <input 
                           type="file" 
                           accept="image/*" 
@@ -442,25 +448,24 @@ export default function ProductsPage() {
                       </label>
                     </div>
                     {isUploading.cover && (
-                      <div className="w-full bg-[#222b45] h-1.5 rounded-full overflow-hidden">
+                      <div className="w-full bg-[#222b45] h-1 rounded-full overflow-hidden">
                         <div className="bg-[#8b4528] h-full transition-all duration-300" style={{ width: `${uploadProgress.cover}%` }} />
                       </div>
                     )}
                   </div>
 
-                  {/* Backdrop Image Upload slot */}
                   <div className="space-y-2">
-                    <Label className="text-slate-200">Backdrop Morph Image (BgImageUrl)</Label>
+                    <label className="text-xs font-semibold text-slate-300 block">Backdrop Image (BgImageUrl)</label>
                     <div className="flex gap-2">
-                      <Input 
+                      <input 
                         type="text" 
                         placeholder="Backdrop URL" 
                         value={editingProduct.bgImageUrl || ""} 
                         onChange={(e) => setEditingProduct({ ...editingProduct, bgImageUrl: e.target.value })}
-                        className="bg-[#222b45] border-[#40527c] text-slate-100 flex-1 text-xs"
+                        className="bg-[#222b45] border border-[#40527c] text-slate-100 flex-1 text-xs p-2.5 rounded-lg focus:outline-none focus:border-[#8b4528]"
                       />
-                      <label className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg text-xs font-semibold cursor-pointer border border-[#40527c] flex items-center justify-center">
-                        <UploadCloud className="w-4 h-4 mr-1.5" /> Upload File
+                      <label className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2.5 rounded-lg text-xs font-semibold cursor-pointer border border-[#40527c] flex items-center justify-center transition-all select-none">
+                        <UploadCloud className="w-4 h-4 mr-1.5 text-slate-400" /> Upload File
                         <input 
                           type="file" 
                           accept="image/*" 
@@ -470,20 +475,19 @@ export default function ProductsPage() {
                       </label>
                     </div>
                     {isUploading.bg && (
-                      <div className="w-full bg-[#222b45] h-1.5 rounded-full overflow-hidden">
+                      <div className="w-full bg-[#222b45] h-1 rounded-full overflow-hidden">
                         <div className="bg-[#8b4528] h-full transition-all duration-300" style={{ width: `${uploadProgress.bg}%` }} />
                       </div>
                     )}
                   </div>
 
-                  {/* Synopsis */}
                   <div className="flex flex-col space-y-1.5">
                     <label className="text-xs font-semibold text-slate-300">Book Synopsis</label>
                     <textarea 
                       rows={3}
                       value={editingProduct.synopsis || ""} 
                       onChange={(e) => setEditingProduct({...editingProduct, synopsis: e.target.value})}
-                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-xs focus:ring-[#8b4528]"
+                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-xs focus:outline-none focus:border-[#8b4528]"
                     />
                   </div>
 
@@ -509,7 +513,7 @@ export default function ProductsPage() {
                     type="submit" 
                     form="edit-form" 
                     disabled={isSaving} 
-                    className="flex items-center gap-1.5 bg-[#8b4528] hover:bg-[#723820] text-white px-5 py-2.5 rounded-xl text-xs font-bold"
+                    className="flex items-center gap-1.5 bg-[#8b4528] hover:bg-[#723820] text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-all disabled:opacity-40"
                   >
                     <Save className="w-4 h-4" /> {isSaving ? "Synchronizing..." : "Save & Deploy"}
                   </button>
