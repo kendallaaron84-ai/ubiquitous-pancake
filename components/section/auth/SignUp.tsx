@@ -39,10 +39,13 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
 
       const text = await response.text()
       let data;
+      
+      // Defensive parsing to catch HTML responses (like 405 Method Not Allowed)
       try {
         data = JSON.parse(text)
       } catch (jsonErr) {
-        throw new Error("Server returned a non-JSON response during identity handshake.")
+        console.error("🚨 Server did not return valid JSON payload:", text)
+        throw new Error(`Server returned status code: ${response.status}`)
       }
 
       if (!response.ok || !data.success) {
