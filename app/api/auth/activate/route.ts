@@ -1,26 +1,14 @@
+// Filepath: app/api/auth/activate/route.ts
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/core/firebase-admin';
-import admin from 'firebase-admin';
 
 export const dynamic = 'force-dynamic';
-
-// Initialize Firebase Admin safely inside serverless contexts to prevent double-initialization crashes
-if (admin.apps.length === 0) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    }),
-  });
-}
-const adminAuth = admin.auth();
 
 export async function POST(request: Request) {
   try {
     const { email, license, password } = await request.json();
 
-    // 1. Validation Checks
+    // 1. Validation checkpoint
     if (!email || !license || !password) {
       return NextResponse.json({ error: 'Missing email, license key, or password.' }, { status: 400 });
     }
@@ -29,7 +17,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Password must be at least 8 characters long.' }, { status: 400 });
     }
 
-    // 2. Validate Key existence in the central registry
+    // 2. Validate the License Key in Firestore
     const licenseDoc = await adminDb.collection('licenses').doc(license).get();
     if (!licenseDoc.exists) {
       return NextResponse.json({ error: 'The provided license key was not found.' }, { status: 403 });
@@ -42,34 +30,53 @@ export async function POST(request: Request) {
 
     // Secure owner mapping verification
     if (licenseData.authorEmail.toLowerCase() !== email.toLowerCase()) {
-      return NextResponse.json({ error: 'License key ownership verification failed.' }, { status: 403 });
+      return NextResponse.json({ error: 'The license key ownership mismatch.' }, { status: 403 });
     }
 
-    // 3. Verify user profile state
+    // 3. Verify user is in setup mode
     const userDocRef = adminDb.collection('users').doc(email);
     const userDoc = await userDocRef.get();
 
     if (!userDoc.exists) {
-      return NextResponse.json({ error: 'User profile not found. Check purchase webhook.' }, { status: 404 });
+      return NextResponse.json({ error: 'User record was not initialized. Check purchase webhook.' }, { status: 404 });
     }
 
     const userData = userDoc.data() || {};
     
-    // Safety check: Prevent re-running password setups on active accounts
+    // Safety lock: prevent re-claiming or rewriting password via this endpoint after activation
     if (userData.authConfigured === true) {
       return NextResponse.json({ error: 'This profile is already activated. Please log in directly.' }, { status: 409 });
     }
 
-    // 4. Atomic Auth User Provisioning
-    let firebaseUser: admin.auth.UserRecord;
+    // 4. DYNAMIC RUNTIME IMPORT: Safely bypasses Next.js static build checks on Vercel
+    const admin = require('firebase-admin');
+    if (!admin || !admin.apps) {
+      throw new Error("Failed to load firebase-admin module at runtime.");
+    }
+
+    if (admin.apps.length === 0) {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+        }),
+      });
+    }
+    const adminAuth = admin.auth();
+
+    // 5. ATOMIC USER PROVISIONING: Setup Credentials in Firebase Auth
+    let firebaseUser;
     
     try {
+      // Check if auth record already exists
       firebaseUser = await adminAuth.getUserByEmail(email);
-      console.log(`ℹ️ Auth record exists for ${email}. Programmatically updating credentials...`);
+      console.log(`ℹ️ Auth record exists for ${email}. Programmatically updating password...`);
       await adminAuth.updateUser(firebaseUser.uid, { password });
     } catch (authError: any) {
       if (authError.code === 'auth/user-not-found') {
-        console.log(`🚀 Creating fresh credentials in Auth directory for ${email}...`);
+        // Create brand new user
+        console.log(`🚀 Creating brand new user auth credentials for ${email}...`);
         firebaseUser = await adminAuth.createUser({
           email,
           password,
@@ -81,15 +88,15 @@ export async function POST(request: Request) {
       }
     }
 
-    // 5. Update initialization state flags
+    // 6. Update the Database configuration state
     await userDocRef.set({
       authConfigured: true,
       lastLoginDate: new Date().toISOString()
     }, { merge: true });
 
-    // 6. Generate secure claims token for instant login on submit
+    // 7. 🔑 CUSTOM TOKEN HANDSHAKE: Instant hydration of client session
     const customToken = await adminAuth.createCustomToken(firebaseUser.uid);
-    console.log(`✅ Secure credentials claimed. Initiating direct login sequence for: ${email}`);
+    console.log(`✅ Secure claims claimed: Auth constructed for ${email}. Instantly logging user into KOBA-I Audio.`);
 
     return NextResponse.json({
       success: true,
