@@ -1,4 +1,10 @@
-// ... existing code ...
+import { NextResponse } from "next/server";
+import { adminDb } from '@/core/firebase-admin';
+import fs from 'fs';
+import path from 'path';
+
+export const dynamic = "force-dynamic";
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -17,11 +23,29 @@ export async function POST(request: Request) {
     
     // Safety check on incoming payload
     if (!assetKey) {
-// ... existing code ...
+      console.warn("⚠️ Deployment blocked: Missing assetKey in request body.");
+      return NextResponse.json({ error: "Missing required parameter: assetKey" }, { status: 400 });
+    }
+
+    // 1. PREFIX ENFORCEMENT (Resolving Technical Debt & Layout Collisions)
+    const mediaType = type || "audiobook";
     const expectedPrefix = mediaType === "ebook" ? "ebk_" : "abk_";
     
     if (!assetKey.startsWith(expectedPrefix)) {
-// ... existing code ...
+      const errorMsg = `Prefix enforcement violation: Asset key "${assetKey}" must start with "${expectedPrefix}" for media type "${mediaType}".`;
+      console.warn(`⚠️ Validation Failed: ${errorMsg}`);
+      return NextResponse.json({ 
+        error: errorMsg,
+        requirements: {
+          audiobook: "Must begin with 'abk_'",
+          ebook: "Must begin with 'ebk_'"
+        }
+      }, { status: 400 });
+    }
+
+    // 2. CHECK EXISTING PRODUCT
+    const productDocRef = adminDb.collection("products").doc(assetKey);
+    const existingProduct = await productDocRef.get();
     let existingProductData = null;
     if (existingProduct.exists) {
       existingProductData = existingProduct.data();
@@ -47,6 +71,7 @@ export async function POST(request: Request) {
       }, { status: 400 });
     }
 
+    // 3. FIRESTORE DATABASE INSERTION (The Source of Truth)
     let dbProductData: any = {};
     try {
       dbProductData = {
@@ -87,7 +112,7 @@ export async function POST(request: Request) {
     }, { status: 200 });
 
   } catch (error: any) {
-    console.error("🔥 Agent Deploy Endpoint Exception:", error);
-    return NextResponse.json({ error: "Internal Server Error", details: error.message }, { status: 500 });
+    console.error("🔥 Deployment agent failed:", error);
+    return NextResponse.json({ error: "Internal server error during deployment", details: error.message }, { status: 500 });
   }
 }
