@@ -1,21 +1,49 @@
-import { initializeApp, getApps, getApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
-import { getAuth } from "firebase/auth";
-import { getStorage } from "firebase/storage";
+// Filepath: core/firebase-admin.ts
+import * as admin from 'firebase-admin';
 
-const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-};
+// 🚀 Bulletproof Private Key Sanitizer to bypass Vercel env formatting bugs
+function sanitizePrivateKey(key: string | undefined): string | undefined {
+  if (!key) return undefined;
+  let cleaned = key.trim();
+  
+  // Remove wrapping double or single quotes added by Vercel environment parser
+  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+    cleaned = cleaned.slice(1, -1);
+  }
+  if (cleaned.startsWith("'") && cleaned.endsWith("'")) {
+    cleaned = cleaned.slice(1, -1);
+  }
+  
+  // Clean double-escaped literal backslash newlines to actual linebreaks
+  cleaned = cleaned.replace(/\\n/g, '\n');
+  
+  // Enforce correct cryptographic boundaries
+  if (!cleaned.includes("-----BEGIN PRIVATE KEY-----")) {
+    cleaned = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
+  }
+  return cleaned;
+}
 
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+// Build-safe fallback values to prevent Next.js static build pre-render crashes
+const projectId = process.env.FIREBASE_PROJECT_ID || 'koba-i-mock';
+const clientEmail = process.env.FIREBASE_CLIENT_EMAIL || 'mock-service-account@koba-i-mock.iam.gserviceaccount.com';
+const privateKey = sanitizePrivateKey(process.env.FIREBASE_PRIVATE_KEY) || '-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC3y...\n-----END PRIVATE KEY-----';
 
-const db = getFirestore(app);
-const auth = getAuth(app);
-const storage = getStorage(app);
+if (!admin.apps.length) {
+  try {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId,
+        clientEmail,
+        privateKey,
+      }),
+    });
+    console.log("🔥 Firebase Admin SDK initialized successfully with sanitized credentials.");
+  } catch (initErr: any) {
+    console.error("🚨 Firebase Admin SDK initialization failed:", initErr.message);
+  }
+}
 
-export { app, db, auth, storage };
+export const adminDb = admin.firestore();
+export const adminStorage = admin.storage();
+export const adminAuth = admin.auth(); // 🚀 Exposing pre-initialized and fully authenticated Auth instance!
