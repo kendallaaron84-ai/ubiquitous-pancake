@@ -4,13 +4,16 @@ import type { NextRequest } from 'next/server';
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // 🚀 PATHWAY EXCEPTIONS: Prevent middleware from blocking or redirecting auth routes
+  // 🚀 PATHWAY EXCEPTIONS: Prevent middleware from blocking or redirecting auth/public routes
   const isPublicRoute = 
     pathname.startsWith('/signin') || 
     pathname.startsWith('/signup') || 
     pathname.startsWith('/setup-password') || 
-    pathname.startsWith('/api/login') || // <-- THIS IS THE FIX. Bypasses the 405 redirect loop.
+    pathname.startsWith('/api/login') || 
     pathname.startsWith('/api/auth/activate') ||
+    pathname.startsWith('/api/auth/sms-send') ||    // 🚀 UNLOCKED: Twilio OTP Dispatch
+    pathname.startsWith('/api/auth/sms-verify') ||  // 🚀 UNLOCKED: Twilio OTP Verification
+    pathname.startsWith('/api/products/public') ||  // 🚀 UNLOCKED: Public Catalog & Player Fetch
     pathname.startsWith('/api/webhook') ||
     pathname.startsWith('/_next') ||
     pathname.endsWith('.png') ||
