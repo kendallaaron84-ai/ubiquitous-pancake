@@ -1,7 +1,5 @@
-// app/api/login/route.ts
+// Filepath: app/api/login/route.ts
 import { NextResponse } from "next/server";
-// 🚀 FIXED: Stripped all local fs/path/firebase-admin imports
-import { adminAuth } from '@/core/firebase-admin';
 
 export const dynamic = "force-dynamic";
 
@@ -10,36 +8,81 @@ export async function POST(request: Request) {
     const { idToken } = await request.json();
 
     if (!idToken) {
-      return NextResponse.json({ error: "No identity token provided." }, { status: 400 });
+      return NextResponse.json({ error: "Missing identity token" }, { status: 400 });
     }
 
-    // 🚀 FIXED: Use the centralized adminAuth instance directly
-    // 1. Verify the incoming short-lived client ID token
-    const decodedToken = await adminAuth.verifyIdToken(idToken);
-    
-    // 2. Create the secure Session Cookie (Valid for 5 days)
-    const expiresIn = 60 * 60 * 24 * 5 * 1000; 
-    const sessionCookie = await adminAuth.createSessionCookie(idToken, { expiresIn });
+    // 1. DYNAMIC RUNTIME IMPORT: Keeps Firebase Admin isolated from static compilation errors
+    const admin = require("firebase-admin");
+    if (!admin || !admin.apps) {
+      throw new Error("Failed to load firebase-admin at runtime.");
+    }
 
-    const response = NextResponse.json({ 
-      success: true, 
-      uid: decodedToken.uid,
-      email: decodedToken.email 
+    if (admin.apps.length === 0) {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+        }),
+      });
+    }
+
+    const adminAuth = admin.auth();
+    const adminDb = admin.firestore();
+
+    // 2. Verify the client-side ID Token
+    let decodedToken;
+    try {
+      decodedToken = await adminAuth.verifyIdToken(idToken);
+    } catch (verifyErr: any) {
+      console.error("🚨 ID Token Verification Failed in Admin SDK:", verifyErr.message);
+      return NextResponse.json({ error: "Invalid client identity token", details: verifyErr.message }, { status: 401 });
+    }
+
+    const email = decodedToken.email;
+    if (!email) {
+      return NextResponse.json({ error: "Email missing from token properties" }, { status: 400 });
+    }
+
+    // 3. Multi-tenant Check: Confirm user exists and has active licenses
+    const userDoc = await adminDb.collection("users").doc(email).get();
+
+    if (!userDoc.exists) {
+      console.warn(`⚠️ Multi-tenant lock: Profile not found for ${email}. Sign-in blocked.`);
+      return NextResponse.json({ error: "Unauthorized access profile. Check your license." }, { status: 403 });
+    }
+
+    const userData = userDoc.data();
+    if (!userData || !userData.hasActiveLicense) {
+      console.warn(`⚠️ Multi-tenant lock: Profile ${email} exists but lacks an active license flag.`);
+      return NextResponse.json({ error: "Active license required to access the dashboard." }, { status: 403 });
+    }
+
+    // 4. Generate a secure server-side session token
+    const secureToken = await adminAuth.createCustomToken(decodedToken.uid);
+
+    const response = NextResponse.json({
+      success: true,
+      message: "Identity token verification successful.",
+      sessionToken: secureToken,
+      user: {
+        email,
+        name: userData.name || "Sovereign Author"
+      }
     }, { status: 200 });
 
-    // 3. Attach the cookie to the browser! (This stops the redirect loop)
-    response.cookies.set("__session", sessionCookie, {
-      maxAge: expiresIn / 1000,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+    // Set server-side session-token cookie
+    response.cookies.set("session-token", secureToken, {
       path: "/",
-      sameSite: "lax",
+      maxAge: 86400, // 24 hours
+      sameSite: "strict",
+      secure: process.env.NODE_ENV === "production"
     });
 
     return response;
 
-  } catch (error: any) {
-    console.error("❌ Token Verification Crash:", error.message);
-    return NextResponse.json({ error: "Server rejected identity exchange token verification." }, { status: 401 });
+  } catch (err: any) {
+    console.error("🔥 Identity exchange processing failed:", err);
+    return NextResponse.json({ error: "Server rejected identity exchange token verification", details: err.message }, { status: 500 });
   }
 }
