@@ -1,4 +1,3 @@
-// Filepath: app/api/login/route.ts
 import { NextResponse } from "next/server";
 import { adminDb, adminAuth } from "@/core/firebase-admin";
 
@@ -66,9 +65,9 @@ export async function POST(request: Request) {
       }
     }
 
-    // Dynamic Provisioning Loop: Check for an active Stripe subscription license
-    if (!userData) {
-      console.log(`🔍 Checking license files for auto-provisioning: ${email}`);
+    // 🚀 AGGRESSIVE PROVISIONING: Check license if user doesn't exist OR lacks active flag
+    if (!userData || userData.hasActiveLicense !== true) {
+      console.log(`🔍 Checking license files for auto-provisioning/upgrading: ${email}`);
       const licenseQuery = await adminDb.collection("licenses")
         .where("authorEmail", "==", email)
         .where("status", "==", "active")
@@ -80,15 +79,15 @@ export async function POST(request: Request) {
         
         userData = {
           email: email,
-          name: licenseData.authorName || "Sovereign Author",
+          name: userData?.name || licenseData.authorName || "Sovereign Author",
           hasActiveLicense: true,
           authConfigured: true, 
           lastPurchaseDate: licenseData.createdAt || new Date().toISOString(),
-          createdAt: new Date().toISOString()
+          createdAt: userData?.createdAt || new Date().toISOString()
         };
 
-        // Write row atomically to users collection
-        await adminDb.collection("users").doc(email).set(userData);
+        // Write row atomically to users collection (upsert)
+        await adminDb.collection("users").doc(email).set(userData, { merge: true });
       } else {
         console.warn(`⚠️ Multi-tenant lock: Access denied for ${email}. Active product contract required.`);
         return NextResponse.json(
@@ -96,15 +95,6 @@ export async function POST(request: Request) {
           { status: 403 }
         );
       }
-    }
-
-    // Confirm execution permission entitlement state
-    if (!userData.hasActiveLicense) {
-      console.warn(`⚠️ Multi-tenant lock: Profile ${email} is present but lacks an active license flag.`);
-      return NextResponse.json(
-        { success: false, error: "Access Denied. Your license parameters are suspended or inactive." },
-        { status: 403 }
-      );
     }
 
     // 4. Issue a Secured Server-Side Custom Token Session
