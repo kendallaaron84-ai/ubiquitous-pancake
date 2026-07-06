@@ -65,8 +65,8 @@ export async function POST(request: Request) {
       }
     }
 
-    // 🚀 AGGRESSIVE PROVISIONING: Check license if user doesn't exist OR lacks active flag
-    if (!userData || userData.hasActiveLicense !== true) {
+    // 🚀 AGGRESSIVE PROVISIONING: Check license if user doesn't exist OR lacks active flag/keys
+    if (!userData || userData.hasActiveLicense !== true || !userData.studioKey) {
       console.log(`🔍 Checking license files for auto-provisioning/upgrading: ${email}`);
       const licenseQuery = await adminDb.collection("licenses")
         .where("authorEmail", "==", email)
@@ -75,7 +75,8 @@ export async function POST(request: Request) {
 
       if (!licenseQuery.empty) {
         console.log(`🎯 Auto-Provisioning: Found active asset contract for ${email}. Building profile record...`);
-        const licenseData = licenseQuery.docs[0].data();
+        const licenseDoc = licenseQuery.docs[0];
+        const licenseData = licenseDoc.data();
         
         userData = {
           email: email,
@@ -83,7 +84,10 @@ export async function POST(request: Request) {
           hasActiveLicense: true,
           authConfigured: true, 
           lastPurchaseDate: licenseData.createdAt || new Date().toISOString(),
-          createdAt: userData?.createdAt || new Date().toISOString()
+          createdAt: userData?.createdAt || new Date().toISOString(),
+          // 🚀 THE FIX: Bridge the chasm by mapping the relational keys to the User Profile
+          studioKey: licenseData.studiokey || licenseData.studioKey || licenseDoc.id,
+          stripeCustomerId: licenseData.stripeCustomerId || licenseData.stripeAccountId || null,
         };
 
         // Write row atomically to users collection (upsert)
@@ -106,7 +110,8 @@ export async function POST(request: Request) {
       sessionToken: secureToken,
       user: {
         email,
-        name: userData.name || "Sovereign Author"
+        name: userData.name || "Sovereign Author",
+        studioKey: userData.studioKey || null, // Pass to the frontend layout so the Catalog can use it
       }
     }, { status: 200 });
 
