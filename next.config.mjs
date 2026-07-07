@@ -17,7 +17,7 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  // 🔑 ADDED: The Global CORS Fix for Local WordPress Testing
+  // 🔑 ADDED: The Global CORS Fix for Local WordPress Testing & External Assets
   async headers() {
     return [
       {
@@ -25,6 +25,15 @@ const nextConfig = {
         headers: [
           { key: "Access-Control-Allow-Origin", value: "*" },
           { key: "Access-Control-Allow-Methods", value: "GET, OPTIONS, PATCH, DELETE, POST, PUT" },
+          { key: "Access-Control-Allow-Headers", value: "Content-Type, Authorization" },
+        ],
+      },
+      {
+        // 🚀 THE HANDSHAKE: This unlocks your Next.js public/assets folder for WordPress
+        source: "/assets/:path*",
+        headers: [
+          { key: "Access-Control-Allow-Origin", value: "*" }, 
+          { key: "Access-Control-Allow-Methods", value: "GET, OPTIONS" },
           { key: "Access-Control-Allow-Headers", value: "Content-Type, Authorization" },
         ],
       },
