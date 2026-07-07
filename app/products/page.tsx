@@ -22,20 +22,16 @@ export default function ProductsPage() {
   const [isUploading, setIsUploading] = useState<{ cover: boolean; bg: boolean }>({ cover: false, bg: false });
   const { toast } = useToast();
 
-  // 🚀 STRICT MULTI-TENANT AUTH WATCHER (No Hardcoded Fallbacks)
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       if (user && user.email) {
         setCurrentUserEmail(user.email);
-        
-        // Fetch matching profile details dynamically from Firestore
         const userDocRef = doc(db, "users", user.email);
         const userSnap = await getDoc(userDocRef);
         if (userSnap.exists()) {
           setUserProfile(userSnap.data());
         }
       } else {
-        // SCALABILITY FIX: If no user is authenticated, aggressively clear the session.
         setCurrentUserEmail(null);
         setUserProfile(null);
       }
@@ -43,10 +39,9 @@ export default function ProductsPage() {
     return () => unsubscribeAuth();
   }, []);
 
-  // 🚀 SECURE IN-MEMORY SYNCHRONIZER (Strictly scoped to the active session)
   useEffect(() => {
     if (!currentUserEmail) {
-      setProducts([]); // Clear shelf if no user is active
+      setProducts([]); 
       return;
     }
 
@@ -58,17 +53,13 @@ export default function ProductsPage() {
         ...doc.data()
       }));
 
-      // Strictly isolate data to the logged-in author
       const filteredList = allList.filter((product: any) => {
         const productAuthor = (product.authorId || product.authorEmail || "").toLowerCase();
         const activeEmail = (currentUserEmail || "").toLowerCase();
 
         if (!activeEmail) return false;
-
-        // 1. Direct Email Ownership Match
         if (productAuthor === activeEmail) return true;
 
-        // 2. Studio Key Ownership Match
         const activeStudioKey = userProfile?.studioKey;
         const productKey = product.studioKey || product.wpStudioKey;
         if (activeStudioKey && productKey && productKey === activeStudioKey) return true;
@@ -95,7 +86,6 @@ export default function ProductsPage() {
       coverArtUrl: "",
       bgImageUrl: "",
       synopsis: "Draft workspace canvas.",
-      // Dynamically load keys or leave completely blank for new authors
       studioKey: userProfile?.studioKey || "",
       wpStudioKey: userProfile?.studioKey || "",
       stripeConnectId: userProfile?.stripeConnectId || userProfile?.stripeCustomerId || "",
@@ -113,7 +103,6 @@ export default function ProductsPage() {
     });
   };
 
-  // 🚀 STABLE FIREBASE STORAGE UPLOAD PIPELINE
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: "cover" | "bg") => {
     const file = e.target.files?.[0];
     if (!file || !editingProduct) return;
@@ -133,25 +122,13 @@ export default function ProductsPage() {
         setUploadProgress(prev => ({ ...prev, [type]: Math.round(progress) }));
       },
       (error) => {
-        console.error("🚨 Storage upload pipeline failed:", error);
-        toast({
-          title: "Upload Failed",
-          description: error.message,
-          variant: "destructive"
-        });
+        toast({ title: "Upload Failed", description: error.message, variant: "destructive" });
         setIsUploading(prev => ({ ...prev, [type]: false }));
       },
       async () => {
         const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-        setEditingProduct(prev => ({
-          ...prev,
-          [type === "cover" ? "coverArtUrl" : "bgImageUrl"]: downloadUrl
-        }));
+        setEditingProduct(prev => ({ ...prev, [type === "cover" ? "coverArtUrl" : "bgImageUrl"]: downloadUrl }));
         setIsUploading(prev => ({ ...prev, [type]: false }));
-        toast({
-          title: "Upload Secure",
-          description: "Asset successfully verified and saved to storage."
-        });
       }
     );
   };
@@ -167,6 +144,7 @@ export default function ProductsPage() {
         throw new Error("A validated Stripe Connect Account ID is required to publish products priced at $0.50 or above.");
       }
 
+      // 🚀 DROPDOWN BUG FIXED: status is now included in the deployment payload
       const payload = {
         assetKey: editingProduct.id,
         bookTitle: editingProduct.title,
@@ -174,6 +152,7 @@ export default function ProductsPage() {
         bgImageUrl: editingProduct.bgImageUrl,
         type: editingProduct.type || "audiobook",
         price: numericPrice,
+        status: editingProduct.status || "draft", 
         authorEmail: currentUserEmail,
         stripeConnectId: editingProduct.stripeConnectId || null,
         associatedWebsite: editingProduct.associatedWebsite || null,
@@ -197,12 +176,7 @@ export default function ProductsPage() {
 
       setEditingProduct(null);
     } catch (err: any) {
-      console.error("🚨 Staging pipeline error:", err);
-      toast({
-        title: "Deployment Failed",
-        description: err.message,
-        variant: "destructive"
-      });
+      toast({ title: "Deployment Failed", description: err.message, variant: "destructive" });
     } finally {
       setIsSaving(false);
     }
@@ -211,17 +185,10 @@ export default function ProductsPage() {
   const handleDeleteProduct = async (id: string) => {
     try {
       await deleteDoc(doc(db, "products", id));
-      toast({
-        title: "Product Deleted",
-        description: "Metadata removed from live Firestore catalogs.",
-      });
+      toast({ title: "Product Deleted", description: "Metadata removed from live Firestore catalogs." });
       setEditingProduct(null);
     } catch (err: any) {
-      toast({
-        title: "Deletion Failed",
-        description: err.message,
-        variant: "destructive"
-      });
+      toast({ title: "Deletion Failed", description: err.message, variant: "destructive" });
     }
   };
 
@@ -242,7 +209,6 @@ export default function ProductsPage() {
           </button>
         </div>
 
-        {/* Live Profile Telemetry Card */}
         {userProfile && (
           <div className="bg-[#222b45]/40 border border-[#40527c]/40 rounded-xl p-4 flex flex-wrap gap-6 text-xs text-slate-300">
             <div><span className="font-semibold text-slate-400">Profile:</span> {currentUserEmail}</div>
@@ -252,7 +218,6 @@ export default function ProductsPage() {
           </div>
         )}
 
-        {/* Bookshelf Catalog Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {products.length === 0 ? (
             <div className="col-span-full border-2 border-dashed border-[#40527c] rounded-xl p-12 text-center text-slate-400">
@@ -269,7 +234,7 @@ export default function ProductsPage() {
                       className="w-full h-full object-cover" 
                     />
                     <div className="absolute top-2 right-2 flex gap-1">
-                      <span className="text-[10px] bg-slate-900/90 border border-white/10 px-2 py-0.5 rounded text-white font-mono uppercase">
+                      <span className={`text-[10px] border px-2 py-0.5 rounded font-mono uppercase ${product.status === 'published' ? 'bg-emerald-900/90 border-emerald-500/50 text-emerald-400' : 'bg-slate-900/90 border-white/10 text-white'}`}>
                         {product.status || "draft"}
                       </span>
                     </div>
@@ -315,7 +280,6 @@ export default function ProductsPage() {
           )}
         </div>
 
-        {/* SLIDE-OVER METADATA EDITING DRAWER */}
         {editingProduct && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-end">
             <div className="w-full max-w-lg bg-[#2d3b5e] border-l border-[#40527c] h-full flex flex-col justify-between overflow-hidden shadow-2xl">
@@ -439,19 +403,9 @@ export default function ProductsPage() {
                       />
                       <label className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2.5 rounded-lg text-xs font-semibold cursor-pointer border border-[#40527c] flex items-center justify-center transition-all select-none">
                         <UploadCloud className="w-4 h-4 mr-1.5 text-slate-400" /> Upload File
-                        <input 
-                          type="file" 
-                          accept="image/*" 
-                          className="hidden" 
-                          onChange={(e) => handleFileUpload(e, "cover")} 
-                        />
+                        <input type="file" accept="image/*" className="hidden" onChange={(e) => handleFileUpload(e, "cover")} />
                       </label>
                     </div>
-                    {isUploading.cover && (
-                      <div className="w-full bg-[#222b45] h-1 rounded-full overflow-hidden">
-                        <div className="bg-[#8b4528] h-full transition-all duration-300" style={{ width: `${uploadProgress.cover}%` }} />
-                      </div>
-                    )}
                   </div>
 
                   <div className="space-y-2">
@@ -466,19 +420,9 @@ export default function ProductsPage() {
                       />
                       <label className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2.5 rounded-lg text-xs font-semibold cursor-pointer border border-[#40527c] flex items-center justify-center transition-all select-none">
                         <UploadCloud className="w-4 h-4 mr-1.5 text-slate-400" /> Upload File
-                        <input 
-                          type="file" 
-                          accept="image/*" 
-                          className="hidden" 
-                          onChange={(e) => handleFileUpload(e, "bg")} 
-                        />
+                        <input type="file" accept="image/*" className="hidden" onChange={(e) => handleFileUpload(e, "bg")} />
                       </label>
                     </div>
-                    {isUploading.bg && (
-                      <div className="w-full bg-[#222b45] h-1 rounded-full overflow-hidden">
-                        <div className="bg-[#8b4528] h-full transition-all duration-300" style={{ width: `${uploadProgress.bg}%` }} />
-                      </div>
-                    )}
                   </div>
 
                   <div className="flex flex-col space-y-1.5">
