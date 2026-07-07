@@ -1,100 +1,117 @@
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/core/firebase-admin';
 
+// Prevent Next.js from aggressively caching this route so the catalog always updates live
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const assetId = searchParams.get('assetId');
-    const scope = searchParams.get('scope') || 'tenant';
-    const studioKey = request.headers.get('x-studio-key');
+    try {
+        const { searchParams } = new URL(request.url);
+        
+        // The React engine will send EITHER a studioKey (for the catalog) or an assetId (for the player)
+        const studioKey = searchParams.get('studioKey') || request.headers.get('X-Studio-Key');
+        const assetId = searchParams.get('assetId');
 
-    // 1. Core Gate: Every request needs a Studio Key
-    if (!studioKey) {
-      return NextResponse.json({ error: 'Missing X-Studio-Key header' }, { status: 400 });
-    }
-
-    const CORS_HEADERS = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-Studio-Key',
-    };
-
-    // =======================================================
-    // SCENARIO A: SINGLE PRODUCT LOOKUP (For the Media Player)
-    // =======================================================
-    if (assetId) {
-      const productRef = adminDb.collection('products').doc(assetId);
-      const productSnap = await productRef.get();
-
-      if (!productSnap.exists) {
-        return NextResponse.json({ error: 'Asset not found' }, { status: 404, headers: CORS_HEADERS });
-      }
-
-      const productData = productSnap.data();
-
-      // Tenant Validation Isolation Check
-      if (productData?.authorId !== studioKey && productData?.studioKey !== studioKey) {
-        return NextResponse.json({ error: 'Unauthorized tenant access' }, { status: 403, headers: CORS_HEADERS });
-      }
-
-      const singlePayload = {
-        id: productSnap.id,
-        title: productData?.title || 'Untitled',
-        authorName: productData?.authorName || 'Unknown Author',
-        coverUrl: productData?.coverUrl || productData?.coverArtUrl || '',
-        price: typeof productData?.price === 'number' ? productData.price : parseFloat(productData?.price || '0'),
-        mediaType: productData?.mediaType || 'audio',
-        theme: {
-          backgroundColor: productData?.theme?.backgroundColor || '#070a0f',
-          backgroundImage: productData?.theme?.backgroundImage || '',
+        if (!studioKey && !assetId) {
+            return NextResponse.json({ error: "Missing required identification parameters." }, { status: 400 });
         }
-      };
 
-      return NextResponse.json(singlePayload, { status: 200, headers: CORS_HEADERS });
-    }
+        // ============================================================================
+        // ROUTE 1: FETCH SINGLE SECURE ASSET (For the Audiobook Player)
+        // ============================================================================
+        if (assetId) {
+            // Check the 'assets' or 'products' collection based on your exact schema
+            let docRef = await adminDb.collection('products').doc(assetId).get();
+            if (!docRef.exists) {
+                // Fallback check in case you used the 'assets' collection instead
+                docRef = await adminDb.collection('assets').doc(assetId).get();
+            }
 
-    // =======================================================
-    // SCENARIO B: FULL CATALOG LOOKUP (For the Storefront Grid)
-    // =======================================================
-    let productsQuery = adminDb.collection('products').where('studioKey', '==', studioKey);
-    
-    // If you use 'authorId' instead of 'studioKey' in your products collection collection, swap it here:
-    // let productsQuery = adminDb.collection('products').where('authorId', '==', studioKey);
+            if (!docRef.exists) {
+                return NextResponse.json({ error: "Asset not found in database." }, { status: 404 });
+            }
 
-    const snapshot = await productsQuery.get();
-    const catalogPayload = snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        title: data.title || 'Untitled Publication',
-        authorName: data.authorName || 'Unknown Author',
-        coverUrl: data.coverUrl || data.coverArtUrl || '',
-        price: typeof data.price === 'number' ? data.price : parseFloat(data.price || '0'),
-        category: data.category || 'General',
-        theme: {
-          backgroundColor: data.theme?.backgroundColor || '#1e293b',
-          backgroundImage: data.theme?.backgroundImage || '',
+            return NextResponse.json({ id: docRef.id, ...docRef.data() }, { status: 200 });
         }
-      };
-    });
 
-    return NextResponse.json(catalogPayload, { status: 200, headers: CORS_HEADERS });
+        // ============================================================================
+        // ROUTE 2: FETCH FULL CATALOG (For the Storefront)
+        // ============================================================================
+        if (studioKey) {
+            console.log(`[Storefront API] Fetching catalog for Studio Key: ${studioKey}`);
 
-  } catch (error) {
-    console.error('Public Product API Error:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
-  }
+            // Step 1: Validate the Studio Key in your 'licenses' collection to find the Author
+            const licenseQuery = await adminDb.collection('licenses')
+                .where('key', '==', studioKey)
+                .where('status', '==', 'active')
+                .limit(1)
+                .get();
+
+            let targetUserId = null;
+
+            if (!licenseQuery.empty) {
+                // We found the license! Grab the owner's ID
+                targetUserId = licenseQuery.docs[0].data().userId;
+            } else {
+                // Fallback: If your schema saves the studioKey directly on the products, we can skip the license check
+                console.log(`[Storefront API] License not found, attempting direct product query fallback...`);
+            }
+
+            // Step 2: Query the products
+            let productsQuery;
+            
+            if (targetUserId) {
+                // Fetch products belonging to this specific author
+                productsQuery = await adminDb.collection('products')
+                    .where('userId', '==', targetUserId)
+                    // .where('status', '==', 'published') // Uncomment this if you only want "published" assets to show
+                    .get();
+            } else {
+                // Fallback Query: Look for products that directly have the studioKey attached
+                productsQuery = await adminDb.collection('products')
+                    .where('studioKey', '==', studioKey)
+                    .get();
+            }
+
+            // Map the Firestore documents into a clean JSON array
+            const catalog = productsQuery.docs.map(doc => {
+                const data = doc.data();
+                return {
+                    id: doc.id,
+                    title: data.title || 'Untitled Book',
+                    type: data.type || 'Audiobook',
+                    price: data.price || 0,
+                    coverArtUrl: data.coverArtUrl || '/placeholder-book.png',
+                    // DO NOT send secure audio URLs or raw manuscript text in the catalog payload!
+                };
+            });
+
+            console.log(`[Storefront API] Successfully found ${catalog.length} products.`);
+            
+            return NextResponse.json(catalog, {
+                status: 200,
+                headers: {
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, X-Studio-Key'
+                }
+            });
+        }
+
+    } catch (error: any) {
+        console.error('[Storefront API] Critical Error:', error);
+        return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
+    }
 }
 
+// Handle CORS Preflight Requests automatically
 export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 204,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-Studio-Key',
-    },
-  });
+    return new NextResponse(null, {
+        status: 204,
+        headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, X-Studio-Key',
+        },
+    });
 }
