@@ -1,10 +1,10 @@
 /**
  * KOBA-I JUBILEE WORKS: Universal Agnostic Rendering Engine
- * Refactored to eliminate top-level React destructuring race conditions.
+ * Refactored for robust React 18 concurrent mounting and error handling.
  */
 
 (function() {
-    console.log("[KOBA-I] Engine script downloaded. Waiting for execution window...");
+    console.log("[KOBA-I] Engine script initialized. Verifying execution context...");
 
     // ==========================================
     // 1. THE MEDIA PLAYER COMPONENT (The Bloom Overlay)
@@ -15,8 +15,11 @@
         const [errorMsg, setErrorMsg] = useState('');
 
         useEffect(() => {
+            let isMounted = true;
+
             const fetchSaaSData = async () => {
                 try {
+                    console.log(`[KOBA-I Player] Fetching secure asset: ${assetId}`);
                     const response = await fetch(`${config.endpoints.publicProduct}?assetId=${assetId}`, {
                         method: 'GET',
                         headers: {
@@ -27,6 +30,8 @@
 
                     const data = await response.json();
 
+                    if (!isMounted) return;
+
                     if (!response.ok || data.error) {
                         throw new Error(data.error || (response.status === 403 ? "Tenant Key Invalid" : "Asset Not Found"));
                     }
@@ -34,21 +39,38 @@
                     window.kobaData = data;
                     setStatus('ready');
 
+                    // 🚀 FIX: Match the ID rendered by JubileePlayerApp exactly
                     setTimeout(() => {
-                        const root = document.getElementById('koba-bloom-root');
-                        if (root && window.initBloomPlayer) {
-                            window.initBloomPlayer(root, data, 'full');
+                        const root = document.getElementById('koba-bloom-player-mount');
+                        if (!root) {
+                            console.error("[KOBA-I Player] Fatal: Mount point 'koba-bloom-player-mount' missing from DOM.");
+                            return;
                         }
-                    }, 50);
+
+                        if (window.initBloomAudio) {
+                            console.log("[KOBA-I Player] Initializing standard audio engine.");
+                            window.initBloomAudio(root, data);
+                        } else if (window.initBloomPlayer) {
+                             console.log("[KOBA-I Player] Initializing legacy audio engine.");
+                             window.initBloomPlayer(root, data, 'full');
+                        } else {
+                            console.error("[KOBA-I Player] No audio engine (initBloomAudio/initBloomPlayer) found globally.");
+                            setErrorMsg("Audio engine failed to load. Please refresh the page.");
+                            setStatus('error');
+                        }
+                    }, 100);
 
                 } catch (error) {
-                    console.error("[KOBA-I] Jubilee Cloud Error:", error);
+                    if (!isMounted) return;
+                    console.error("[KOBA-I Player] Jubilee Cloud Error:", error);
                     setErrorMsg(error.message);
                     setStatus('error');
                 }
             };
 
             fetchSaaSData();
+
+            return () => { isMounted = false; };
         }, [assetId, studioKey]);
 
         if (status === 'loading') {
@@ -83,7 +105,8 @@
                 },
                 innerHTML: '×'
             }),
-            e('div', { id: 'koba-bloom-root' })
+            // 🚀 FIX: Unique ID for the player engine to hook into
+            e('div', { id: 'koba-bloom-player-mount', style: { width: '100%', height: '100%' } })
         );
     };
 
@@ -98,28 +121,36 @@
         const [activeAssetId, setActiveAssetId] = useState(null);
 
         useEffect(() => {
-            console.log("[KOBA-I] Catalog App Mounted. Fetching assets for key:", studioKey);
+            let isMounted = true;
+            console.log("[KOBA-I Catalog] App Mounted. Fetching assets for key:", studioKey);
             
             if (!studioKey) {
-                setErrorMsg("Missing WPStudioKey. Please check your WordPress gateway settings.");
-                setLoading(false);
+                if (isMounted) {
+                    setErrorMsg("Missing KOBA-I Studio Key. Please verify your WordPress gateway settings.");
+                    setLoading(false);
+                }
                 return;
             }
 
-            fetch(`${config.endpoints.publicProduct}?studioKey=${studioKey}`)
-                .then(async res => {
+            const fetchCatalog = async () => {
+                try {
+                    const res = await fetch(`${config.endpoints.publicProduct}?studioKey=${studioKey}`);
                     const text = await res.text();
+                    
+                    let data;
                     try {
-                        return JSON.parse(text);
+                        data = JSON.parse(text);
                     } catch (e) {
-                        throw new Error("Server returned invalid JSON. Could be a 500 error or a 404 page: " + text.substring(0, 100));
+                        throw new Error("Server returned invalid response structure. Gateway may be misconfigured.");
                     }
-                })
-                .then(data => {
-                    console.log("[KOBA-I] Catalog Payload Received:", data);
-                    if (data && data.error) {
-                        throw new Error(data.error);
+
+                    if (!isMounted) return;
+
+                    if (!res.ok || (data && data.error)) {
+                        throw new Error(data.error || "Failed to authorize catalog request.");
                     }
+                    
+                    console.log("[KOBA-I Catalog] Payload Received Successfully.");
                     
                     let productArray = [];
                     if (Array.isArray(data)) {
@@ -130,40 +161,61 @@
 
                     setBooks(productArray);
                     setLoading(false);
-                })
-                .catch(err => { 
-                    console.error("[KOBA-I] Catalog Fetch Error:", err); 
+                    
+                } catch (err) {
+                    if (!isMounted) return;
+                    console.error("[KOBA-I Catalog] Fetch Error:", err); 
                     setErrorMsg(err.message || "Failed to communicate with the Command Center.");
-                    setLoading(false); 
-                });
+                    setLoading(false);
+                }
+            };
+
+            fetchCatalog();
+
+            return () => { isMounted = false; };
         }, [studioKey]);
 
-        if (loading) return e('div', { style: { padding: '40px', textAlign: 'center', color: '#64748b' } }, 'Syncing Secure Catalog...');
+        // Rendering States
+        if (loading) {
+            return e('div', { style: { padding: '40px', textAlign: 'center', color: '#64748b', fontFamily: 'system-ui' } }, 
+                e('div', { style: { width: '30px', height: '30px', border: '3px solid #e2e8f0', borderTopColor: '#3b82f6', borderRadius: '50%', display: 'inline-block', animation: 'spin 1s linear infinite', marginBottom: '15px' } }),
+                e('div', { style: { fontWeight: '500' } }, 'Synchronizing Secure Catalog...')
+            );
+        }
         
-        if (errorMsg) return e('div', { style: { padding: '40px', textAlign: 'center', background: '#fee2e2', color: '#991b1b', border: '1px solid #f87171', borderRadius: '8px' } }, 
-            e('strong', null, 'Cloud Engine Error: '), errorMsg
-        );
+        if (errorMsg) {
+            return e('div', { style: { padding: '30px', textAlign: 'center', background: '#fee2e2', color: '#991b1b', border: '1px solid #f87171', borderRadius: '8px', fontFamily: 'system-ui' } }, 
+                e('div', { style: { fontWeight: 'bold', fontSize: '18px', marginBottom: '8px' } }, 'Catalog Synchronization Failed'),
+                e('div', { style: { fontSize: '14px' } }, errorMsg)
+            );
+        }
 
-        if (books.length === 0) return e('div', { style: { padding: '40px', textAlign: 'center', background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: '8px', color: '#475569' } }, 'Your storefront is currently empty. Assets must be set to "Published" in the KOBA-I Studio.');
+        if (books.length === 0) {
+            return e('div', { style: { padding: '40px', textAlign: 'center', background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: '8px', color: '#475569', fontFamily: 'system-ui' } }, 
+                'Your storefront is currently empty. Assets must be set to "Published" in the KOBA-I Studio.'
+            );
+        }
 
-        const grid = e('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '20px', fontFamily: 'sans-serif' } },
+        const grid = e('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '24px', fontFamily: 'system-ui' } },
             books.map(book => e('div', {
-                key: book.id || Math.random(),
+                key: book.id || Math.random().toString(),
                 onClick: () => setActiveAssetId(book.id),
-                style: { cursor: 'pointer', background: '#1e293b', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }
+                style: { cursor: 'pointer', background: '#1e293b', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', transition: 'transform 0.2s ease, box-shadow 0.2s ease' },
+                onMouseEnter: (e) => { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = '0 10px 15px -3px rgba(0,0,0,0.1)'; },
+                onMouseLeave: (e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 4px 6px -1px rgba(0,0,0,0.1)'; }
             },
                 e('div', { style: { aspectRatio: '2/3', background: '#0f172a', position: 'relative' } },
-                    e('img', { src: book.coverArtUrl, style: { width: '100%', height: '100%', objectFit: 'cover' }, onError: (e) => e.target.style.display = 'none' }),
-                    e('div', { style: { position: 'absolute', bottom: '10px', right: '10px', background: 'rgba(0,0,0,0.7)', color: '#fff', padding: '4px 8px', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' } }, '$' + parseFloat(book.price || 0).toFixed(2))
+                    e('img', { src: book.coverArtUrl, alt: book.title, style: { width: '100%', height: '100%', objectFit: 'cover' }, onError: (e) => e.target.style.display = 'none' }),
+                    e('div', { style: { position: 'absolute', bottom: '10px', right: '10px', background: 'rgba(15, 23, 42, 0.85)', color: '#fff', padding: '4px 8px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold', backdropFilter: 'blur(4px)' } }, '$' + parseFloat(book.price || 0).toFixed(2))
                 ),
-                e('div', { style: { padding: '12px' } },
-                    e('h3', { style: { color: '#fff', margin: '0 0 4px 0', fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, book.title || 'Untitled Book'),
-                    e('p', { style: { color: '#94a3b8', margin: 0, fontSize: '11px', textTransform: 'uppercase' } }, book.type || 'Audiobook')
+                e('div', { style: { padding: '16px' } },
+                    e('h3', { style: { color: '#fff', margin: '0 0 6px 0', fontSize: '16px', fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, book.title || 'Untitled Book'),
+                    e('p', { style: { color: '#94a3b8', margin: 0, fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '500' } }, book.type || 'Audiobook')
                 )
             ))
         );
 
-        return e('div', null,
+        return e('div', { className: 'jubilee-catalog-wrapper' },
             grid,
             activeAssetId && e(JubileePlayerApp, {
                 assetId: activeAssetId,
@@ -175,19 +227,18 @@
     };
 
     // ==========================================
-    // 3. SYSTEM BOOTSTRAP (Finding the shortcodes)
+    // 3. SYSTEM BOOTSTRAP
     // ==========================================
     const bootKobaSystems = () => {
-        // 🚀 THE RACE CONDITION DEFENSE
-        // If React hasn't finished downloading yet, wait and try again.
+        // Safe check for React globals
         if (!window.React || !window.ReactDOM) {
-            console.warn("[KOBA-I] React libraries not detected yet. Retrying in 50ms...");
-            setTimeout(bootKobaSystems, 50);
+            console.warn("[KOBA-I] Waiting for React dependencies...");
+            setTimeout(bootKobaSystems, 100);
             return;
         }
 
-        console.log("[KOBA-I] Booting Agnostic Engine...");
         const { createElement: e } = window.React;
+        // Default to production dashboard if config is missing
         const config = window.JubileeConfig || { 
             endpoints: { 
                 publicProduct: "https://dashboard.koba-i.com/api/products/public", 
@@ -195,28 +246,44 @@
             }
         };
         
+        // 1. Mount Catalog
         const catalogNode = document.getElementById("jubilee-catalog-root");
-        if (catalogNode) {
-            console.log("[KOBA-I] Found Catalog Mount Point.");
+        if (catalogNode && !catalogNode.hasAttribute('data-mounted')) {
+            console.log("[KOBA-I] Initializing Catalog Mount Point...");
+            catalogNode.setAttribute('data-mounted', 'true');
             const studioKey = catalogNode.getAttribute("data-studio-key");
-            const root = window.ReactDOM.createRoot(catalogNode);
-            root.render(e(JubileeCatalogApp, { studioKey, config }));
+            
+            try {
+                const root = window.ReactDOM.createRoot(catalogNode);
+                root.render(e(JubileeCatalogApp, { studioKey, config }));
+            } catch (err) {
+                console.error("[KOBA-I] React mounting sequence failed:", err);
+                catalogNode.innerHTML = `<div style="color:red; padding:20px; border:1px solid red;">Fatal Engine Error: ${err.message}</div>`;
+            }
         }
 
+        // 2. Mount Direct Player (If shortcode used outside catalog)
         const playerNode = document.getElementById("jubilee-bloom-root");
-        if (playerNode && !catalogNode) {
-             console.log("[KOBA-I] Found Player Mount Point.");
+        if (playerNode && !catalogNode && !playerNode.hasAttribute('data-mounted')) {
+             console.log("[KOBA-I] Initializing Direct Player Mount Point...");
+             playerNode.setAttribute('data-mounted', 'true');
              const assetId = playerNode.getAttribute("data-asset");
              const studioKey = playerNode.getAttribute("data-studio-key");
-             const root = window.ReactDOM.createRoot(playerNode);
-             root.render(e(JubileePlayerApp, { 
-                 assetId, studioKey, config, 
-                 onClose: () => { playerNode.innerHTML = '<div style="padding: 20px; color: #fff;">Player Closed. Refresh to reload.</div>'; } 
-             }));
+             
+             try {
+                 const root = window.ReactDOM.createRoot(playerNode);
+                 root.render(e(JubileePlayerApp, { 
+                     assetId, studioKey, config, 
+                     onClose: () => { playerNode.innerHTML = '<div style="padding: 20px; color: #64748b; font-family: system-ui;">Player Closed. Refresh to reload.</div>'; } 
+                 }));
+             } catch (err) {
+                 console.error("[KOBA-I] Player mounting sequence failed:", err);
+                 playerNode.innerHTML = `<div style="color:red; padding:20px; border:1px solid red;">Fatal Player Error: ${err.message}</div>`;
+             }
         }
     };
 
-    // Initialize safely
+    // Ensure DOM is ready before probing for mount points
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', bootKobaSystems);
     } else {
