@@ -1,7 +1,6 @@
 /**
- * KOBA-I JUBILEE WORKS: Universal Agnostic Rendering Engine (The Traffic Cop)
+ * KOBA-I JUBILEE WORKS: Universal Agnostic Rendering Engine
  * Refactored to pure React.createElement to bypass JSX browser SyntaxErrors.
- * 🚀 Zero Babel Required - Highly optimized for mobile & 4GB RAM devices
  */
 
 const { useState, useEffect, createElement: e } = window.React;
@@ -31,42 +30,13 @@ const JubileePlayerApp = ({ assetId, studioKey, config, onClose }) => {
                 window.kobaData = data;
                 setStatus('ready');
 
-                // 🚀 DYNAMIC CSS CODE-SPLITTING: Determine split files to load dynamically
-                const isEbook = assetId.startsWith('ebk_') || data.type === 'ebook' || data.type === 'E-Book';
-                const themeSheetId = 'koba-theme-sheet';
-                const playerEngineId = 'koba-player-engine-script';
-                
-                // Remove old stylesheet if active to prevent rendering collisions
-                const oldSheet = document.getElementById(themeSheetId);
-                if (oldSheet) oldSheet.remove();
-
-                const oldScript = document.getElementById(playerEngineId);
-                if (oldScript) oldScript.remove();
-
-                // 1. Load Dynamic Split CSS Assets
-                const link = document.createElement('link');
-                link.id = themeSheetId;
-                link.rel = 'stylesheet';
-                link.href = `https://dashboard.koba-i.com/assets/css/bloom-${isEbook ? 'reader' : 'audio'}.css`;
-                document.head.appendChild(link);
-
-                // 2. Load Dynamic Split Javascript Engine
-                const script = document.createElement('script');
-                script.id = playerEngineId;
-                script.src = `https://dashboard.koba-i.com/assets/bloom-${isEbook ? 'reader' : 'audio'}.js`;
-                script.onload = () => {
-                    setTimeout(() => {
-                        const root = document.getElementById('koba-bloom-root');
-                        if (root) {
-                            if (isEbook && window.initBloomReader) {
-                                window.initBloomReader(root, data);
-                            } else if (!isEbook && window.initBloomAudio) {
-                                window.initBloomAudio(root, data);
-                            }
-                        }
-                    }, 50);
-                };
-                document.body.appendChild(script);
+                // Trigger the actual Bloom Player logic
+                setTimeout(() => {
+                    const root = document.getElementById('koba-bloom-root');
+                    if (root && window.initBloomPlayer) {
+                        window.initBloomPlayer(root, data, 'full');
+                    }
+                }, 50);
 
             } catch (error) {
                 console.error("Jubilee Cloud Error:", error);
@@ -75,8 +45,7 @@ const JubileePlayerApp = ({ assetId, studioKey, config, onClose }) => {
         };
 
         fetchSaaSData();
-        // 🚀 RESOLVED LOOP: Primitive dependencies only. Removed transient 'config' object reference.
-    }, [assetId, studioKey]);
+    }, [assetId, studioKey]); // 🚀 Config removed from dependency array to guarantee NO API loops
 
     if (status === 'loading') {
         return e('div', { style: { position: 'fixed', inset: 0, zIndex: 999999, background: '#0f172a', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontFamily: 'sans-serif' } }, 'Decrypting Secure Stream...');
@@ -103,8 +72,9 @@ const JubileePlayerApp = ({ assetId, studioKey, config, onClose }) => {
                 color: '#fff', borderRadius: '50%', width: '40px', height: '40px', 
                 cursor: 'pointer', fontSize: '24px', display: 'flex', alignItems: 'center', 
                 justifyContent: 'center', backdropFilter: 'blur(5px)'
-            }
-        }, '×'),
+            },
+            innerHTML: '×'
+        }),
         // The mount point that bloom-player.js hooks into
         e('div', { id: 'koba-bloom-root' })
     );
@@ -123,7 +93,7 @@ const JubileeCatalogApp = ({ studioKey, config }) => {
             .then(res => res.json())
             .then(data => { setBooks(data); setLoading(false); })
             .catch(err => { console.error(err); setLoading(false); });
-    }, [studioKey]);
+    }, [studioKey]); // 🚀 Config removed from dependency array to guarantee NO API loops
 
     if (loading) return e('div', { style: { padding: '40px', textAlign: 'center', color: '#64748b' } }, 'Syncing Secure Catalog...');
     if (books.length === 0) return e('div', { style: { padding: '40px', textAlign: 'center', background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: '8px' } }, 'Your storefront is currently empty.');
@@ -132,7 +102,7 @@ const JubileeCatalogApp = ({ studioKey, config }) => {
         books.map(book => e('div', {
             key: book.id,
             onClick: () => setActiveAssetId(book.id), // Clicking a book launches the Bloom Player Overlay!
-            style: { cursor: 'pointer', background: '#1e293b', border: '1px solid #334155', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }
+            style: { cursor: 'pointer', background: '#1e293b', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }
         },
             e('div', { style: { aspectRatio: '2/3', background: '#0f172a', position: 'relative' } },
                 e('img', { src: book.coverArtUrl, style: { width: '100%', height: '100%', objectFit: 'cover' }, onError: (e) => e.target.style.display = 'none' }),
@@ -176,7 +146,7 @@ const bootKobaSystems = () => {
         root.render(e(JubileeCatalogApp, { studioKey, config }));
     }
 
-    // Mount Single Player (if placed manually via [koba_media_player])
+    // Mount Single Player (if placed manually via [jubilee_player])
     const playerNode = document.getElementById("jubilee-bloom-root");
     if (playerNode && !catalogNode) {
          const assetId = playerNode.getAttribute("data-asset");
@@ -189,7 +159,9 @@ const bootKobaSystems = () => {
     }
 };
 
-// Force boot even if loaded dynamically on Wix/Shopify
+// 🚀 THE FIX: Race-Condition Defense
+// Because WordPress injects this script late in the footer, DOMContentLoaded has likely ALREADY FIRED.
+// We must check if the document is already loaded, and if so, boot immediately.
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', bootKobaSystems);
 } else {
