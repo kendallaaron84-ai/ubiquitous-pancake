@@ -2,118 +2,111 @@ import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-// 1. Mandatory CORS Headers for WordPress Library Feeds
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, X-Studio-Key, Authorization, Origin',
 };
 
-// 2. Preflight OPTIONS Handler
 export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 204,
-    headers: CORS_HEADERS,
-  });
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
 
-// 3. The Multi-Tenant Library Index Builder
 export async function GET(request: Request) {
   try {
-    // Intercept the Studio Key passed by the client WordPress Library layout
+    const { searchParams } = new URL(request.url);
+    const authorEmailParam = searchParams.get('author')?.trim();
     const studioKey = request.headers.get('x-studio-key');
 
-    if (!studioKey) {
-      console.warn('⚠️ Library request blocked: Missing X-Studio-Key header.');
-      return NextResponse.json(
-        { error: 'Missing X-Studio-Key header. Unauthorized.' },
-        { status: 401, headers: CORS_HEADERS }
-      );
-    }
-
-    // 🔥 DYNAMIC RUNTIME IMPORT: For Next.js static build isolation
     const admin = require("firebase-admin");
-
-    if (!admin || !admin.apps || !admin.apps.length) {
-      try {
-        admin.initializeApp({
-          credential: admin.credential.applicationDefault(),
-        });
-      } catch (e) {
-        console.warn("⚠️ Firebase Admin fallback initialization triggered during build pass.");
-        return NextResponse.json({ message: "Database offline during build check." }, { status: 500, headers: CORS_HEADERS });
-      }
-    }
-
     const db = admin.firestore();
+    
+    let catalogItems: any[] = [];
+    let authorDisplayName = 'Sovereign Author';
 
-    // 4. Resolve the Owner (Author) of this License
-    const licenseDoc = await db.collection('licenses').doc(studioKey).get();
+    // 🚀 SCENARIO A: Request originates from your autonomous WordPress shortcode
+    if (authorEmailParam) {
+      console.log(`🔍 Headless Data Hub: Fetching items for author email: ${authorEmailParam}`);
 
-    if (!licenseDoc.exists) {
-      console.warn(`❌ Invalid license key accessed library catalog: ${studioKey}`);
-      return NextResponse.json(
-        { error: 'Invalid license key.' },
-        { status: 403, headers: CORS_HEADERS }
-      );
-    }
+      const productsSnapshot = await db.collection('products')
+        .where('authorEmail', '==', authorEmailParam)
+        .get();
 
-    const licenseData = licenseDoc.data() || {};
+      productsSnapshot.forEach((doc: any) => {
+        const data = doc.data();
+        if (data.status === 'published' || data.isPublished !== false) {
+          catalogItems.push({
+            id: doc.id,
+            assetKey: data.assetKey || doc.id,
+            title: data.title || 'Untitled Work',
+            price: parseFloat(data.price || 0),
+            type: data.type || 'audiobook',
+            coverUrl: data.coverUrl || data.coverArtUrl || '',
+            synopsis: data.synopsis || data.description || '',
+            accentColor: data.accentColor || '#f97316',
+            sections: data.sections || ['Featured Publications']
+          });
+        }
+      });
+      
+      authorDisplayName = authorEmailParam.split('@')[0];
+    } 
+    // 🔒 SCENARIO B: Dashboard internal workspace request via license keys
+    else if (studioKey) {
+      console.log(`🔑 License verification path: ${studioKey}`);
+      const licenseDoc = await db.collection('licenses').doc(studioKey).get();
 
-    if (licenseData.status !== 'active') {
-      return NextResponse.json(
-        { error: 'This license is inactive.' },
-        { status: 403, headers: CORS_HEADERS }
-      );
-    }
-
-    const authorId = licenseData.authorId;
-
-    if (!authorId) {
-      return NextResponse.json(
-        { error: 'License key is not bound to a valid author profile.' },
-        { status: 400, headers: CORS_HEADERS }
-      );
-    }
-
-    // 5. Query Products Collection scoped strictly to this Author
-    // Multi-tenant isolation: ensures Sharon never sees Mary's books!
-    const productsSnapshot = await db.collection('products')
-      .where('authorId', '==', authorId)
-      .get();
-
-    const libraryItems: any[] = [];
-
-    productsSnapshot.forEach((doc: any) => {
-      const data = doc.data();
-      // Only include items that are marked as ready/published
-      if (data.status === 'published' || data.isPublished !== false) {
-        libraryItems.push({
-          id: doc.id,
-          title: data.title || 'Untitled Work',
-          authorName: data.authorName || licenseData.authorName || 'Sovereign Author',
-          coverArtUrl: data.coverArtUrl || '',
-          description: data.description || '',
-          type: data.type || 'audiobook', // audiobook or ebook
-          duration: data.duration || null,
-          chapterCount: (data.studioTracks || []).length
-        });
+      if (!licenseDoc.exists) {
+        return NextResponse.json({ error: 'Invalid license key.' }, { status: 403, headers: CORS_HEADERS });
       }
-    });
 
-    console.log(`📚 Served ${libraryItems.length} books for Author: ${licenseData.authorEmail}`);
+      const licenseData = licenseDoc.data() || {};
+      const authorId = licenseData.authorId;
 
+      if (!authorId) {
+        return NextResponse.json({ error: 'License profile unlinked.' }, { status: 400, headers: CORS_HEADERS });
+      }
+
+      const productsSnapshot = await db.collection('products')
+        .where('authorId', '==', authorId)
+        .get();
+
+      productsSnapshot.forEach((doc: any) => {
+        const data = doc.data();
+        if (data.status === 'published' || data.isPublished !== false) {
+          catalogItems.push({
+            id: doc.id,
+            assetKey: data.assetKey || doc.id,
+            title: data.title || 'Untitled Work',
+            price: parseFloat(data.price || 0),
+            type: data.type || 'audiobook',
+            coverUrl: data.coverUrl || data.coverArtUrl || '',
+            synopsis: data.synopsis || data.description || '',
+            accentColor: data.accentColor || '#f97316',
+            sections: data.sections || ['Featured Publications']
+          });
+        }
+      });
+
+      authorDisplayName = licenseData.authorName || 'Sovereign Author';
+    } else {
+      return NextResponse.json({ error: 'Missing identifying context parameters.' }, { status: 400, headers: CORS_HEADERS });
+    }
+
+    // Returns structural compatibility payloads for all components
     return NextResponse.json({
       success: true,
-      authorName: licenseData.authorName || 'Sovereign Author',
-      books: libraryItems
+      authorName: authorDisplayName,
+      products: catalogItems, // Matches what jubilee-core.js tries to loop over
+      books: catalogItems,    // Backwards tracking fallback
+      entitlements: []
     }, {
       status: 200,
       headers: CORS_HEADERS
     });
 
   } catch (error: any) {
-    console.error('🔥 Library Manifest API Error:', error);
+    console.error('🔥 Library Manifest Route Error:', error);
     return NextResponse.json(
       { error: 'Internal Server Error', details: error.message },
       { status: 500, headers: CORS_HEADERS }

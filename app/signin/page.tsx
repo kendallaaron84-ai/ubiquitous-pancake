@@ -4,7 +4,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/core/firebase';
-import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, User } from 'firebase/auth';
 import { Mail, Lock, ShieldAlert, Volume2, ArrowRight } from 'lucide-react';
 
 export default function SignInPage() {
@@ -27,9 +27,10 @@ export default function SignInPage() {
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       await exchangeToken(userCredential.user);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Email Login Error:', err);
-      setErrorMsg(err.message || 'Invalid email or password.');
+      const errorMessage = err instanceof Error ? err.message : 'Invalid email or password.';
+      setErrorMsg(errorMessage);
       setLoading(false);
     }
   };
@@ -43,10 +44,12 @@ export default function SignInPage() {
     try {
       const userCredential = await signInWithPopup(auth, provider);
       await exchangeToken(userCredential.user);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Google Sign-In Error:', err);
+      // Type assertion for Firebase error codes
+      const firebaseError = err as { code?: string };
       // Ignore user cancellation errors
-      if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
+      if (firebaseError.code !== 'auth/popup-closed-by-user' && firebaseError.code !== 'auth/cancelled-popup-request') {
         setErrorMsg('Google authentication failed. Please try again.');
       }
       setGoogleLoading(false);
@@ -54,7 +57,7 @@ export default function SignInPage() {
   };
 
   // 3. Secure Token Exchange (Handshake with Next.js Backend)
-  const exchangeToken = async (user: any) => {
+  const exchangeToken = async (user: User) => {
     try {
       // Get the fresh identity token from the client SDK
       const idToken = await user.getIdToken(true);
@@ -76,9 +79,10 @@ export default function SignInPage() {
 
       // Success: Next.js has set the secure HttpOnly cookie. Redirect to dashboard.
       router.push('/');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Exchange Handshake Error:', err);
-      setErrorMsg(err.message || 'Failed to authenticate session with the server.');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to authenticate session with the server.';
+      setErrorMsg(errorMessage);
       setLoading(false);
       setGoogleLoading(false);
     }

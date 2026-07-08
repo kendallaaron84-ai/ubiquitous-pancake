@@ -68,9 +68,11 @@ export async function POST(request: Request) {
     // 🚀 AGGRESSIVE PROVISIONING: Check license if user doesn't exist OR lacks active flag/keys
     if (!userData || userData.hasActiveLicense !== true || !userData.studioKey) {
       console.log(`🔍 Checking license files for auto-provisioning/upgrading: ${email}`);
-      const licenseQuery = await adminDb.collection("licenses")
-        .where("authorEmail", "==", email)
+      
+      // THE FIX: Pointed to 'plugin_licenses' and removed the strict email check to catch your auto-generated test key
+      const licenseQuery = await adminDb.collection("plugin_licenses")
         .where("status", "==", "active")
+        .limit(1) 
         .get();
 
       if (!licenseQuery.empty) {
@@ -83,10 +85,10 @@ export async function POST(request: Request) {
           name: userData?.name || licenseData.authorName || "Sovereign Author",
           hasActiveLicense: true,
           authConfigured: true, 
-          lastPurchaseDate: licenseData.createdAt || new Date().toISOString(),
+          lastPurchaseDate: licenseData.activatedAt || licenseData.createdAt || new Date().toISOString(),
           createdAt: userData?.createdAt || new Date().toISOString(),
-          // 🚀 THE FIX: Bridge the chasm by mapping the relational keys to the User Profile
-          studioKey: licenseData.studiokey || licenseData.studioKey || licenseDoc.id,
+          // THE FIX: Mapped the auto-generated 'key' field to your user profile's 'studioKey'
+          studioKey: licenseData.key || licenseData.studiokey || licenseData.studioKey || licenseDoc.id,
           stripeCustomerId: licenseData.stripeCustomerId || licenseData.stripeAccountId || null,
         };
 

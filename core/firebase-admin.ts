@@ -1,30 +1,35 @@
 import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
-import { getStorage } from 'firebase-admin/storage';
 
-const projectId = process.env.FIREBASE_PROJECT_ID || "author-jubilee-command-center";
-
-if (getApps().length === 0) {
+if (!getApps().length) {
   try {
-    if (process.env.FIREBASE_PRIVATE_KEY) {
+    let privateKey = process.env.FIREBASE_PRIVATE_KEY || '';
+    let clientEmail = process.env.FIREBASE_CLIENT_EMAIL || '';
+    let projectId = process.env.FIREBASE_PROJECT_ID || '';
+    
+    // 🛡️ Aggressively clean ALL variables of rogue spaces, quotes, and bad line breaks
+    privateKey = privateKey.replace(/\\n/g, '\n').replace(/^"|"$/g, '').trim();
+    clientEmail = clientEmail.replace(/^"|"$/g, '').trim();
+    projectId = projectId.replace(/^"|"$/g, '').trim();
+
+    if (privateKey && clientEmail && projectId) {
       initializeApp({
         credential: cert({
           projectId: projectId,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+          clientEmail: clientEmail,
+          privateKey: privateKey,
         }),
-        storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
       });
-      console.log("🚀 Firebase Admin SDK initialized seamlessly.");
+      console.log(`🔥 Firebase Admin securely connected to Project: ${projectId}`);
     } else {
-      console.warn("⚠️ FIREBASE_PRIVATE_KEY is missing. Skipping init during static build.");
+      console.warn('⚠️ Firebase environment variables missing. Admin SDK bypassed.');
     }
-  } catch (error) {
-    console.error("❌ Firebase Admin SDK critical initialization failure:", error);
+  } catch (error: any) {
+    console.error('🚨 Firebase Admin Initialization Error:', error.message);
   }
 }
 
-export const adminDb = getFirestore();
-export const adminAuth = getAuth();
-export const adminStorage = getStorage();
+// Export the modular instances cleanly
+export const adminDb = getApps().length ? getFirestore() : null as any;
+export const adminAuth = getApps().length ? getAuth() : null as any;
