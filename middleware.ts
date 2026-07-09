@@ -38,5 +38,14 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  matcher: [
+    /*
+     * Match all request paths except for the ones starting with:
+     * - api/products/public
+     * - api/auth/sms-send
+     * - api/auth/sms-verify
+     * - api/checkout
+     */
+    '/((?!_next/static|_next/image|favicon.ico|api/products/public|api/auth/sms-send|api/auth/sms-verify|api/checkout).*)',
+  ],
 };

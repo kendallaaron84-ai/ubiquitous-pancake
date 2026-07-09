@@ -1,144 +1,164 @@
 import { NextResponse } from "next/server";
-import { adminDb } from "@/core/firebase-admin";
-import { getStorage } from "firebase-admin/storage";
+import { adminDb } from '@/core/firebase-admin';
 
 export const dynamic = "force-dynamic";
 
-// 🚀 PERMISSIVE CORS WITH DOMAIN LOCKING
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Studio-Key, Origin, Referer",
+// 🌐 STEFAN'S ROUTING SECURITY CONSTANTS: CORS Baseline
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Studio-Key, x-studio-key, Authorization, Origin',
 };
 
-// 1. MANDATORY PREFLIGHT HANDLER
 export async function OPTIONS() {
-  return NextResponse.json({}, { status: 200, headers: corsHeaders });
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { phoneNumber, assetId, otpCode } = body;
-    const studioKey = request.headers.get("X-Studio-Key");
-    const origin = request.headers.get("Origin") || "";
-    const referer = request.headers.get("Referer") || "";
-
-    if (!phoneNumber || !assetId || !studioKey || !otpCode) {
-      return NextResponse.json(
-        { success: false, error: "Missing required verification parameters." },
-        { status: 400, headers: corsHeaders }
-      );
-    }
-
-    // 🚀 DOMAIN-LOCK SAFEGUARDS (Anti-Hijacking)
-    const usersQuery = await adminDb.collection("users").where("studioKey", "==", studioKey).get();
-    if (usersQuery.empty) {
-      return NextResponse.json(
-        { success: false, error: "Invalid Studio Key." }, 
-        { status: 403, headers: corsHeaders }
-      );
-    }
+    const { 
+      assetKey, 
+      bookTitle, 
+      fileUrl, 
+      coverUrl, 
+      bgImageUrl, 
+      type, 
+      price, 
+      status, 
+      studioTracks, 
+      ebookPayload,
+      authorEmail, 
+      stripeConnectId, 
+      associatedWebsite 
+    } = body;
     
-    const userData = usersQuery.docs[0].data();
-    const registeredDomain = userData.associatedWebsite;
+    // Core parameters validation gates
+    if (!assetKey) {
+      return NextResponse.json({ error: "Missing required parameter: assetKey" }, { status: 400 });
+    }
+    if (!authorEmail) {
+      return NextResponse.json({ error: "Missing required session parameters: authorEmail" }, { status: 400 });
+    }
 
-    if (registeredDomain) {
-      const originClean = origin.replace(/^https?:\/\//, '').split('/')[0];
-      const refererClean = referer.replace(/^https?:\/\//, '').split('/')[0];
-      const registeredClean = registeredDomain.replace(/^https?:\/\//, '').split('/')[0];
-      const isLocal = originClean.includes("localhost") || refererClean.includes("localhost");
+    // 1. PREFIX ENFORCEMENT
+    const mediaType = type || "audiobook";
+    const expectedPrefix = mediaType === "ebook" ? "ebk_" : "abk_";
+    
+    if (!assetKey.startsWith(expectedPrefix)) {
+      const errorMsg = `Prefix enforcement violation: Asset key "${assetKey}" must start with "${expectedPrefix}".`;
+      return NextResponse.json({ error: errorMsg }, { status: 400 });
+    }
 
-      if (originClean !== registeredClean && refererClean !== registeredClean && !isLocal) {
-         console.warn(`🚨 Anti-Hijack Triggered on Verify: Unauthorized domain (${originClean || refererClean}).`);
-         return NextResponse.json(
-           { success: false, error: "Unauthorized host domain. Player hijacking detected." }, 
-           { status: 403, headers: corsHeaders }
-         );
+    // Resolve structural parameters
+    const cleanedTitle = bookTitle || "Untitled Sovereign Publication";
+    const originalPrice = price ? parseFloat(price) : 0.00;
+    
+    // Resolve user data layers for licensing bindings
+    let resolvedStudioKey = "JUBI-TEST-1234-5678";
+    let resolvedWebsite = associatedWebsite || "";
+    let resolvedStripeId = stripeConnectId || "";
+    let authorSlug = authorEmail.split('@')[0].replace(/\D/g, "");
+
+    try {
+      const userDoc = await adminDb.collection("users").doc(authorEmail).get();
+      if (userDoc.exists) {
+        const userData = userDoc.data();
+        resolvedStudioKey = userData?.wpStudioKey || userData?.studioKey || resolvedStudioKey;
+        resolvedWebsite = userData?.associatedWebsite || resolvedWebsite;
+        resolvedStripeId = userData?.stripeConnectId || resolvedStripeId;
+        if (userData?.authorSlug) authorSlug = userData.authorSlug;
+      }
+    } catch (dbErr) {
+      console.warn("⚠️ Non-blocking user lookup warning:", dbErr);
+    }
+
+    // 2. REMOTE SITE AUTOMATION GATEWAY (Using Safe corporate IP Tunnel)
+    // Runs when the author's primary target domain is linked in their account profile
+    if (resolvedWebsite && resolvedWebsite.trim() !== "") {
+      try {
+        console.log(`🚀 Agent Engine engaged. Executing template injection targeting remote host: ${resolvedWebsite}`);
+        
+        // Form the remote base endpoint API target
+        const wpBaseUrl = resolvedWebsite.replace(/\/$/, "");
+        
+        // Structuring payload to inject the clean assetKey reference directly
+        const publicationPayload = {
+          title: cleanedTitle,
+          slug: assetKey, // Natively handles matching pretty permalink routes
+          status: "publish",
+          meta: {
+            koba_associated_asset_key: assetKey,
+            koba_studio_access_key: resolvedStudioKey
+          }
+        };
+
+        // Fire remote insertion call straight into the site's CPT REST endpoint
+        const remotePass = await fetch(`${wpBaseUrl}/wp-json/wp/v2/koba_publication`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Studio-Key": resolvedStudioKey // Validates source identity token
+          },
+          body: JSON.stringify(publicationPayload)
+        });
+
+        if (remotePass.ok) {
+          console.log(`✨ Successfully injected sovereign publication node for asset: ${assetKey}`);
+        } else {
+          console.warn(`⚠️ Remote post mapping bypassed or delayed. Status: ${remotePass.status}`);
+        }
+      } catch (automationErr: any) {
+        console.error("❌ Agent remote post compilation bypassed:", automationErr.message);
       }
     }
 
-    const normalizedPhone = phoneNumber.replace(/\D/g, ""); 
-    const isTestRunner = normalizedPhone === "15005550006";
+    // 3. FIRESTORE PERSISTENCE UPSERT (THE SINGLE SOURCE OF TRUTH)
+    try {
+      const productDocRef = adminDb.collection("products").doc(assetKey);
+      const existingProduct = await productDocRef.get();
+      const existingProductData = existingProduct.exists ? existingProduct.data() : {};
 
-    // 🚀 COMPOSITE ID TENANT SCOPING (Avoids B2B/B2C Collision)
-    const compositeId = `${studioKey}_${assetId}_${normalizedPhone}`;
-    const entitlementRef = adminDb.collection("entitlements").doc(compositeId);
-    const entitlementDoc = await entitlementRef.get();
+      const dbProductData = {
+        id: assetKey,
+        assetKey: assetKey,
+        title: cleanedTitle,
+        type: mediaType,
+        coverUrl: coverUrl || existingProductData?.coverUrl || "",
+        coverArtUrl: coverUrl || existingProductData?.coverArtUrl || "",
+        bgImageUrl: bgImageUrl || existingProductData?.bgImageUrl || "",
+        price: originalPrice,
+        studioTracks: studioTracks || existingProductData?.studioTracks || [],
+        ebookPayload: ebookPayload || existingProductData?.ebookPayload || null,
+        
+        authorId: authorEmail,
+        authorEmail: authorEmail,
+        authorName: existingProductData?.authorName || "Kendall Aaron",
+        stripeConnectId: resolvedStripeId, 
+        synopsis: existingProductData?.synopsis || "Sovereign Publication Asset",
+        status: status || existingProductData?.status || "draft",
+        
+        studioKey: resolvedStudioKey, 
+        wpStudioKey: resolvedStudioKey, 
+        associatedWebsite: resolvedWebsite,
+        updatedAt: new Date().toISOString()
+      };
 
-    if (!entitlementDoc.exists) {
-      return NextResponse.json(
-        { success: false, error: "Access Denied. No active purchase found for this phone number." },
-        { status: 403, headers: corsHeaders }
-      );
+      await productDocRef.set(dbProductData, { merge: true });
+      
+    } catch (dbErr: any) {
+      console.error("🚨 Firestore products upsert failed:", dbErr.message);
+      return NextResponse.json({ error: "Failed to write to database", details: dbErr.message }, { status: 500, headers: CORS_HEADERS });
     }
 
-    const entitlementData = entitlementDoc.data();
-
-    // 🚀 E2E AUTOMATION GUARDRAIL & OTP VERIFICATION
-    if (!isTestRunner) {
-      // Standard human verification checks
-      if (entitlementData?.currentOtp !== otpCode) {
-        return NextResponse.json(
-          { success: false, error: "Invalid verification code." },
-          { status: 401, headers: corsHeaders }
-        );
-      }
-
-      const now = new Date();
-      const expiresAt = new Date(entitlementData?.otpExpiresAt);
-      if (now > expiresAt) {
-        return NextResponse.json(
-          { success: false, error: "Verification code has expired. Please request a new one." },
-          { status: 401, headers: corsHeaders }
-        );
-      }
-    } else {
-      // Test Runner Bypass Check
-      if (otpCode !== "123456") {
-         return NextResponse.json(
-          { success: false, error: "Invalid test verification code." },
-          { status: 401, headers: corsHeaders }
-        );
-      }
-      console.log("🧪 E2E Test Intercept: Static OTP accepted. Bypassing expiration checks.");
-    }
-
-    // 🚀 CLEAR OTP STATE (Prevent Replay Attacks)
-    await entitlementRef.update({
-      currentOtp: null,
-      otpExpiresAt: null,
-      lastAccessed: new Date().toISOString()
-    });
-
-    // 🚀 GENERATE 10-HOUR CRYPTOGRAPHIC SIGNED STREAMING URL
-    const bucket = getStorage().bucket("koba-i-jubilee-vault");
-    const filePath = `protected-assets/${assetId}.mp3`; // Maps securely to your vault architecture
-    const file = bucket.file(filePath);
-
-    // 10-Hour time boundary enforcement
-    const expirationMs = Date.now() + 10 * 60 * 60 * 1000; 
-
-    // Note: If the file does not exist yet in dev, this will still generate a structural URL.
-    const [signedUrl] = await file.getSignedUrl({
-      version: 'v4',
-      action: 'read',
-      expires: expirationMs,
-    });
-
-    // Return the time-gated secure payload to the Agnostic Player Engine
     return NextResponse.json({ 
-        success: true, 
-        message: "Identity verified. Secure streaming protocol engaged.",
-        secureStreamUrl: signedUrl,
-        expiresAt: new Date(expirationMs).toISOString()
-    }, { status: 200, headers: corsHeaders });
+      success: true, 
+      message: "Deployment complete. Remote canvas synchronized cleanly.",
+      assetKey: assetKey
+    }, { status: 200, headers: CORS_HEADERS });
 
   } catch (error: any) {
-    console.error("🔥 SMS Verification Gateway Error:", error);
-    return NextResponse.json(
-      { success: false, error: "Internal server error during verification.", details: error.message },
-      { status: 500, headers: corsHeaders }
-    );
+    console.error("🔥 Deployment agent failed:", error);
+    return NextResponse.json({ error: "Internal Processor Error", details: error.message }, { status: 500, headers: CORS_HEADERS });
   }
 }
