@@ -39,9 +39,13 @@ export async function POST(request: Request) {
     }
 
     // 🚀 TEMPORARY DEV OVERRIDE GATES: If any parameter is missing, autofill with safe mock values to prevent a 400 crash!
-    const finalPhone = phoneNumber || "15005550006"; // Fallback to Twilio Test Sandbox number
-    const finalAssetId = assetId || "abk_kendall_one_million_followers";
-    const finalStudioKey = studioKey || "MOCK_DEVELOPMENT_KEY";
+    const finalPhone = phoneNumber;
+    const finalAssetId = assetId;
+    const finalStudioKey = studioKey;
+
+    if (!finalStudioKey || !finalAssetId || !finalPhone) {
+      return NextResponse.json({ error: 'Missing mandatory execution context variables.' }, { status: 400 });
+}
 
     console.log(`🎯 Resolved Parameters -> Phone: ${finalPhone}, Asset: ${finalAssetId}, Key: ${finalStudioKey}`);
 

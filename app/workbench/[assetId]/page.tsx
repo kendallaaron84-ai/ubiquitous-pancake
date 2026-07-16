@@ -47,7 +47,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     const fetchManuscript = async () => {
       try {
         console.log("🎯 Workbench attempting connection for assetId:", assetId);
-        const docRef = doc(db, "products", assetId); 
+        const docRef = doc(db, "assets", assetId);
         const docSnap = await getDoc(docRef);
         
         if (docSnap.exists()) {
@@ -103,7 +103,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
         const audioUrl = await getDownloadURL(uploadTask.snapshot.ref);
         
         // 3. Update the Firestore document so the Player instantly sees the new file
-        const docRef = doc(db, "products", assetId);
+        const docRef = doc(db, "assets", assetId);
         await updateDoc(docRef, {
             [`audioMap.${chapterId}`]: audioUrl // Maps this chapter to the new mastered file
         });
@@ -116,7 +116,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     if (!bookData) return;
     setIsSaving(true);
     try {
-      const docRef = doc(db, "products", assetId); 
+      const docRef = doc(db, "assets", assetId);
       
       // 🚀 THE FIX: We map your editor's data into the exact `ebookPayload` structure the WordPress agent expects
       const formattedChapters = bookData.chapters.map((ch: any) => ({

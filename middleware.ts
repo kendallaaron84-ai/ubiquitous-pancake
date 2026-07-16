@@ -2,50 +2,42 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
 export function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+  const { pathname } = request.nextUrl; //[cite: 7]
 
   // 🚀 PATHWAY EXCEPTIONS: Prevent middleware from blocking or redirecting auth/public routes
   const isPublicRoute = 
-    pathname.startsWith('/signin') || 
-    pathname.startsWith('/signup') || 
-    pathname.startsWith('/setup-password') || 
-    pathname.startsWith('/api/login') || 
-    pathname.startsWith('/api/auth/activate') ||
-    pathname.startsWith('/api/auth/sms-send') ||    // 🚀 UNLOCKED: Twilio OTP Dispatch
-    pathname.startsWith('/api/auth/sms-verify') ||  // 🚀 UNLOCKED: Twilio OTP Verification
-    pathname.startsWith('/api/products/public') ||  // 🚀 UNLOCKED: Public Catalog & Player Fetch
-    pathname.startsWith('/api/webhook') ||
-    pathname.startsWith('/_next') ||
-    pathname.endsWith('.png') ||
-    pathname.endsWith('.jpg') ||
-    pathname.endsWith('.svg') ||
-    pathname.endsWith('.ico');
+    pathname.startsWith('/signin') || //[cite: 7]
+    pathname.startsWith('/signup') || //[cite: 7]
+    pathname.startsWith('/setup-password') || //[cite: 7]
+    pathname.startsWith('/api/login') || //[cite: 7]
+    pathname.startsWith('/api/auth/activate') || //[cite: 7]
+    pathname.startsWith('/api/auth/sms-send') ||    // 🚀 UNLOCKED: Twilio OTP Dispatch[cite: 7]
+    pathname.startsWith('/api/auth/sms-verify') ||  // 🚀 UNLOCKED: Twilio OTP Verification[cite: 7]
+    pathname.startsWith('/api/products/public') ||  // 🚀 UNLOCKED: Public Catalog & Player Fetch[cite: 7]
+    pathname.startsWith('/api/verify-entitlement') || // 🎯 UNLOCKED: External WordPress Player Handshakes[cite: 7]
+    pathname.startsWith('/api/webhook') || //[cite: 7]
+    pathname.startsWith('/_next') || //[cite: 7]
+    pathname.endsWith('.png') || //[cite: 7]
+    pathname.endsWith('.jpg') || //[cite: 7]
+    pathname.endsWith('.svg') || //[cite: 7]
+    pathname.endsWith('.ico'); //[cite: 7]
 
   if (isPublicRoute) {
-    return NextResponse.next();
+    return NextResponse.next(); //[cite: 7]
   }
 
-  // Retrieve user session verification flags (custom-engineered for dashboard.koba-i.com)
-  const sessionToken = request.cookies.get('session-token');
+  const sessionToken = request.cookies.get('session-token'); //[cite: 7]
 
-  if (!sessionToken) {
-    // Redirect unauthenticated dashboard users cleanly to sign-in page
-    const loginUrl = new URL('/signin', request.url);
-    return NextResponse.redirect(loginUrl);
+  if (!sessionToken) { //[cite: 7]
+    const loginUrl = new URL('/signin', request.url); //[cite: 7]
+    return NextResponse.redirect(loginUrl); //[cite: 7]
   }
 
-  return NextResponse.next();
+  return NextResponse.next(); //[cite: 7]
 }
 
 export const config = {
   matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - api/products/public
-     * - api/auth/sms-send
-     * - api/auth/sms-verify
-     * - api/checkout
-     */
-    '/((?!_next/static|_next/image|favicon.ico|api/products/public|api/auth/sms-send|api/auth/sms-verify|api/checkout).*)',
+    '/((?!_next/static|_next/image|favicon.ico|api/products/public|api/auth/sms-send|api/auth/sms-verify|api/verify-entitlement|api/checkout).*)', //[cite: 7]
   ],
 };

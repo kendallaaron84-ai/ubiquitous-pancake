@@ -18,7 +18,7 @@ export async function GET(request: Request) {
 
     // 🎯 PRIORITY 1: Audiobook Product Catalog Pass (?author= or ?asset= explicitly present)
     if (authorParam || assetParam) {
-      console.log(`📚 Audiobook Catalog Engine: Fetching listings for: ${authorParam || assetParam}`);
+      console.log(`📡 Audiobook Catalog Engine: Fetching listings for: ${authorParam || assetParam}`);
 
       const targetAuthor = authorParam || "kendall";
       let queryRef = targetAuthor.includes('@') 
@@ -37,7 +37,14 @@ export async function GET(request: Request) {
             title: data.title || data.bookTitle || 'Untitled Publication',
             price: parseFloat(data.price || 0),
             type: data.type || 'audiobook',
-            coverUrl: data.coverUrl || data.coverArtUrl || '',
+            // 🎯 FIXED: Correct field footprint alignment prioritizing your explicit Cloud storage keys
+            coverUrl: data.coverArtUrl || data.coverUrl || '',
+            coverArtUrl: data.coverArtUrl || data.coverUrl || '',
+            bgImageUrl: data.bgImageUrl || '',
+            bgImage: data.bgImageUrl || '',
+            // 🚀 FIXED: Pass the studio audio tracks down to the public catalog context cleanly!
+            audioUrl: data.audioUrl || data.mediaUrl || '',
+            chapters: data.chapters || data.studioTracks || [],
             synopsis: data.synopsis || data.description || 'Sovereign Content Engine Vol.',
             accentColor: data.accentColor || '#f97316',
             sections: data.sections || ['Featured Publications']
@@ -53,17 +60,19 @@ export async function GET(request: Request) {
           title: "The Case of the Missing Carrot",
           price: 0.00,
           type: "audiobook",
-          coverUrl: "",
+          coverUrl: "https://firebasestorage.googleapis.com/v0/b/jubilee-command-center---dev.firebasestorage.app/o/assets%2Fabk_the-case-of-the-missing-carrot_coverUrl_500%20Missing%20Carrot%20-%20Cover%20Art.png?alt=media",
+          bgImageUrl: "https://firebasestorage.googleapis.com/v0/b/jubilee-command-center---dev.firebasestorage.app/o/assets%2Fabk_the-case-of-the-missing-carrot_bgImageUrl_bgMissing%20Carrot.jpg?alt=media",
           synopsis: "Sovereign Content Engine Preview Pass Context.",
           accentColor: "#f97316",
-          sections: ['Featured Publications']
+          sections: ['Featured Publications'],
+          chapters: []
         });
       }
 
       return NextResponse.json({
         success: true,
         authorName: targetAuthor.includes('@') ? targetAuthor.split('@')[0] : targetAuthor,
-        products: catalogItems, // Fully populated arrays dissolve infinite spin instantly
+        products: catalogItems, 
         books: catalogItems,
         content: []
       }, {

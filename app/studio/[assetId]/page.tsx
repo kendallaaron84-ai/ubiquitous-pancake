@@ -28,7 +28,7 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
     if (!assetId) return;
     const fetchProduct = async () => {
       try {
-        const docRef = doc(db, "products", assetId); 
+        const docRef = doc(db, "assets", assetId);
         const docSnap = await getDoc(docRef);
         
         if (docSnap.exists()) {
@@ -50,7 +50,7 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
   // Unified save handler to commit current track array to Firestore
   const saveTracksToDatabase = async (currentTracks: any[]) => {
     try {
-      const docRef = doc(db, "products", assetId); 
+      const docRef = doc(db, "assets", assetId);
       await updateDoc(docRef, { 
         studioTracks: currentTracks,
         mediaType: mediaType,
