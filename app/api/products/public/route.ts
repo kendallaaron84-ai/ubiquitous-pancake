@@ -1,142 +1,382 @@
-import { NextResponse } from 'next/server';
-import { adminDb } from '@/core/firebase-admin';
+import { NextResponse } from "next/server";
+import { adminDb } from "@/core/firebase-admin";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: getCorsHeaders() });
+  return new NextResponse(null, {
+    status: 204,
+    headers: getCorsHeaders(),
+  });
 }
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const authorParam = searchParams.get('author')?.trim();
-    const assetParam = searchParams.get('asset')?.trim();
-    const limitParam = searchParams.get('limit') || '10';
-    
-    const studioKey = request.headers.get('x-studio-key') || request.headers.get('X-Studio-Key');
 
-    // 🎯 PRIORITY 1: Audiobook Product Catalog Pass (?author= or ?asset= explicitly present)
+    const authorParam = searchParams.get("author")?.trim();
+    const assetParam = searchParams.get("asset")?.trim();
+    const limitParam = searchParams.get("limit") || "50";
+
+    const studioKey =
+      request.headers.get("x-studio-key") ||
+      request.headers.get("X-Studio-Key");
+
+    /*
+     * PUBLIC PRODUCT ROUTING
+     *
+     * Catalog:
+     *   ?author=global
+     *
+     * Single publication:
+     *   ?asset=ebk_sample-ebook
+     */
     if (authorParam || assetParam) {
-      console.log(`📡 Audiobook Catalog Engine: Fetching listings for: ${authorParam || assetParam}`);
+      const targetAuthor = (authorParam || "global").trim();
 
-      const targetAuthor = authorParam || "kendall";
-      let queryRef = targetAuthor.includes('@') 
-        ? adminDb.collection('products').where('authorEmail', '==', targetAuthor)
-        : adminDb.collection('products').where('authorSlug', '==', targetAuthor);
+      const requestedLimit = Math.min(
+        Math.max(
+          Number.parseInt(limitParam, 10) || 50,
+          1
+        ),
+        100
+      );
 
-      const productsSnapshot = await queryRef.limit(parseInt(limitParam)).get();
-      const catalogItems: any[] = [];
+      let productDocs: FirebaseFirestore.DocumentSnapshot[] =
+        [];
 
-      productsSnapshot.forEach((doc: any) => {
-        const data = doc.data();
-        if (data.status === 'published' || data.isPublished !== false) {
-          catalogItems.push({
-            id: doc.id,
-            assetKey: data.assetKey || doc.id,
-            title: data.title || data.bookTitle || 'Untitled Publication',
-            price: parseFloat(data.price || 0),
-            type: data.type || 'audiobook',
-            // 🎯 FIXED: Correct field footprint alignment prioritizing your explicit Cloud storage keys
-            coverUrl: data.coverArtUrl || data.coverUrl || '',
-            coverArtUrl: data.coverArtUrl || data.coverUrl || '',
-            bgImageUrl: data.bgImageUrl || '',
-            bgImage: data.bgImageUrl || '',
-            // 🚀 FIXED: Pass the studio audio tracks down to the public catalog context cleanly!
-            audioUrl: data.audioUrl || data.mediaUrl || '',
-            chapters: data.chapters || data.studioTracks || [],
-            synopsis: data.synopsis || data.description || 'Sovereign Content Engine Vol.',
-            accentColor: data.accentColor || '#f97316',
-            sections: data.sections || ['Featured Publications']
-          });
+      /*
+       * Reader mode: retrieve one product.
+       */
+      if (assetParam) {
+        const directSnapshot = await adminDb
+          .collection("products")
+          .doc(assetParam)
+          .get();
+
+        if (directSnapshot.exists) {
+          productDocs = [directSnapshot];
+        } else {
+          const fallbackSnapshot = await adminDb
+            .collection("products")
+            .where("assetKey", "==", assetParam)
+            .limit(1)
+            .get();
+
+          productDocs = fallbackSnapshot.docs;
         }
-      });
+      } else {
+        /*
+         * Catalog mode: retrieve the global library
+         * or one author's library.
+         */
+        let queryRef: FirebaseFirestore.Query =
+          adminDb.collection("products");
 
-      // If specific asset was requested via permalink filter pass, fallback setup
-      if (catalogItems.length === 0 && assetParam) {
-        catalogItems.push({
-          id: assetParam,
-          assetKey: assetParam,
-          title: "The Case of the Missing Carrot",
-          price: 0.00,
-          type: "audiobook",
-          coverUrl: "https://firebasestorage.googleapis.com/v0/b/jubilee-command-center---dev.firebasestorage.app/o/assets%2Fabk_the-case-of-the-missing-carrot_coverUrl_500%20Missing%20Carrot%20-%20Cover%20Art.png?alt=media",
-          bgImageUrl: "https://firebasestorage.googleapis.com/v0/b/jubilee-command-center---dev.firebasestorage.app/o/assets%2Fabk_the-case-of-the-missing-carrot_bgImageUrl_bgMissing%20Carrot.jpg?alt=media",
-          synopsis: "Sovereign Content Engine Preview Pass Context.",
-          accentColor: "#f97316",
-          sections: ['Featured Publications'],
-          chapters: []
-        });
+        if (
+          targetAuthor.toLowerCase() !== "global"
+        ) {
+          queryRef = queryRef.where(
+            "authorEmail",
+            "==",
+            targetAuthor
+          );
+        }
+
+        const productsSnapshot = await queryRef
+          .limit(requestedLimit)
+          .get();
+
+        productDocs = productsSnapshot.docs;
       }
 
-      return NextResponse.json({
-        success: true,
-        authorName: targetAuthor.includes('@') ? targetAuthor.split('@')[0] : targetAuthor,
-        products: catalogItems, 
-        books: catalogItems,
-        content: []
-      }, {
-        status: 200,
-        headers: getCorsHeaders()
+      console.log("[KOBA Catalog] Request", {
+        targetAuthor,
+        assetParam: assetParam || null,
+        mode: assetParam
+          ? "single-publication"
+          : "catalog",
+        documentCount: productDocs.length,
       });
-    }
 
-    // 🎯 PRIORITY 2: Fallback to AI Blogging Engine (If no catalog parameters are specified)
-    if (studioKey) {
-      console.log(`📰 Blogging Content Engine: Fetching blueprints for key token context: ${studioKey}`);
-      
-      const contentSnap = await adminDb.collection('content_blueprints')
-        .where('executionState', '==', 'completed')
-        .orderBy('createdAt', 'desc')
-        .limit(parseInt(limitParam))
-        .get();
+      const catalogItems: Record<string, unknown>[] =
+        [];
 
-      if (contentSnap.empty) {
+      productDocs.forEach((documentSnapshot) => {
+        const data = documentSnapshot.data();
+
+        if (!data) {
+          return;
+        }
+
+        const isPublished =
+          data.status === "published" ||
+          data.isPublished === true;
+
+        if (!isPublished) {
+          console.log(
+            "[KOBA Catalog] Skipping unpublished product",
+            documentSnapshot.id
+          );
+
+          return;
+        }
+
+        const assetKey =
+          data.assetKey || documentSnapshot.id;
+
+        const derivedType =
+          data.type ||
+          data.assetType ||
+          (
+            assetKey.startsWith("abk_")
+              ? "audiobook"
+              : assetKey.startsWith("ebk_")
+                ? "ebook"
+                : "publication"
+          );
+
+        const ebookChapters = Array.isArray(
+          data.ebookPayload?.chapters
+        )
+          ? data.ebookPayload.chapters
+          : [];
+
+        const topLevelChapters = Array.isArray(
+          data.chapters
+        )
+          ? data.chapters
+          : [];
+
+        const studioTracks = Array.isArray(
+          data.studioTracks
+        )
+          ? data.studioTracks
+          : [];
+
+        const chapters =
+          derivedType === "ebook"
+            ? (
+                ebookChapters.length > 0
+                  ? ebookChapters
+                  : topLevelChapters
+              )
+            : (
+                studioTracks.length > 0
+                  ? studioTracks
+                  : topLevelChapters
+              );
+
+        const catalogProduct = {
+          assetKey,
+          type: derivedType,
+          title: data.title || "Untitled",
+          description:
+            data.description ||
+            data.synopsis ||
+            "",
+          coverUrl:
+            data.coverArtUrl ||
+            data.coverUrl ||
+            "/placeholder.jpg",
+          bgImageUrl:
+            data.bgImageUrl ||
+            data.backgroundUrl ||
+            "",
+          authorName:
+            data.authorName ||
+            (
+              data.authorEmail
+                ? data.authorEmail.split("@")[0]
+                : "Sovereign Author"
+            ),
+          authorEmail: data.authorEmail || "",
+          authorId: data.authorId || "",
+          price: Number(data.price || 0),
+        };
+
+        /*
+         * Reader mode includes full chapter data.
+         */
+        if (assetParam) {
+          catalogItems.push({
+            ...catalogProduct,
+            chapters,
+
+            ...(derivedType === "ebook"
+              ? {
+                  ebookPayload: {
+                    ...(data.ebookPayload ?? {}),
+                    chapters,
+                  },
+                }
+              : {
+                  studioTracks,
+                }),
+          });
+
+          return;
+        }
+
+        /*
+         * Catalog mode remains lightweight.
+         */
+        catalogItems.push({
+          ...catalogProduct,
+          chapterCount: chapters.length,
+        });
+      });
+
+      if (
+        assetParam &&
+        catalogItems.length === 0
+      ) {
         return NextResponse.json(
-          { success: true, content: [], products: [], books: [], message: 'No published content found.' }, 
-          { status: 200, headers: getCorsHeaders() }
+          {
+            success: false,
+            error: "Publication not found.",
+            assetKey: assetParam,
+          },
+          {
+            status: 404,
+            headers: getCorsHeaders(),
+          }
         );
       }
 
-      const publicContent: any[] = [];
-      
-      contentSnap.forEach((doc: any) => {
-        const data = doc.data();
-        if (data.authorEmail === studioKey || data.studioKey === studioKey || data.authorSlug === studioKey) {
-          publicContent.push({
-            id: doc.id,
-            title: data.topicTitle || data.title || 'Untitled Post',
-            body: data.generatedContent || data.body || '', 
-            excerpt: data.synopsis || data.description || '',
-            category: data.brandAllocation || 'General',
-            targetAudience: data.targetAudience || '',
-            publishedAt: data.completedAt ? (typeof data.completedAt.toDate === 'function' ? data.completedAt.toDate().toISOString() : data.completedAt) : new Date().toISOString()
-          });
+      const authorName =
+        targetAuthor.toLowerCase() === "global"
+          ? "KOBA-I Global Library"
+          : targetAuthor.split("@")[0];
+
+      return NextResponse.json(
+        {
+          success: true,
+          mode: assetParam
+            ? "single-publication"
+            : "catalog",
+          authorName,
+          products: catalogItems,
+          books: catalogItems,
+          content: [],
+        },
+        {
+          status: 200,
+          headers: getCorsHeaders(),
         }
+      );
+    }
+
+    /*
+     * Existing fallback content pipeline.
+     */
+    if (studioKey) {
+      const publicContent: Record<
+        string,
+        unknown
+      >[] = [];
+
+      const contentSnapshot = await adminDb
+        .collection("audiobook_requests")
+        .where("status", "==", "Completed")
+        .limit(
+          Number.parseInt(limitParam, 10) || 50
+        )
+        .get();
+
+      contentSnapshot.forEach((documentSnapshot) => {
+        const data = documentSnapshot.data();
+
+        if (data.studioKey !== studioKey) {
+          return;
+        }
+
+        publicContent.push({
+          id: documentSnapshot.id,
+          title:
+            data.topicTitle ||
+            data.title ||
+            "Untitled Post",
+          body:
+            data.generatedContent ||
+            data.body ||
+            "",
+          excerpt:
+            data.synopsis ||
+            data.description ||
+            "",
+          category:
+            data.brandAllocation ||
+            "General",
+          targetAudience:
+            data.targetAudience ||
+            "",
+          publishedAt:
+            data.completedAt &&
+            typeof data.completedAt.toDate ===
+              "function"
+              ? data.completedAt
+                  .toDate()
+                  .toISOString()
+              : data.completedAt ||
+                new Date().toISOString(),
+        });
       });
 
-      return NextResponse.json({ success: true, content: publicContent, products: [], books: [] }, { status: 200, headers: getCorsHeaders() });
+      return NextResponse.json(
+        {
+          success: true,
+          content: publicContent,
+          products: [],
+          books: [],
+        },
+        {
+          status: 200,
+          headers: getCorsHeaders(),
+        }
+      );
     }
 
     return NextResponse.json(
-      { error: 'Missing authorized context routing keys.' },
-      { status: 400, headers: getCorsHeaders() }
+      {
+        error:
+          "Missing authorized context routing keys.",
+      },
+      {
+        status: 400,
+        headers: getCorsHeaders(),
+      }
+    );
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unknown server error";
+
+    console.error(
+      "❌ Unified Content API Master Hub Error:",
+      error
     );
 
-  } catch (error: any) {
-    console.error('🔥 Unified Content API Master Hub Error:', error);
     return NextResponse.json(
-      { error: 'Internal Server Error Data Lock', details: error.message },
-      { status: 500, headers: getCorsHeaders() }
+      {
+        error: "Internal Server Error Data Lock",
+        details: message,
+      },
+      {
+        status: 500,
+        headers: getCorsHeaders(),
+      }
     );
   }
 }
 
 function getCorsHeaders() {
   return {
-    'Access-Control-Allow-Origin': '*', 
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Studio-Key, x-studio-key, Authorization, Origin',
-    'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300'
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods":
+      "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers":
+      "Content-Type, x-studio-key, X-Studio-Key",
   };
 }
