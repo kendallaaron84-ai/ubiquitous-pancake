@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect, use } from "react";
 import { db } from "@/core/firebase";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc } from "firebase/firestore";
 import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, Settings, X, Key } from "lucide-react";
 import Link from "next/link";
 import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
+import { toast } from "@/components/ui/use-toast";
 
 // 🛠️ THEME-RESPONSIVE TOOLTIP
 const Tooltip = ({ text, children }: { text: string, children: React.ReactNode }) => {
@@ -47,24 +48,22 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     const fetchManuscript = async () => {
       try {
         console.log("🎯 Workbench attempting connection for assetId:", assetId);
-        const docRef = doc(db, "assets", assetId);
+        const docRef = doc(db, "products", assetId);
         const docSnap = await getDoc(docRef);
-        
+
         if (docSnap.exists()) {
           const data = docSnap.data();
-          // Ensure chapters array structure is never undefined or empty
           if (!data.chapters || data.chapters.length === 0) {
-             data.chapters = [{ id: `ch_1_${assetId}`, title: "Chapter 1", textContent: "" }];
+            data.chapters = [{ id: `ch_1_${assetId}`, title: "Chapter 1", textContent: "" }];
           }
           setBookData(data);
           if (data.guardrails) setGuardrails(data.guardrails);
           if (data.apiKeys) setApiKeys(data.apiKeys);
         } else {
-          // 🚀 FALLBACK 1: Document ID does not match Firestore collections
-          console.warn("⚠️ Document ID not found in products collection. Loading sandbox.");
+          console.warn("⚠️ Document ID not found in products collection. Loading initialization state.");
           setBookData({
             title: "Sandbox Mode: Asset Not Found",
-            type: "E-Book",
+            type: "ebook",
             chapters: [{ id: `ch_1_${assetId}`, title: "Chapter 1 Initializer", textContent: "The workbench compiled, but could not locate this book record in your Firestore database. Click 'Save Draft' to initialize a fresh record mapping." }]
           });
         }
@@ -102,46 +101,64 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     }, async () => {
         const audioUrl = await getDownloadURL(uploadTask.snapshot.ref);
         
-        // 3. Update the Firestore document so the Player instantly sees the new file
-        const docRef = doc(db, "assets", assetId);
-        await updateDoc(docRef, {
-            [`audioMap.${chapterId}`]: audioUrl // Maps this chapter to the new mastered file
-        });
+        // 🎯 Redirected to products with an idempotent setDoc merge
+        const docRef = doc(db, "products", assetId);
+        await setDoc(docRef, {
+            [`audioMap.${chapterId}`]: audioUrl,
+            updatedAt: new Date().toISOString()
+        }, { merge: true });
         
         toast({ title: "Production Success", description: "Audio mastered and vaulted." });
     });
 };
 
   const handleSave = async () => {
-    if (!bookData) return;
-    setIsSaving(true);
-    try {
-      const docRef = doc(db, "assets", assetId);
-      
-      // 🚀 THE FIX: We map your editor's data into the exact `ebookPayload` structure the WordPress agent expects
-      const formattedChapters = bookData.chapters.map((ch: any) => ({
-          id: ch.id,
-          title: ch.title,
-          // Fallback to grab text regardless of whether it was saved as 'content' or 'textContent' previously
-          textContent: ch.textContent || ch.content || "" 
-      }));
+  if (!bookData) return;
+  setIsSaving(true);
+  try {
+    const docRef = doc(db, "products", assetId);
+    
+    const sourceChapters = Array.isArray(bookData.chapters) ? bookData.chapters : [];
+    const formattedChapters = sourceChapters.map((ch: any, index: number) => ({
+        id: ch.id || `ch_${index + 1}_${assetId}`,
+        title: ch.title || `Chapter ${index + 1}`,
+        textContent: ch.textContent || ch.content || "" 
+    }));
 
-      // Push manuscript, proper payload, guardrails, and secure API keys
-      await updateDoc(docRef, { 
-          chapters: formattedChapters,
-          ebookPayload: {
-              fontPreference: "Atkinson Hyperlegible",
-              chapters: formattedChapters
-          },
-          guardrails: guardrails,
-          apiKeys: apiKeys
-      });
-    } catch (error) {
-      console.error("Save failed:", error);
-    } finally {
-      setIsSaving(false);
-    }
-  };
+    await setDoc(docRef, { 
+        assetKey: assetId,
+        id: assetId,
+        type: "ebook",
+        chapters: formattedChapters,
+        ebookPayload: {
+            fontPreference: bookData.ebookPayload?.fontPreference || "Atkinson Hyperlegible",
+            chapters: formattedChapters
+        },
+        guardrails: guardrails,
+        apiKeys: apiKeys,
+        updatedAt: new Date().toISOString()
+    }, { merge: true });
+
+    setBookData((current: any) => ({
+      ...current,
+      chapters: formattedChapters,
+      ebookPayload: {
+        ...current?.ebookPayload,
+        fontPreference: current?.ebookPayload?.fontPreference || "Atkinson Hyperlegible",
+        chapters: formattedChapters
+      }
+    }));
+
+    console.log("💾 Workbench manuscript saved to products collection.", {
+      assetId,
+      chapterCount: formattedChapters.length
+    });
+  } catch (error) {
+    console.error("Save failed:", error);
+  } finally {
+    setIsSaving(false);
+  }
+};
 
   const addChapter = () => {
       if(!bookData) return;
