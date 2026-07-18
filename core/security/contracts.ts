@@ -116,6 +116,21 @@ export interface SecureVerificationSession {
   consumedAt: Timestamp | null;
 }
 
+/**
+ * Global, privacy-preserving SMS cost-control window. The document ID is the
+ * already-keyed phoneHash, never a plaintext telephone number.
+ */
+export interface VerificationDispatchLimit {
+  id: string;
+  phoneHash: string;
+  dispatchCount: number;
+  windowStartedAt: Timestamp;
+  lastDispatchedAt: Timestamp;
+  blockedUntil: Timestamp | null;
+  expiresAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
 export interface MediaAccessGrant {
   id: string;
   checkoutSessionId: string;
