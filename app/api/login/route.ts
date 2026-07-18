@@ -1,30 +1,117 @@
 import { NextResponse } from "next/server";
-import { adminDb, adminAuth } from "@/core/firebase-admin";
+import type { DocumentData } from "firebase-admin/firestore";
+
+import { adminAuth, adminDb } from "@/core/firebase-admin";
 
 export const dynamic = "force-dynamic";
 
+const STUDIO_KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+
+interface ResolvedLicense {
+  data: DocumentData;
+  documentId: string;
+  source: "licenses" | "plugin_licenses";
+}
+
+function trimString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown server error.";
+}
+
+function normalizePluginEntitlements(licenseData: DocumentData): string[] {
+  const candidates: unknown[] = [
+    licenseData.type,
+    licenseData.licenseType,
+    ...(Array.isArray(licenseData.entitlements)
+      ? licenseData.entitlements
+      : []),
+    ...(Array.isArray(licenseData.pluginEntitlements)
+      ? licenseData.pluginEntitlements
+      : []),
+    ...(Array.isArray(licenseData.features)
+      ? licenseData.features
+      : []),
+  ];
+
+  return Array.from(
+    new Set(candidates.map(trimString).filter(Boolean))
+  );
+}
+
+async function findExactLicense(
+  studioKey: string
+): Promise<ResolvedLicense | null> {
+  const stripeLicenseDoc = await adminDb
+    .collection("licenses")
+    .doc(studioKey)
+    .get();
+
+  if (stripeLicenseDoc.exists) {
+    return {
+      data: stripeLicenseDoc.data() || {},
+      documentId: stripeLicenseDoc.id,
+      source: "licenses",
+    };
+  }
+
+  const directPluginLicenseDoc = await adminDb
+    .collection("plugin_licenses")
+    .doc(studioKey)
+    .get();
+
+  if (directPluginLicenseDoc.exists) {
+    return {
+      data: directPluginLicenseDoc.data() || {},
+      documentId: directPluginLicenseDoc.id,
+      source: "plugin_licenses",
+    };
+  }
+
+  const pluginLicenseQuery = await adminDb
+    .collection("plugin_licenses")
+    .where("key", "==", studioKey)
+    .limit(1)
+    .get();
+
+  if (pluginLicenseQuery.empty) {
+    return null;
+  }
+
+  return {
+    data: pluginLicenseQuery.docs[0].data() || {},
+    documentId: pluginLicenseQuery.docs[0].id,
+    source: "plugin_licenses",
+  };
+}
+
 export async function POST(request: Request) {
   try {
-    // 1. Hardened Request Body Validation Gate
     const text = await request.text();
-    if (!text || text.trim() === "") {
+
+    if (!text.trim()) {
       return NextResponse.json(
         { success: false, error: "Empty authorization handshake payload." },
         { status: 400 }
       );
     }
 
-    let payload;
+    let payload: Record<string, unknown>;
+
     try {
-      payload = JSON.parse(text);
-    } catch (parseBodyErr) {
+      payload = JSON.parse(text) as Record<string, unknown>;
+    } catch {
       return NextResponse.json(
         { success: false, error: "Malformed request format. Valid JSON required." },
         { status: 400 }
       );
     }
 
-    const { idToken } = payload;
+    const idToken = trimString(payload.idToken);
+    const requestedStudioKey = trimString(payload.studioKey);
+
     if (!idToken) {
       return NextResponse.json(
         { success: false, error: "Identity exchange token is required." },
@@ -32,19 +119,21 @@ export async function POST(request: Request) {
       );
     }
 
-    // 2. Decode Client-Side Token through Modular Admin Auth Layer
     let decodedToken;
+
     try {
       decodedToken = await adminAuth.verifyIdToken(idToken);
-    } catch (verifyErr: any) {
-      console.error("🚨 ID Token Verification Failed in Admin SDK:", verifyErr.message);
+    } catch (error: unknown) {
+      const details = errorMessage(error);
+      console.error("ID token verification failed:", details);
       return NextResponse.json(
-        { success: false, error: "Invalid identity token.", details: verifyErr.message },
+        { success: false, error: "Invalid identity token.", details },
         { status: 401 }
       );
     }
 
-    const email = decodedToken.email;
+    const email = trimString(decodedToken.email).toLowerCase();
+
     if (!email) {
       return NextResponse.json(
         { success: false, error: "Profile missing valid email claims." },
@@ -52,85 +141,157 @@ export async function POST(request: Request) {
       );
     }
 
-    // 3. Multi-Tenant Lookup and Auto-Provisioning Logic
-    let userDoc = await adminDb.collection("users").doc(email).get();
-    let userData = userDoc.exists ? userDoc.data() : null;
+    const canonicalUserRef = adminDb.collection("users").doc(email);
+    let userDoc = await canonicalUserRef.get();
+    let userData: DocumentData | null = userDoc.exists
+      ? userDoc.data() || null
+      : null;
 
-    // Search secondary index if direct Document ID misses
     if (!userData) {
-      const userQuery = await adminDb.collection("users").where("email", "==", email).get();
+      const userQuery = await adminDb
+        .collection("users")
+        .where("email", "==", email)
+        .limit(1)
+        .get();
+
       if (!userQuery.empty) {
         userDoc = userQuery.docs[0];
-        userData = userDoc.data();
+        userData = userDoc.data() || null;
       }
     }
 
-    // 🚀 AGGRESSIVE PROVISIONING: Check license if user doesn't exist OR lacks active flag/keys
-    if (!userData || userData.hasActiveLicense !== true || !userData.studioKey) {
-      console.log(`🔍 Checking license files for auto-provisioning/upgrading: ${email}`);
-      
-      // THE FIX: Pointed to 'plugin_licenses' and removed the strict email check to catch your auto-generated test key
-      const licenseQuery = await adminDb.collection("plugin_licenses")
-        .where("status", "==", "active")
-        .limit(1) 
-        .get();
+    const existingStudioKey = trimString(userData?.studioKey);
+    const hasExistingLicense =
+      userData?.hasActiveLicense === true && existingStudioKey !== "";
 
-      if (!licenseQuery.empty) {
-        console.log(`🎯 Auto-Provisioning: Found active asset contract for ${email}. Building profile record...`);
-        const licenseDoc = licenseQuery.docs[0];
-        const licenseData = licenseDoc.data();
-        
-        userData = {
-          email: email,
-          name: userData?.name || licenseData.authorName || "Sovereign Author",
-          hasActiveLicense: true,
-          authConfigured: true, 
-          lastPurchaseDate: licenseData.activatedAt || licenseData.createdAt || new Date().toISOString(),
-          createdAt: userData?.createdAt || new Date().toISOString(),
-          // THE FIX: Mapped the auto-generated 'key' field to your user profile's 'studioKey'
-          studioKey: licenseData.key || licenseData.studiokey || licenseData.studioKey || licenseDoc.id,
-          stripeCustomerId: licenseData.stripeCustomerId || licenseData.stripeAccountId || null,
-        };
-
-        // Write row atomically to users collection (upsert)
-        await adminDb.collection("users").doc(email).set(userData, { merge: true });
-      } else {
-        console.warn(`⚠️ Multi-tenant lock: Access denied for ${email}. Active product contract required.`);
+    if (hasExistingLicense) {
+      if (
+        requestedStudioKey &&
+        requestedStudioKey !== existingStudioKey
+      ) {
         return NextResponse.json(
-          { success: false, error: "Unauthorized profile workspace. Active product license required." },
+          { success: false, error: "StudioKey does not match this operator profile." },
           { status: 403 }
         );
       }
+    } else {
+      if (!requestedStudioKey) {
+        return NextResponse.json(
+          { success: false, error: "StudioKey is required to provision this workspace." },
+          { status: 400 }
+        );
+      }
+
+      if (!STUDIO_KEY_PATTERN.test(requestedStudioKey)) {
+        return NextResponse.json(
+          { success: false, error: "StudioKey format is invalid." },
+          { status: 400 }
+        );
+      }
+
+      const resolvedLicense = await findExactLicense(requestedStudioKey);
+
+      if (!resolvedLicense || resolvedLicense.data.status !== "active") {
+        return NextResponse.json(
+          { success: false, error: "StudioKey is invalid or inactive." },
+          { status: 403 }
+        );
+      }
+
+      const licenseData = resolvedLicense.data;
+      const resolvedLicenseKey = trimString(
+        licenseData.studioKey ||
+          licenseData.key ||
+          licenseData.studiokey ||
+          resolvedLicense.documentId
+      );
+      const authorId = trimString(licenseData.authorId);
+      const ownerEmail = trimString(
+        licenseData.authorEmail ||
+          licenseData.userEmail ||
+          licenseData.email ||
+          (authorId.includes("@") ? authorId : "")
+      ).toLowerCase();
+
+      if (
+        resolvedLicenseKey !== requestedStudioKey ||
+        !ownerEmail ||
+        ownerEmail !== email
+      ) {
+        return NextResponse.json(
+          { success: false, error: "StudioKey ownership does not match this identity." },
+          { status: 403 }
+        );
+      }
+
+      const nowIso = new Date().toISOString();
+
+      userData = {
+        ...userData,
+        email,
+        name: userData?.name || licenseData.authorName || "Sovereign Author",
+        hasActiveLicense: true,
+        authConfigured: true,
+        lastPurchaseDate:
+          licenseData.activatedAt || licenseData.createdAt || nowIso,
+        createdAt: userData?.createdAt || nowIso,
+        studioKey: requestedStudioKey,
+        licenseSource: resolvedLicense.source,
+        licenseType:
+          trimString(licenseData.type || licenseData.licenseType) || null,
+        pluginEntitlements: normalizePluginEntitlements(licenseData),
+        stripeCustomerId:
+          licenseData.stripeCustomerId ||
+          licenseData.stripeAccountId ||
+          null,
+      };
+
+      await canonicalUserRef.set(userData, { merge: true });
     }
 
-    // 4. Issue a Secured Server-Side Custom Token Session
+    if (!userData) {
+      return NextResponse.json(
+        { success: false, error: "Operator profile could not be resolved." },
+        { status: 403 }
+      );
+    }
+
     const secureToken = await adminAuth.createCustomToken(decodedToken.uid);
+    const response = NextResponse.json(
+      {
+        success: true,
+        message: "Identity token verification successful.",
+        sessionToken: secureToken,
+        user: {
+          email,
+          name: userData.name || "Sovereign Author",
+          studioKey: userData.studioKey || null,
+          pluginEntitlements: Array.isArray(userData.pluginEntitlements)
+            ? userData.pluginEntitlements
+            : [],
+        },
+      },
+      { status: 200 }
+    );
 
-    const response = NextResponse.json({
-      success: true,
-      message: "Identity token verification successful.",
-      sessionToken: secureToken,
-      user: {
-        email,
-        name: userData.name || "Sovereign Author",
-        studioKey: userData.studioKey || null, // Pass to the frontend layout so the Catalog can use it
-      }
-    }, { status: 200 });
-
-    // Enforce Production HttpOnly Security Policies
     response.cookies.set("session-token", secureToken, {
       path: "/",
-      maxAge: 86400, // 24 Hours
+      maxAge: 86400,
       sameSite: "strict",
-      secure: true
+      secure: process.env.NODE_ENV === "production",
+      httpOnly: true,
     });
 
     return response;
-
-  } catch (err: any) {
-    console.error("🔥 Identity exchange processing failed:", err);
+  } catch (error: unknown) {
+    const details = errorMessage(error);
+    console.error("Identity exchange processing failed:", error);
     return NextResponse.json(
-      { success: false, error: "Server rejected identity exchange token verification.", details: err.message },
+      {
+        success: false,
+        error: "Server rejected identity exchange token verification.",
+        details,
+      },
       { status: 500 }
     );
   }

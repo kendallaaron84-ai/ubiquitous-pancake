@@ -23,6 +23,7 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
   const [password, setPassword] = useState<string>("")
   const [confirmPassword, setConfirmPassword] = useState<string>("")
   const [phone, setPhone] = useState<string>("")
+  const [studioKey, setStudioKey] = useState<string>("")
   const [loading, setLoading] = useState<boolean>(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
@@ -35,7 +36,7 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ idToken }),
+        body: JSON.stringify({ idToken, studioKey: studioKey.trim() }),
       })
 
       const text = await response.text()
@@ -44,7 +45,7 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
       // Defensive parsing to catch HTML responses (like 405 Method Not Allowed)
       try {
         data = JSON.parse(text)
-      } catch (jsonErr) {
+      } catch {
         console.error("🚨 Server did not return valid JSON payload:", text)
         throw new Error(`Server returned status code: ${response.status}`)
       }
@@ -56,9 +57,14 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
       // Safe redirect upon successful multi-tenant dynamic user auto-provisioning
       router.push("/")
       router.refresh()
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("🚨 Handshake Error:", err)
-      setErrorMsg(err.message || "Registration succeeded, but backend verification failed. Check your product subscription.")
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : "Registration succeeded, but backend verification failed. Check your product subscription."
+      )
+      throw err
     }
   }
 
@@ -68,6 +74,11 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
 
     if (password !== confirmPassword) {
       setErrorMsg("Security Passwords do not match.")
+      return
+    }
+
+    if (!studioKey.trim()) {
+      setErrorMsg("A valid StudioKey is required to provision a workspace.")
       return
     }
 
@@ -83,9 +94,18 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
       // 2. Fetch the fresh client ID Token
       const idToken = await user.getIdToken()
 
-      // 3. Initiate Server Handshake
-      await handleTokenExchange(idToken)
-    } catch (err: any) {
+      // 3. Initiate Server Handshake. Remove the just-created Auth identity if
+      // the server rejects StudioKey ownership so invalid attempts do not leave
+      // orphan Firebase accounts behind.
+      try {
+        await handleTokenExchange(idToken)
+      } catch (exchangeError: unknown) {
+        await user.delete().catch((cleanupError: unknown) => {
+          console.error("Unable to remove rejected onboarding identity:", cleanupError)
+        })
+        throw exchangeError
+      }
+    } catch (err: unknown) {
       console.error("🚨 Registration Error:", err)
       const authErr = err as AuthError
 
@@ -118,7 +138,7 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
           {/* Subtle light background behind the text logo ensures the dark text pops against the navy card */}
           <div className="bg-white/90 px-3 py-1.5 rounded-md shadow-sm flex items-center justify-center">
             <img 
-              src="/logo-text.png.png" 
+              src="/logo-text.png"
               alt="KOBA-I Audio" 
               className="h-5 object-contain" 
             />
@@ -145,6 +165,20 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
 
         <form onSubmit={handleSubmit} className="flex flex-col h-full justify-center">
           <div className="grid w-full items-center gap-4">
+            <div className="flex flex-col space-y-2">
+              <Label htmlFor="studioKey" className="text-slate-200 font-medium">StudioKey</Label>
+              <Input
+                id="studioKey"
+                type="text"
+                placeholder="KOBA-AUDIO-XXXX"
+                value={studioKey}
+                onChange={(e) => setStudioKey(e.target.value)}
+                disabled={loading}
+                required
+                autoComplete="off"
+                className="bg-[#222b45] border-[#40527c] text-white placeholder:text-slate-500 focus-visible:ring-[#8b4528] focus-visible:border-[#8b4528] transition-all font-mono"
+              />
+            </div>
             <div className="flex flex-col space-y-2">
               <Label htmlFor="email" className="text-slate-200 font-medium">Email Address</Label>
               <Input
@@ -222,4 +256,3 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
     </div>
   )
 }
-```

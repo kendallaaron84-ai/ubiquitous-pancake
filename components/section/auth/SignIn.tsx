@@ -46,7 +46,7 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
       // Defensive parsing to catch HTML responses (like 405 Method Not Allowed)
       try {
         data = JSON.parse(text)
-      } catch (jsonErr) {
+      } catch {
         console.error("🚨 Server did not return valid JSON payload:", text)
         throw new Error(`Server returned status code: ${response.status}`)
       }
@@ -58,9 +58,13 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
       // Successful verification! Server has assigned HTTP-Only session-token cookie
       router.push("/")
       router.refresh()
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("🚨 Handshake Error:", err)
-      setErrorMsg(err.message || "Failed to finalize session. Please verify your product subscription.")
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : "Failed to finalize session. Please verify your product subscription."
+      )
     }
   }
 
@@ -81,7 +85,7 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
 
       // 3. Initiate Server Handshake
       await handleTokenExchange(idToken)
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("🚨 Sign In Error:", err)
       const authErr = err as AuthError
       
@@ -117,7 +121,7 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
       
       const idToken = await user.getIdToken()
       await handleTokenExchange(idToken)
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("🚨 Google Sign-In Error:", err)
       const authErr = err as AuthError
       
@@ -147,7 +151,7 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
           {/* Subtle light background behind the text logo ensures the dark text pops against the navy card */}
           <div className="bg-white/90 px-3 py-1.5 rounded-md shadow-sm flex items-center justify-center">
             <img 
-              src="/logo-text.png.png" 
+              src="/logo-text.png"
               alt="KOBA-I Audio" 
               className="h-5 object-contain" 
             />
@@ -255,4 +259,3 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
     </div>
   )
 }
-```

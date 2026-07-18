@@ -57,8 +57,9 @@ export default function BookshelfLibraryPage() {
   }, [currentUserEmail]);
 
   return (
+    <>
     {/* 🚀 THE FIX: Passed the currentUserEmail directly to the Layout so it doesn't starve */}
-    <Layout author={currentUserEmail || undefined}>
+    <Layout>
       <div className="p-6 max-w-7xl mx-auto space-y-8">
         <div className="border-b border-[#40527c]/50 pb-6">
           <h1 className="text-3xl font-black tracking-tight text-white flex items-center gap-3">
@@ -127,5 +128,6 @@ export default function BookshelfLibraryPage() {
         )}
       </div>
     </Layout>
+    </>
   );
 }
