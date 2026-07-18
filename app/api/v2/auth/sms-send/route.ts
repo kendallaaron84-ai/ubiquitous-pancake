@@ -526,6 +526,8 @@ async function reserveVerificationDispatch(input: {
       status: "pending_dispatch",
       attemptCount: 0,
       maxAttempts: MAX_OTP_ATTEMPTS,
+      activeCheckAttemptId: null,
+      checkStartedAt: null,
       createdAt,
       sentAt: null,
       expiresAt,

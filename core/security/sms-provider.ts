@@ -1,6 +1,10 @@
 import twilio from "twilio";
 
-import { createMockOtp, hmacHex } from "./crypto";
+import {
+  createMockOtp,
+  hmacHex,
+  safeEqualHex,
+} from "./crypto";
 import type { SecurityEnvironment } from "./environment";
 
 export interface SmsChallengeDispatchInput {
@@ -17,6 +21,20 @@ export interface SmsChallengeDispatchResult {
    * a browser response or persist it in Firestore.
    */
   developmentCode: string | null;
+}
+
+export interface SmsChallengeVerificationInput {
+  environment: SecurityEnvironment;
+  verificationSessionId: string;
+  providerVerificationSid: string | null;
+  mockOtpDigest: string | null;
+  submittedCode: string;
+}
+
+export interface SmsChallengeVerificationResult {
+  approved: boolean;
+  terminal: boolean;
+  providerStatus: string;
 }
 
 interface SmsProviderDependencies {
@@ -84,5 +102,88 @@ export async function dispatchSmsChallenge(
     providerVerificationSid: verification.sid,
     mockOtpDigest: null,
     developmentCode: null,
+  };
+}
+
+export async function verifySmsChallenge(
+  input: SmsChallengeVerificationInput,
+  dependencies: SmsProviderDependencies = defaultDependencies
+): Promise<SmsChallengeVerificationResult> {
+  const {
+    environment,
+    verificationSessionId,
+    providerVerificationSid,
+    mockOtpDigest,
+    submittedCode,
+  } = input;
+
+  if (!/^\d{6}$/.test(submittedCode)) {
+    return {
+      approved: false,
+      terminal: false,
+      providerStatus: "invalid_code_format",
+    };
+  }
+
+  if (environment.smsProvider === "mock") {
+    if (environment.appEnvironment === "production") {
+      throw new Error("Mock SMS verification is forbidden in production.");
+    }
+
+    if (!mockOtpDigest) {
+      throw new Error("Mock verification digest is missing.");
+    }
+
+    const submittedDigest = hmacHex(
+      environment.hmacSecret,
+      `mock-otp:v1:${verificationSessionId}:${submittedCode}`
+    );
+    const approved = safeEqualHex(
+      mockOtpDigest,
+      submittedDigest
+    );
+
+    return {
+      approved,
+      terminal: false,
+      providerStatus: approved ? "approved" : "pending",
+    };
+  }
+
+  const accountSid = environment.twilioAccountSid;
+  const authToken = environment.twilioAuthToken;
+  const serviceSid = environment.twilioVerifyServiceSid;
+
+  if (
+    !accountSid ||
+    !authToken ||
+    !serviceSid ||
+    !providerVerificationSid
+  ) {
+    throw new Error("Twilio Verify validation configuration is incomplete.");
+  }
+
+  const client = dependencies.createTwilioClient(
+    accountSid,
+    authToken
+  );
+  const verification = await client.verify.v2
+    .services(serviceSid)
+    .verificationChecks.create({
+      verificationSid: providerVerificationSid,
+      code: submittedCode,
+    });
+  const status = verification.status || "unknown";
+
+  return {
+    approved: status === "approved" || verification.valid === true,
+    terminal: [
+      "max_attempts_reached",
+      "canceled",
+      "deleted",
+      "expired",
+      "failed",
+    ].includes(status),
+    providerStatus: status,
   };
 }

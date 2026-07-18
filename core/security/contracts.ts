@@ -103,12 +103,15 @@ export interface SecureVerificationSession {
   status:
     | "pending_dispatch"
     | "pending"
+    | "checking"
     | "consumed"
     | "locked"
     | "expired"
     | "delivery_failed";
   attemptCount: number;
   maxAttempts: number;
+  activeCheckAttemptId: string | null;
+  checkStartedAt: Timestamp | null;
   createdAt: Timestamp;
   sentAt: Timestamp | null;
   expiresAt: Timestamp;
@@ -139,7 +142,10 @@ export interface MediaAccessGrant {
   tenantId: string;
   assetKey: string;
   status: "active" | "expired" | "revoked";
+  grantClientSecretDigest: string;
   tokenVersion: number;
   createdAt: Timestamp;
+  lastTokenIssuedAt: Timestamp | null;
+  revokedAt: Timestamp | null;
   expiresAt: Timestamp;
 }
