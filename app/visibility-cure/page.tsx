@@ -48,11 +48,48 @@ export default function VisibilityCurePage() {
   const [message, setMessage] = useState("")
 
   useEffect(() => {
-    const state = new URLSearchParams(window.location.search).get("checkout")
+    const searchParams = new URLSearchParams(window.location.search)
+    const state = searchParams.get("checkout")
     if (state === "cancelled") {
       setMessage("Checkout was cancelled. Nothing was charged, and you can return whenever you are ready.")
     } else if (state === "success") {
-      setMessage("Payment received. Your Blog Engine access is being activated now.")
+      const sessionId = searchParams.get("session_id")
+      if (!sessionId) {
+        setMessage("Payment received. We could not verify the Checkout reference. Please refresh this page.")
+        return
+      }
+
+      let active = true
+      setMessage("Payment received. We are activating your Blog Engine access now.")
+      void fetch("/api/checkout/create-session/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ sessionId }),
+      })
+        .then(async (response) => {
+          const payload = (await response.json().catch(() => null)) as
+            | { success?: boolean; error?: string }
+            | null
+          if (!response.ok || payload?.success !== true) {
+            throw new Error(payload?.error || "Access activation could not be confirmed.")
+          }
+          if (!active) return
+          setMessage("Your Blog Engine is active. Opening your workspace…")
+          window.location.replace("/nexus-engine?checkout=success")
+        })
+        .catch((error: unknown) => {
+          if (!active) return
+          setMessage(
+            error instanceof Error
+              ? `${error.message} Your payment is safe; please refresh to retry activation.`
+              : "Your payment is safe, but access activation could not be confirmed. Please refresh to retry."
+          )
+        })
+
+      return () => {
+        active = false
+      }
     }
   }, [])
 

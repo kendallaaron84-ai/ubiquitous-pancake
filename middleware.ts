@@ -86,7 +86,7 @@ export async function middleware(request: NextRequest) {
     response.cookies.set(DASHBOARD_SESSION_COOKIE, "", {
       path: "/",
       maxAge: 0,
-      sameSite: "strict",
+      sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
       httpOnly: true,
     });

@@ -293,7 +293,7 @@ export async function POST(request: Request) {
     response.cookies.set(DASHBOARD_SESSION_COOKIE, secureToken, {
       path: "/",
       maxAge: DASHBOARD_SESSION_MAX_AGE_SECONDS,
-      sameSite: "strict",
+      sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
       httpOnly: true,
     });

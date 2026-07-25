@@ -8,7 +8,7 @@ export async function POST() {
   response.cookies.set(DASHBOARD_SESSION_COOKIE, "", {
     path: "/",
     maxAge: 0,
-    sameSite: "strict",
+    sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     httpOnly: true,
   });

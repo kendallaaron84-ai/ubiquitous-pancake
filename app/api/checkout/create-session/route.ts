@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import Stripe from "stripe";
 
+import { adminDb } from "@/core/firebase-admin";
 import {
   DASHBOARD_SESSION_COOKIE,
   resolveDashboardSessionSecret,
   verifyDashboardSession,
 } from "@/core/security/dashboard-session";
+import { loadContentEngineAccess } from "@/core/security/content-engine-access";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -76,6 +78,22 @@ export async function POST(request: Request) {
     if (!studioKey) {
       return NextResponse.json(
         { success: false, error: "Your author account is not linked to a StudioKey yet." },
+        { status: 409 }
+      );
+    }
+
+    const { hasContentEngineAccess } = await loadContentEngineAccess(
+      adminDb,
+      dashboardSession
+    );
+    if (hasContentEngineAccess) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: "CONTENT_ENGINE_ALREADY_ACTIVE",
+          error: "Your Blog Engine access is already active.",
+          redirectUrl: "/nexus-engine",
+        },
         { status: 409 }
       );
     }

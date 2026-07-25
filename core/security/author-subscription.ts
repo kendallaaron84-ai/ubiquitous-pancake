@@ -40,7 +40,7 @@ export function createAuthorSubscriptionPaymentProcessor(
   dependencies: AuthorSubscriptionDependencies = defaultDependencies
 ) {
   return async function processAuthorSubscriptionPayment(
-    event: Stripe.Event,
+    event: Pick<Stripe.Event, "id" | "type">,
     session: Stripe.Checkout.Session
   ): Promise<{ status: "created" | "existing"; plan: SubscriptionPlan }> {
   if (session.metadata?.checkoutType !== "author_subscription") {
