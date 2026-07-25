@@ -4,28 +4,49 @@ import React, { useState, useRef, useEffect } from "react";
 import Layout from "@/components/layout";
 import { useToast } from "@/hooks/use-toast";
 import { VoiceUploadZone } from "@/components/voice-upload-zone";
-import { db } from "@/core/firebase";
+import { auth, db } from "@/core/firebase";
 import { 
   collection, query, where, onSnapshot, doc, 
   setDoc, deleteDoc, updateDoc 
 } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 import { 
   ShieldCheck, Play, Pause, Lock, Fingerprint, 
   UserCheck, Cpu, Plus, BookOpen, Trash2 
 } from "lucide-react";
 
-export const dynamic = 'force-dynamic';
+interface VaultBook {
+  id: string;
+  title: string;
+}
 
-const mockBooks = [
-  { id: "book_duncan", title: "Duncan the Man Hunter" },
-  { id: "book_koba_doc", title: "KOBA-I Platform Documentation" }
-];
+interface VoiceVaultRecord {
+  id: string;
+  bookId: string;
+  authorEmail: string;
+  characterName: string;
+  status: string;
+  digitalVoiceId: string;
+  vaultPath: string;
+  sampleUrl: string;
+  watermarkActive?: boolean;
+}
+
+function connectInternalReviewLayer(source: AudioNode): AudioNode {
+  return source;
+}
+
+function connectPublicProtectionLayer(source: AudioNode): AudioNode {
+  // Deliberate passthrough extension point. No ultrasonic signal is emitted.
+  return source;
+}
 
 export default function VoiceVaultPage() {
-  const authorEmail = "kendall@domain.com"; 
-  const [selectedBookId, setSelectedBookId] = useState<string>("book_duncan");
-  const [vaultRecords, setVaultRecords] = useState<any[]>([]);
-  const [selectedRecord, setSelectedRecord] = useState<any>(null);
+  const [authorEmail, setAuthorEmail] = useState<string | null>(null);
+  const [books, setBooks] = useState<VaultBook[]>([]);
+  const [selectedBookId, setSelectedBookId] = useState<string>("");
+  const [vaultRecords, setVaultRecords] = useState<VoiceVaultRecord[]>([]);
+  const [selectedRecord, setSelectedRecord] = useState<VoiceVaultRecord | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [newCharacterName, setNewCharacterName] = useState("");
   const [newPersonaKey, setNewPersonaKey] = useState("Standard-V1");
@@ -36,9 +57,56 @@ export default function VoiceVaultPage() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const trackSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
-  const intervalRef = useRef<any>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => onAuthStateChanged(auth, (user) => {
+    setAuthorEmail(user?.email?.trim().toLowerCase() ?? null);
+  }), []);
 
   useEffect(() => {
+    if (!authorEmail) {
+      setBooks([]);
+      setSelectedBookId("");
+      return;
+    }
+
+    const productsQuery = query(
+      collection(db, "products"),
+      where("authorEmail", "==", authorEmail),
+    );
+
+    return onSnapshot(productsQuery, (snapshot) => {
+      const authorBooks = snapshot.docs.map((productDocument) => {
+        const data = productDocument.data();
+        return {
+          id: productDocument.id,
+          title: typeof data.title === "string" && data.title.trim()
+            ? data.title.trim()
+            : productDocument.id,
+        };
+      });
+
+      setBooks(authorBooks);
+      setSelectedBookId((currentBookId) => (
+        authorBooks.some((book) => book.id === currentBookId)
+          ? currentBookId
+          : authorBooks[0]?.id ?? ""
+      ));
+    }, (error) => {
+      console.error("Unable to load the authenticated author's catalog.", error);
+      setBooks([]);
+      setSelectedBookId("");
+    });
+  }, [authorEmail]);
+
+  useEffect(() => {
+    if (!authorEmail || !selectedBookId) {
+      setVaultRecords([]);
+      setSelectedRecord(null);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     const vaultRef = collection(db, "voice_vault");
     const q = query(
@@ -48,15 +116,15 @@ export default function VoiceVaultPage() {
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const records: any[] = [];
+      const records: VoiceVaultRecord[] = [];
       snapshot.forEach((doc) => {
-        records.push({ id: doc.id, ...doc.data() });
+        records.push({ id: doc.id, ...doc.data() } as VoiceVaultRecord);
       });
       setVaultRecords(records);
       
       if (records.length > 0) {
-        setSelectedRecord(prev => {
-          const currentMatch = records.find(r => r.id === prev?.id);
+        setSelectedRecord((previousRecord) => {
+          const currentMatch = records.find((record) => record.id === previousRecord?.id);
           return currentMatch || records[0];
         });
       } else {
@@ -72,7 +140,7 @@ export default function VoiceVaultPage() {
       unsubscribe();
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [selectedBookId]);
+  }, [authorEmail, selectedBookId]);
 
   const initAudioPipeline = () => {
     if (!audioRef.current) return;
@@ -84,7 +152,9 @@ export default function VoiceVaultPage() {
     trackSourceRef.current = source;
     const masterGain = ctx.createGain();
     
-    source.connect(masterGain);
+    const internalReviewOutput = connectInternalReviewLayer(source);
+    const publicProtectionOutput = connectPublicProtectionLayer(internalReviewOutput);
+    publicProtectionOutput.connect(masterGain);
     masterGain.connect(ctx.destination);
 
     intervalRef.current = setInterval(() => {
@@ -117,7 +187,7 @@ export default function VoiceVaultPage() {
 
   const handleProvisionLane = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newCharacterName.trim()) return;
+    if (!authorEmail || !selectedBookId || !newCharacterName.trim()) return;
 
     const isDuplicate = vaultRecords.some(
       r => r.characterName.toLowerCase() === newCharacterName.trim().toLowerCase()
@@ -204,7 +274,10 @@ export default function VoiceVaultPage() {
               onChange={(e) => setSelectedBookId(e.target.value)}
               className="bg-transparent text-sm font-bold text-foreground focus:outline-none appearance-none cursor-pointer pr-4"
             >
-              {mockBooks.map(book => (
+              {books.length === 0 && (
+                <option value="">No published books available</option>
+              )}
+              {books.map(book => (
                 <option key={book.id} value={book.id} className="bg-card text-foreground">{book.title}</option>
               ))}
             </select>
@@ -306,7 +379,7 @@ export default function VoiceVaultPage() {
                 {/* Secure File Upload Layer Hooks */}
                 <div className="space-y-2">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block">Isolate Local Raw Source Recording</span>
-                  <VoiceUploadZone authorEmail={authorEmail} onUploadSuccess={handleInboundFileSuccess} />
+                  <VoiceUploadZone authorEmail={authorEmail ?? ""} onUploadSuccess={handleInboundFileSuccess} />
                 </div>
 
                 {/* Live Verification Stream Output Controls */}

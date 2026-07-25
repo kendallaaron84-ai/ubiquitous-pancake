@@ -7,7 +7,6 @@ import fs from "fs";
 export const dynamic = "force-dynamic";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2023-10-16", // 🔑 Pinning version to match your working checkout context
 });
 
 export async function POST(req: Request) {
@@ -83,8 +82,18 @@ export async function POST(req: Request) {
 
     if (productType === "Membership" && session.subscription) {
       try {
-        const subscription = await stripe.subscriptions.retrieve(session.subscription as string);
-        expiresAt = new Date(subscription.current_period_end * 1000);
+        // 🎯 Cast the response explicitly to the underlying Stripe.Subscription model
+        const subscriptionResponse = await stripe.subscriptions.retrieve(session.subscription as string);
+        const subscription = subscriptionResponse as Stripe.Subscription;
+
+        const periodEnd = subscription.items.data.reduce(
+          (latest, item) => Math.max(latest, item.current_period_end),
+          0
+        );
+        if (!periodEnd) {
+          throw new Error("Stripe subscription did not contain an active billing period.");
+        }
+        expiresAt = new Date(periodEnd * 1000);
         console.log(`⏱️ Subscription item mapped. Access expires on: ${expiresAt.toISOString()}`);
       } catch (subErr: any) {
         console.error("⚠️ Failed to extract subscription period end date:", subErr.message);

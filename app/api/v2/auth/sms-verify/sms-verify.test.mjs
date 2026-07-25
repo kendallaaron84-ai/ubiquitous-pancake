@@ -38,7 +38,7 @@ registerHooks({
   },
 });
 
-const { createSmsVerifyRouteHandlers } = await import("./route.ts");
+const { createSmsVerifyRouteHandlers } = await import("./handler.ts");
 const { verifySmsChallenge } = await import(
   "../../../../../core/security/sms-provider.ts"
 );

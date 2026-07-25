@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { adminDb } from "@/core/firebase-admin";
+import { requireAuthorizedAuthorIdentity } from "@/core/security/author-identity";
 
 export const dynamic = "force-dynamic";
 
@@ -18,21 +19,56 @@ export async function GET(request: Request) {
     const assetParam = searchParams.get("asset")?.trim();
     const limitParam = searchParams.get("limit") || "50";
 
-    const studioKey =
+    const studioKey = (
       request.headers.get("x-studio-key") ||
-      request.headers.get("X-Studio-Key");
+      request.headers.get("X-Studio-Key") ||
+      ""
+    ).trim();
 
     /*
      * PUBLIC PRODUCT ROUTING
      *
      * Catalog:
-     *   ?author=global
+     *   ?author=tenant (legacy-compatible display parameter)
      *
      * Single publication:
      *   ?asset=ebk_sample-ebook
      */
     if (authorParam || assetParam) {
-      const targetAuthor = (authorParam || "global").trim();
+      if (!studioKey) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "An activated StudioKey is required.",
+          },
+          {
+            status: 403,
+            headers: getCorsHeaders(),
+          }
+        );
+      }
+
+      const activeLicense = await adminDb
+        .collection("plugin_licenses")
+        .doc(studioKey)
+        .get();
+      const licenseData = activeLicense.data();
+
+      if (
+        !activeLicense.exists ||
+        licenseData?.status !== "active"
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "This StudioKey is not active.",
+          },
+          {
+            status: 403,
+            headers: getCorsHeaders(),
+          }
+        );
+      }
 
       const requestedLimit = Math.min(
         Math.max(
@@ -55,11 +91,21 @@ export async function GET(request: Request) {
           .get();
 
         if (directSnapshot.exists) {
-          productDocs = [directSnapshot];
+          const directData = directSnapshot.data();
+          const directTenant = String(
+            directData?.studioKey ||
+            directData?.wpStudioKey ||
+            ""
+          ).trim();
+
+          if (directTenant === studioKey) {
+            productDocs = [directSnapshot];
+          }
         } else {
           const fallbackSnapshot = await adminDb
             .collection("products")
             .where("assetKey", "==", assetParam)
+            .where("studioKey", "==", studioKey)
             .limit(1)
             .get();
 
@@ -67,23 +113,12 @@ export async function GET(request: Request) {
         }
       } else {
         /*
-         * Catalog mode: retrieve the global library
-         * or one author's library.
+         * Catalog mode: the Firestore query itself is tenant-bound.
+         * Browser-supplied author labels are never authorization.
          */
-        let queryRef: FirebaseFirestore.Query =
-          adminDb.collection("products");
-
-        if (
-          targetAuthor.toLowerCase() !== "global"
-        ) {
-          queryRef = queryRef.where(
-            "authorEmail",
-            "==",
-            targetAuthor
-          );
-        }
-
-        const productsSnapshot = await queryRef
+        const productsSnapshot = await adminDb
+          .collection("products")
+          .where("studioKey", "==", studioKey)
           .limit(requestedLimit)
           .get();
 
@@ -91,7 +126,6 @@ export async function GET(request: Request) {
       }
 
       console.log("[KOBA Catalog] Request", {
-        targetAuthor,
         assetParam: assetParam || null,
         mode: assetParam
           ? "single-publication"
@@ -102,11 +136,11 @@ export async function GET(request: Request) {
       const catalogItems: Record<string, unknown>[] =
         [];
 
-      productDocs.forEach((documentSnapshot) => {
+      for (const documentSnapshot of productDocs) {
         const data = documentSnapshot.data();
 
         if (!data) {
-          return;
+          continue;
         }
 
         const isPublished =
@@ -119,7 +153,7 @@ export async function GET(request: Request) {
             documentSnapshot.id
           );
 
-          return;
+          continue;
         }
 
         const assetKey =
@@ -167,6 +201,40 @@ export async function GET(request: Request) {
                   : topLevelChapters
               );
 
+        const tenantKey = String(data.studioKey || data.wpStudioKey || "").trim();
+        const authorEmail = String(data.authorEmail || data.authorId || "").trim().toLowerCase();
+        const authorIdentityId = String(data.authorIdentityId || "").trim();
+        if (tenantKey !== studioKey) {
+          console.warn("[KOBA Catalog] Blocked cross-tenant product", assetKey);
+          continue;
+        }
+        if (!tenantKey || !authorEmail) {
+          console.warn("[KOBA Catalog] Skipping product without an author workspace", assetKey);
+          continue;
+        }
+
+        let verifiedAuthorName = String(data.authorName || "Sovereign Author").trim();
+        if (authorIdentityId) {
+          try {
+            const authorIdentity = await requireAuthorizedAuthorIdentity(
+              adminDb,
+              tenantKey,
+              authorEmail,
+              authorIdentityId
+            );
+            verifiedAuthorName = authorIdentity.displayName;
+          } catch {
+            console.warn("[KOBA Catalog] Skipping product with an unauthorized author identity", assetKey);
+            continue;
+          }
+        } else {
+          if (activeLicense.exists && activeLicense.data()?.status === "active") {
+            console.warn("[KOBA Catalog] Skipping licensed product without a registered author identity", assetKey);
+            continue;
+          }
+          console.warn("[KOBA Catalog] Serving legacy product pending identity migration", assetKey);
+        }
+
         const catalogProduct = {
           assetKey,
           type: derivedType,
@@ -183,39 +251,25 @@ export async function GET(request: Request) {
             data.bgImageUrl ||
             data.backgroundUrl ||
             "",
-          authorName:
-            data.authorName ||
-            (
-              data.authorEmail
-                ? data.authorEmail.split("@")[0]
-                : "Sovereign Author"
-            ),
+          authorName: verifiedAuthorName,
+          authorIdentityId: authorIdentityId || null,
           authorEmail: data.authorEmail || "",
           authorId: data.authorId || "",
-          price: Number(data.price || 0),
+          price: Number(data.price ?? data.unitPrice ?? 0),
         };
 
         /*
-         * Reader mode includes full chapter data.
+         * Single-publication mode is metadata-only. Protected chapters,
+         * manuscripts, and audio sources are served by /api/media/manifest
+         * after entitlement-backed reader-token verification.
          */
         if (assetParam) {
           catalogItems.push({
             ...catalogProduct,
-            chapters,
-
-            ...(derivedType === "ebook"
-              ? {
-                  ebookPayload: {
-                    ...(data.ebookPayload ?? {}),
-                    chapters,
-                  },
-                }
-              : {
-                  studioTracks,
-                }),
+            chapterCount: chapters.length,
           });
 
-          return;
+          continue;
         }
 
         /*
@@ -225,7 +279,7 @@ export async function GET(request: Request) {
           ...catalogProduct,
           chapterCount: chapters.length,
         });
-      });
+      }
 
       if (
         assetParam &&
@@ -244,10 +298,11 @@ export async function GET(request: Request) {
         );
       }
 
-      const authorName =
-        targetAuthor.toLowerCase() === "global"
-          ? "KOBA-I Global Library"
-          : targetAuthor.split("@")[0];
+      const authorName = String(
+        licenseData?.authorName ||
+        licenseData?.authorEmail ||
+        "KOBA-I Author"
+      ).trim();
 
       return NextResponse.json(
         {
@@ -278,18 +333,15 @@ export async function GET(request: Request) {
 
       const contentSnapshot = await adminDb
         .collection("audiobook_requests")
+        .where("studioKey", "==", studioKey)
         .where("status", "==", "Completed")
         .limit(
           Number.parseInt(limitParam, 10) || 50
         )
         .get();
 
-      contentSnapshot.forEach((documentSnapshot) => {
+      contentSnapshot.forEach((documentSnapshot: FirebaseFirestore.QueryDocumentSnapshot) => {
         const data = documentSnapshot.data();
-
-        if (data.studioKey !== studioKey) {
-          return;
-        }
 
         publicContent.push({
           id: documentSnapshot.id,

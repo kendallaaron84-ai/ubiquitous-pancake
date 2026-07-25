@@ -28,7 +28,8 @@ export default function PhoneOtpVerification({ onStateChange, phoneNumber }: Pho
 	const handleVerify = async () => {
 		const response = await fetch('/api/auth/sms-verify', {
 			method: 'POST',
-			body: JSON.stringify({ phoneNumber, code })
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ phoneNumber, code: otp })
 		});
 
 		const data = await response.json();
@@ -72,7 +73,7 @@ export default function PhoneOtpVerification({ onStateChange, phoneNumber }: Pho
 								required
 							/>
 						</div>
-						<Button onClick={handleVerifyOtp} className="mt-2">
+						<Button onClick={handleVerify} className="mt-2">
 							Verify OTP
 						</Button>
 					</div>

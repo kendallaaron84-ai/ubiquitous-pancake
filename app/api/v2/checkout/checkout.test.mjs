@@ -30,7 +30,7 @@ registerHooks({
   },
 });
 
-const { createCheckoutRouteHandlers } = await import("./route.ts");
+const { createCheckoutRouteHandlers } = await import("./handler.ts");
 
 const TEST_ORIGIN = "http://koba-dev.local";
 const FIXED_NOW = 1_784_347_200_000;

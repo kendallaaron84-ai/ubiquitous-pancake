@@ -38,7 +38,7 @@ registerHooks({
   },
 });
 
-const { createSmsSendRouteHandlers } = await import("./route.ts");
+const { createSmsSendRouteHandlers } = await import("./handler.ts");
 const { dispatchSmsChallenge } = await import(
   "../../../../../core/security/sms-provider.ts"
 );
