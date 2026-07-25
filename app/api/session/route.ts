@@ -40,6 +40,7 @@ export async function GET() {
     );
 
     let connectionStatus: "connected" | "not_connected" = "not_connected";
+    let targetWpOrigin = "";
     if (session.studioKey) {
       const connection = await adminDb
         .collection("connections")
@@ -52,6 +53,10 @@ export async function GET() {
         data.verificationStatus === "verified"
       ) {
         connectionStatus = "connected";
+        targetWpOrigin =
+          typeof data.targetWpOrigin === "string"
+            ? data.targetWpOrigin.trim()
+            : "";
       }
     }
 
@@ -61,6 +66,8 @@ export async function GET() {
         isOwner,
         hasContentEngineAccess,
         connectionStatus,
+        studioKey: session.studioKey,
+        targetWpOrigin,
       },
       { headers: { "Cache-Control": "private, no-store" } }
     );
