@@ -146,10 +146,19 @@ export async function GET(request: Request) {
         const isPublished =
           data.status === "published" ||
           data.isPublished === true;
+        const wordpressDeploymentStatus = String(
+          data.wordpressDeployment?.status || ""
+        ).trim();
 
-        if (!isPublished) {
+        if (
+          !isPublished ||
+          (
+            wordpressDeploymentStatus &&
+            wordpressDeploymentStatus !== "deployed"
+          )
+        ) {
           console.log(
-            "[KOBA Catalog] Skipping unpublished product",
+            "[KOBA Catalog] Skipping product without a confirmed deployment",
             documentSnapshot.id
           );
 
@@ -256,6 +265,9 @@ export async function GET(request: Request) {
           authorEmail: data.authorEmail || "",
           authorId: data.authorId || "",
           price: Number(data.price ?? data.unitPrice ?? 0),
+          category:
+            String(data.category || "").trim() ||
+            (derivedType === "ebook" ? "E-Books" : "Audiobooks"),
         };
 
         /*

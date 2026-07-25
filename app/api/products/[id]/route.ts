@@ -24,6 +24,7 @@ interface ProductPatchBody {
   synopsis?: unknown;
   description?: unknown;
   authorIdentityId?: unknown;
+  category?: unknown;
 }
 
 export async function PATCH(
@@ -59,6 +60,9 @@ export async function PATCH(
     if (synopsis !== null && synopsis.length > MAX_SYNOPSIS_LENGTH) {
       return NextResponse.json({ success: false, error: "The synopsis is too long." }, { status: 400 });
     }
+    const category = typeof body?.category === "string"
+      ? body.category.replace(/[\u0000-\u001F\u007F]/g, "").trim().slice(0, 80)
+      : "";
 
     const reference = adminDb.collection("products").doc(id);
     const snapshot = await reference.get();
@@ -93,6 +97,7 @@ export async function PATCH(
 
     await reference.update({
       ...(synopsis === null ? {} : { synopsis, description: synopsis }),
+      ...(category ? { category } : {}),
       authorIdentityId: identity.id,
       authorName: identity.displayName,
       updatedAt: FieldValue.serverTimestamp(),

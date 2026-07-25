@@ -39,6 +39,7 @@ interface ProductBody {
   studioTracks?: unknown;
   ebookPayload?: unknown;
   authorIdentityId?: unknown;
+  category?: unknown;
 }
 
 export async function POST(request: Request) {
@@ -56,6 +57,7 @@ export async function POST(request: Request) {
     const mediaType = clean(body?.type).toLowerCase() === "ebook" ? "ebook" : "audiobook";
     const price = Number(body?.price ?? 0);
     const status = clean(body?.status).toLowerCase() || "draft";
+    const category = clean(body?.category) || (mediaType === "ebook" ? "E-Books" : "Audiobooks");
     if (!title) return failure(400, "Enter a book title.");
     if (!Number.isFinite(price) || price < 0) return failure(400, "Enter a valid price of zero or greater.");
     if (!ALLOWED_STATUSES.has(status)) return failure(400, "Choose a valid publishing status.");
@@ -83,6 +85,15 @@ export async function POST(request: Request) {
     const productRef = adminDb.collection("products").doc(assetKey);
     const existingSnapshot = await productRef.get();
     const existing = existingSnapshot.data() || {};
+    const existingWordPressDeployment =
+      existing.wordpressDeployment &&
+      typeof existing.wordpressDeployment === "object"
+        ? existing.wordpressDeployment as Record<string, unknown>
+        : {};
+    const hasConfirmedWordPressDeployment =
+      clean(existingWordPressDeployment.status) === "deployed" &&
+      positiveInteger(existingWordPressDeployment.publicationId) > 0 &&
+      positiveInteger(existingWordPressDeployment.pageId) > 0;
     const user = userSnapshot.data() || {};
     const connection = connectionSnapshot.data() || {};
     const associatedWebsite = normalizeOrigin(
@@ -110,10 +121,19 @@ export async function POST(request: Request) {
       coverArtUrl: clean(body?.coverUrl) || clean(existing.coverArtUrl),
       bgImageUrl: clean(body?.bgImageUrl) || clean(existing.bgImageUrl),
       type: mediaType,
+      category,
       price,
       currency: "usd",
-      status,
-      isPublished: status === "published",
+      // A new publication is not public until WordPress confirms that its
+      // destination page exists. Existing confirmed publications remain live
+      // while a later metadata sync is in progress.
+      status: hasConfirmedWordPressDeployment
+        ? clean(existing.status) || status
+        : "draft",
+      isPublished: hasConfirmedWordPressDeployment
+        ? existing.isPublished === true || existing.status === "published"
+        : false,
+      requestedPublishingStatus: status,
       chapters,
       studioTracks: chapters,
       ebookPayload: body?.ebookPayload ?? existing.ebookPayload ?? null,
@@ -127,26 +147,56 @@ export async function POST(request: Request) {
       // Payment destinations belong to the tenant payment profile, never a product or browser payload.
       stripeConnectId: FieldValue.delete(),
       stripeAccountId: FieldValue.delete(),
+      wordpressDeployment: {
+        ...existingWordPressDeployment,
+        status: "deploying",
+        targetWpOrigin: associatedWebsite,
+        startedAt: timestamp,
+      },
       createdAt: existing.createdAt || timestamp,
       updatedAt: timestamp,
     }, { merge: true });
 
-    const wordpress = await deployPublicationToWordPress({
-      studioKey: session.studioKey,
-      assetKey,
-      title,
-      authorName: identity.displayName,
-      synopsis: clean(body?.synopsis) || clean(existing.synopsis),
-      coverUrl: clean(body?.coverUrl) || clean(existing.coverUrl) || clean(existing.coverArtUrl),
-      bgImageUrl: clean(body?.bgImageUrl) || clean(existing.bgImageUrl),
-      mediaType,
-      price,
-      status,
-      chapters,
-      ebookPayload: body?.ebookPayload ?? existing.ebookPayload ?? null,
-    });
+    let wordpress: WordPressDeploymentResult;
+    try {
+      wordpress = await deployPublicationToWordPress({
+        studioKey: session.studioKey,
+        assetKey,
+        title,
+        authorName: identity.displayName,
+        synopsis: clean(body?.synopsis) || clean(existing.synopsis),
+        coverUrl: clean(body?.coverUrl) || clean(existing.coverUrl) || clean(existing.coverArtUrl),
+        bgImageUrl: clean(body?.bgImageUrl) || clean(existing.bgImageUrl),
+        mediaType,
+        category,
+        price,
+        status,
+        chapters,
+        ebookPayload: body?.ebookPayload ?? existing.ebookPayload ?? null,
+      });
+    } catch (error) {
+      await productRef.set({
+        status: hasConfirmedWordPressDeployment
+          ? clean(existing.status) || "published"
+          : "draft",
+        isPublished: hasConfirmedWordPressDeployment
+          ? existing.isPublished === true || existing.status === "published"
+          : false,
+        wordpressDeployment: {
+          ...existingWordPressDeployment,
+          status: "failed",
+          targetWpOrigin: associatedWebsite,
+          failedAt: timestamp,
+        },
+        updatedAt: timestamp,
+      }, { merge: true });
+      throw error;
+    }
 
     await productRef.set({
+      status,
+      isPublished: status === "published",
+      requestedPublishingStatus: FieldValue.delete(),
       wordpressDeployment: {
         status: "deployed",
         targetWpOrigin: wordpress.targetWpOrigin,
@@ -194,6 +244,7 @@ interface WordPressDeploymentInput {
   coverUrl: string;
   bgImageUrl: string;
   mediaType: "audiobook" | "ebook";
+  category: string;
   price: number;
   status: string;
   chapters: unknown[];
@@ -311,6 +362,7 @@ async function deployPublicationToWordPress(
             coverUrl: input.coverUrl,
             bgImageUrl: input.bgImageUrl,
             type: input.mediaType,
+            category: input.category,
             price: input.price,
             status: input.status,
             chapters: input.chapters,
@@ -322,10 +374,15 @@ async function deployPublicationToWordPress(
           signal: AbortSignal.timeout(20_000),
         }
       );
-    } catch {
+    } catch (error) {
+      console.error("WordPress publication deployment request failed.", {
+        assetKey: input.assetKey,
+        targetWpOrigin,
+        reason: error instanceof Error ? error.message : "Unknown network failure",
+      });
       throw new WordPressDeploymentError(
         502,
-        "KOBA-I could not reach your WordPress site to create the publication pages."
+        "KOBA-I could not reach your saved WordPress address. Test the connection in Setup & Connections, then retry Save & Sync."
       );
     }
 

@@ -151,6 +151,7 @@ export default function ProductsPage() {
       price: 0.00,
       status: "draft",
       type: "audiobook",
+      category: "Audiobooks",
       coverArtUrl: "",
       bgImageUrl: "",
       synopsis: "Draft workspace canvas.",
@@ -173,6 +174,9 @@ export default function ProductsPage() {
         userProfile?.associatedWebsite ||
         "",
       authorIdentityId: product.authorIdentityId || authorIdentities[0]?.id || "primary",
+      category:
+        product.category ||
+        (String(product.type || "").toLowerCase() === "ebook" ? "E-Books" : "Audiobooks"),
     });
   };
 
@@ -233,6 +237,9 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
       coverUrl: editingProduct.coverArtUrl || "", 
       bgImageUrl: editingProduct.bgImageUrl || "", 
       type: editingProduct.type || "audiobook",
+      category:
+        editingProduct.category ||
+        ((editingProduct.type || "audiobook") === "ebook" ? "E-Books" : "Audiobooks"),
       price: numericPrice,
       status: editingProduct.status || "published", 
       authorIdentityId: editingProduct.authorIdentityId || authorIdentities[0]?.id || "primary",
@@ -264,6 +271,7 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
       body: JSON.stringify({
         synopsis: payload.synopsis,
         authorIdentityId: payload.authorIdentityId,
+        category: payload.category,
       }),
     });
     const productResult = await productResponse.json().catch(() => ({}));
@@ -469,10 +477,17 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
                           const newType = e.target.value;
                           const newPrefix = newType === "ebook" ? "ebk_" : "abk_";
                           const currentCleanId = editingProduct.id.replace(/^(abk_|ebk_)/, "");
+                          const currentCategory = String(editingProduct.category || "").trim();
+                          const defaultCategory = newType === "ebook" ? "E-Books" : "Audiobooks";
+                          const previousDefault = newType === "ebook" ? "Audiobooks" : "E-Books";
                           setEditingProduct({
                             ...editingProduct, 
                             type: newType,
-                            id: `${newPrefix}${currentCleanId}`
+                            id: `${newPrefix}${currentCleanId}`,
+                            category:
+                              !currentCategory || currentCategory === previousDefault
+                                ? defaultCategory
+                                : currentCategory,
                           });
                         }}
                         className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:outline-none"
@@ -481,6 +496,32 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
                         <option value="ebook">E-Book</option>
                       </select>
                     </div>
+                  </div>
+
+                  <div className="flex flex-col space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-300">Bookstore Category</label>
+                    <input
+                      type="text"
+                      list="koba-bookstore-categories"
+                      placeholder="Audiobooks"
+                      value={
+                        editingProduct.category ||
+                        ((editingProduct.type || "audiobook") === "ebook" ? "E-Books" : "Audiobooks")
+                      }
+                      onChange={(e) => setEditingProduct({ ...editingProduct, category: e.target.value })}
+                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-[#8b4528]"
+                    />
+                    <datalist id="koba-bookstore-categories">
+                      <option value="Featured" />
+                      <option value="Audiobooks" />
+                      <option value="E-Books" />
+                      <option value="Children's Books" />
+                      <option value="Fiction" />
+                      <option value="Non-Fiction" />
+                    </datalist>
+                    <p className="text-[11px] leading-4 text-slate-400">
+                      Controls which horizontal shelf this book appears in on your WordPress Bookstore page.
+                    </p>
                   </div>
 
                   <div className="flex flex-col space-y-1.5">
