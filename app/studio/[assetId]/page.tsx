@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, use } from "react";
 import { db, storage } from "@/core/firebase"; // 🚀 FIXED: Using your pre-configured instances directly
-import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { doc, getDoc, serverTimestamp, updateDoc } from "firebase/firestore";
 import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage"; // 🚀 FIXED: Standard static imports
 import { 
   ChevronLeft, UploadCloud, Mic, ShieldAlert, Lock, 
@@ -10,11 +10,37 @@ import {
   GripVertical, Trash2, Languages, RefreshCw, Fingerprint
 } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+
+function readMediaDuration(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const media = document.createElement(file.type.startsWith("video/") ? "video" : "audio");
+    const objectUrl = URL.createObjectURL(file);
+    const cleanup = () => {
+      URL.revokeObjectURL(objectUrl);
+      media.removeAttribute("src");
+      media.load();
+    };
+    media.preload = "metadata";
+    media.onloadedmetadata = () => {
+      const duration = Number(media.duration);
+      cleanup();
+      if (Number.isFinite(duration) && duration > 0) resolve(duration);
+      else reject(new Error("Media duration is unavailable."));
+    };
+    media.onerror = () => {
+      cleanup();
+      reject(new Error("Media duration could not be read."));
+    };
+    media.src = objectUrl;
+  });
+}
 
 export const dynamic = 'force-dynamic';
 
 export default function ProductionStudio({ params }: { params: Promise<{ assetId: string }> }) {
   const { assetId } = use(params); 
+  const searchParams = useSearchParams();
 
   const [productData, setProductData] = useState<any>(null);
   const [activeTab, setActiveTab] = useState("media"); 
@@ -22,13 +48,16 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
   const [vaultStatus, setVaultStatus] = useState("unprotected");
   const [encryptionLog, setEncryptionLog] = useState<string[]>([]);
   const [tracks, setTracks] = useState<any[]>([]);
-  const [transcribingId, setTranscribingId] = useState<string | null>(null);
+  const [transcriptionQuote, setTranscriptionQuote] = useState<any | null>(null);
+  const [transcriptionStatus, setTranscriptionStatus] = useState("not_started");
+  const [transcriptionMessage, setTranscriptionMessage] = useState("");
+  const [isStartingCheckout, setIsStartingCheckout] = useState(false);
 
   useEffect(() => {
     if (!assetId) return;
     const fetchProduct = async () => {
       try {
-        const docRef = doc(db, "assets", assetId);
+        const docRef = doc(db, "products", assetId);
         const docSnap = await getDoc(docRef);
         
         if (docSnap.exists()) {
@@ -47,14 +76,58 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
     fetchProduct();
   }, [assetId]);
 
+  useEffect(() => {
+    if (!assetId) return;
+    let active = true;
+    const refreshQuote = async () => {
+      try {
+        const response = await fetch(`/api/studio/transcribe?assetId=${encodeURIComponent(assetId)}`);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || "Transcription pricing is unavailable.");
+        if (!active) return;
+        setTranscriptionQuote(data.quote);
+        setTranscriptionStatus(data.transcriptionStatus || "not_started");
+        if (data.transcriptionError) {
+          setTranscriptionMessage(data.transcriptionError);
+        } else if (Number(data.quote?.missingDurationTrackCount) > 0) {
+          const missingCount = Number(data.quote.missingDurationTrackCount);
+          setTranscriptionMessage(
+            `${missingCount} chapter${missingCount === 1 ? " is" : "s are"} missing duration data. Reattach the affected audio before checkout so the price is accurate.`
+          );
+        }
+      } catch (error) {
+        if (active) setTranscriptionMessage(error instanceof Error ? error.message : "Transcription pricing is unavailable.");
+      }
+    };
+    refreshQuote();
+    const hasCompletedCheckout = Boolean(searchParams.get("transcription_session_id"));
+    if (searchParams.get("transcription") === "cancelled") {
+      setTranscriptionMessage("Transcription checkout was cancelled. No charge was made.");
+    } else if (hasCompletedCheckout) {
+      setTranscriptionMessage("Payment received. Your full audiobook transcription is being queued.");
+    }
+    const interval = hasCompletedCheckout ? window.setInterval(refreshQuote, 5000) : null;
+    return () => {
+      active = false;
+      if (interval) window.clearInterval(interval);
+    };
+  }, [assetId, searchParams]);
+
   // Unified save handler to commit current track array to Firestore
   const saveTracksToDatabase = async (currentTracks: any[]) => {
     try {
-      const docRef = doc(db, "assets", assetId);
+      const docRef = doc(db, "products", assetId);
+      const playableTrackCount = currentTracks.filter((track) =>
+        Boolean(track?.url || track?.audioUrl || track?.mediaUrl || track?.streamUrl || track?.src)
+      ).length;
       await updateDoc(docRef, { 
         studioTracks: currentTracks,
+        chapters: currentTracks,
+        chapterCount: playableTrackCount,
+        trackCount: playableTrackCount,
         mediaType: mediaType,
-        vaultStatus: vaultStatus
+        vaultStatus: vaultStatus,
+        updatedAt: serverTimestamp()
       });
       console.log("💾 Firestore collection updated successfully.");
     } catch (e) {
@@ -92,38 +165,26 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
     setTracks(reIndexed);
   };
 
-  const triggerTranscription = async (trackId: string) => {
-    if (transcribingId) return;
-    setTranscribingId(trackId);
-
+  const startTranscriptionCheckout = async () => {
+    if (isStartingCheckout) return;
+    setIsStartingCheckout(true);
+    setTranscriptionMessage("");
     try {
       const response = await fetch(`/api/studio/transcribe`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trackId, assetId: assetId }),
+        body: JSON.stringify({ assetId }),
       });
-
-      if (!response.ok) throw new Error("Transcription pipeline connection failure.");
-      const data = await response.json();
-
-      if (data.success) {
-        setTracks(prev => prev.map(t => {
-          if (t.id === trackId) {
-            return { 
-              ...t, 
-              isTranscribed: true, 
-              transcriptUrl: data.transcriptUrl || ""
-            };
-          }
-          return t;
-        }));
-        alert("Transcription completed successfully!");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.checkoutUrl) {
+        throw new Error(data.error || "Transcription checkout could not be opened.");
       }
+      window.location.assign(data.checkoutUrl);
     } catch (error) {
-      console.error("Audio-to-Text Pipeline Interrupted:", error);
-      alert("Transcription failed. Verify the file was completely uploaded first.");
+      const message = error instanceof Error ? error.message : "Transcription checkout is unavailable.";
+      setTranscriptionMessage(message);
     } finally {
-      setTranscribingId(null);
+      setIsStartingCheckout(false);
     }
   };
 
@@ -209,9 +270,33 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
                     <h2 className="text-2xl font-black text-slate-800 tracking-tight capitalize">{mediaType} Segment Assignment</h2>
                     <p className="text-sm text-slate-500 mt-1">Upload discrete blocks for book chapters. Click rows to anchor computer audio files.</p>
                   </div>
-                  <button onClick={addNewTrackRow} className="bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold uppercase tracking-wider px-4 py-2.5 rounded-xl transition-all border border-slate-900">
-                    + Add New Chapter Row
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={startTranscriptionCheckout}
+                      disabled={isStartingCheckout || !transcriptionQuote || transcriptionQuote.pendingTrackCount === 0 || transcriptionQuote.missingDurationTrackCount > 0}
+                      className="flex items-center gap-2 bg-[#f97316] hover:bg-[#ea580c] text-black text-xs font-bold px-4 py-2.5 rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Languages className="w-4 h-4" />
+                      {isStartingCheckout
+                        ? "Opening Checkout..."
+                        : `Transcribe Full Audiobook (${transcriptionQuote?.formattedAmount || "$—"})`}
+                    </button>
+                    <button onClick={addNewTrackRow} className="bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold uppercase tracking-wider px-4 py-2.5 rounded-xl transition-all border border-slate-900">
+                      + Add New Chapter Row
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-xs text-slate-600">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      {transcriptionQuote
+                        ? `${transcriptionQuote.pendingTrackCount} chapter${transcriptionQuote.pendingTrackCount === 1 ? "" : "s"} · ${transcriptionQuote.totalDurationHours.toFixed(2)} hours · $1.00 per rounded-up hour`
+                        : "Calculating the full audiobook duration..."}
+                    </span>
+                    <span className="font-bold capitalize text-slate-800">Status: {transcriptionStatus.replaceAll("_", " ")}</span>
+                  </div>
+                  {transcriptionMessage && <p className="mt-2 font-semibold text-[#8b4528]">{transcriptionMessage}</p>}
                 </div>
 
                 <div className="space-y-3">
@@ -251,9 +336,11 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
                               id={`file-upload-injector-${track.id}`}
                               accept={mediaType === 'audio' ? 'audio/*' : 'video/*'}
                               className="hidden"
-                              onChange={(e) => {
+                              onChange={async (e) => {
                                 const selectedFile = e.target.files?.[0];
                                 if (!selectedFile) return;
+
+                                const durationSeconds = await readMediaDuration(selectedFile).catch(() => 0);
 
                                 // 1. Put UI immediately into loading state
                                 setTracks(prev => prev.map(t => t.id === track.id ? { ...t, uploadStatus: "uploading", fileName: "Streaming..." } : t));
@@ -278,6 +365,9 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
                                       ...t, 
                                       uploadStatus: "success", 
                                       fileName: selectedFile.name,
+                                      durationSeconds,
+                                      mimeType: selectedFile.type || "audio/mpeg",
+                                      storagePath,
                                       url: downloadUrl // Mapped for api/studio/transcribe
                                     } : t);
 
@@ -302,15 +392,6 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
                         <div className="flex items-center gap-1">
                           <button onClick={() => moveTrackUp(index)} disabled={index === 0} className="p-2 text-slate-400 hover:text-slate-800 disabled:opacity-20 transition-colors">
                             <RefreshCw className="w-3.5 h-3.5 rotate-180" />
-                          </button>
-
-                          <button 
-                            onClick={() => triggerTranscription(track.id)}
-                            disabled={transcribingId !== null || track.uploadStatus !== 'success'}
-                            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all border ${track.uploadStatus !== 'success' ? 'opacity-30 cursor-not-allowed bg-slate-100 text-slate-400' : track.isTranscribed ? 'bg-emerald-100 border-emerald-300 text-emerald-800' : 'bg-slate-100 border-slate-300 text-slate-700 hover:bg-slate-200'}`}
-                          >
-                            <Languages className="w-3.5 h-3.5" />
-                            {transcribingId === track.id ? "Syncing..." : track.isTranscribed ? "Synced" : "Transcribe"}
                           </button>
 
                           <button 
