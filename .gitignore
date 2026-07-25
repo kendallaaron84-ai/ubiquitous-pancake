@@ -80,8 +80,10 @@ secrets/*.json
 
 # Next.js build compilation cache environments
 .next/
+.next-stale-*/
 out/
 build/
 node_modules/
+*.tsbuildinfo
 
 Automated-Testing-for-Jubilee-Works/
