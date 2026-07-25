@@ -2,6 +2,13 @@ import { NextResponse } from "next/server";
 import type { DocumentData } from "firebase-admin/firestore";
 
 import { adminAuth, adminDb } from "@/core/firebase-admin";
+import {
+  DASHBOARD_SESSION_COOKIE,
+  DASHBOARD_SESSION_MAX_AGE_SECONDS,
+  issueDashboardSession,
+  resolveDashboardAccessScope,
+  resolveDashboardSessionSecret,
+} from "@/core/security/dashboard-session";
 
 export const dynamic = "force-dynamic";
 
@@ -256,16 +263,25 @@ export async function POST(request: Request) {
       );
     }
 
-    const secureToken = await adminAuth.createCustomToken(decodedToken.uid);
+    const accessScope = resolveDashboardAccessScope(email);
+    const secureToken = await issueDashboardSession(
+      {
+        uid: decodedToken.uid,
+        email,
+        studioKey: trimString(userData.studioKey) || null,
+        accessScope,
+      },
+      resolveDashboardSessionSecret()
+    );
     const response = NextResponse.json(
       {
         success: true,
         message: "Identity token verification successful.",
-        sessionToken: secureToken,
         user: {
           email,
           name: userData.name || "Sovereign Author",
           studioKey: userData.studioKey || null,
+          accessScope,
           pluginEntitlements: Array.isArray(userData.pluginEntitlements)
             ? userData.pluginEntitlements
             : [],
@@ -274,9 +290,9 @@ export async function POST(request: Request) {
       { status: 200 }
     );
 
-    response.cookies.set("session-token", secureToken, {
+    response.cookies.set(DASHBOARD_SESSION_COOKIE, secureToken, {
       path: "/",
-      maxAge: 86400,
+      maxAge: DASHBOARD_SESSION_MAX_AGE_SECONDS,
       sameSite: "strict",
       secure: process.env.NODE_ENV === "production",
       httpOnly: true,

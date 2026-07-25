@@ -1,43 +1,134 @@
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
-export function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl; //[cite: 7]
+import {
+  DASHBOARD_SESSION_COOKIE,
+  resolveDashboardSessionSecret,
+  verifyDashboardSession,
+} from "@/core/security/dashboard-session";
 
-  // 🚀 PATHWAY EXCEPTIONS: Prevent middleware from blocking or redirecting auth/public routes
-  const isPublicRoute = 
-    pathname.startsWith('/signin') || //[cite: 7]
-    pathname.startsWith('/signup') || //[cite: 7]
-    pathname.startsWith('/setup-password') || //[cite: 7]
-    pathname.startsWith('/api/login') || //[cite: 7]
-    pathname.startsWith('/api/auth/activate') || //[cite: 7]
-    pathname.startsWith('/api/auth/sms-send') ||    // 🚀 UNLOCKED: Twilio OTP Dispatch[cite: 7]
-    pathname.startsWith('/api/auth/sms-verify') ||  // 🚀 UNLOCKED: Twilio OTP Verification[cite: 7]
-    pathname.startsWith('/api/products/public') ||  // 🚀 UNLOCKED: Public Catalog & Player Fetch[cite: 7]
-    pathname.startsWith('/api/verify-entitlement') || // 🎯 UNLOCKED: External WordPress Player Handshakes[cite: 7]
-    pathname.startsWith('/api/webhook') || //[cite: 7]
-    pathname.startsWith('/_next') || //[cite: 7]
-    pathname.endsWith('.png') || //[cite: 7]
-    pathname.endsWith('.jpg') || //[cite: 7]
-    pathname.endsWith('.svg') || //[cite: 7]
-    pathname.endsWith('.ico'); //[cite: 7]
+const PUBLIC_PAGE_PREFIXES = ["/signin", "/signup", "/setup-password"];
+const PUBLIC_API_EXACT_PATHS = new Set([
+  "/api/login",
+  "/api/logout",
+  "/api/session",
+  "/api/auth/activate",
+  "/api/auth/sms-send",
+  "/api/auth/sms-verify",
+  "/api/products/public",
+  "/api/content/public",
+  "/api/checkout",
+  "/api/checkout/plugin",
+  "/api/checkout/listener-session",
+  "/api/checkout/listener-session/complete",
+  "/api/media/manifest",
+  "/api/verify-entitlement",
+  "/api/verify-license",
+  "/api/library-manifest",
+]);
+const PUBLIC_API_PREFIXES = ["/api/webhook"];
+const MVP_PAGE_PREFIXES = [
+  "/products",
+  "/nexus-engine",
+  "/visibility-cure",
+  "/connect",
+  "/billing",
+];
+const MVP_API_EXACT_PATHS = new Set([
+  "/api/generate-blog",
+  "/api/checkout/create-session",
+  "/api/connections/verify",
+]);
 
-  if (isPublicRoute) {
-    return NextResponse.next(); //[cite: 7]
+export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  if (isStaticAsset(pathname) || isPublicRoute(pathname)) {
+    return NextResponse.next();
   }
 
-  const sessionToken = request.cookies.get('session-token'); //[cite: 7]
+  const token = request.cookies.get(DASHBOARD_SESSION_COOKIE)?.value;
 
-  if (!sessionToken) { //[cite: 7]
-    const loginUrl = new URL('/signin', request.url); //[cite: 7]
-    return NextResponse.redirect(loginUrl); //[cite: 7]
+  if (!token) {
+    return rejectUnauthenticated(request);
   }
 
-  return NextResponse.next(); //[cite: 7]
+  try {
+    const session = await verifyDashboardSession(
+      token,
+      resolveDashboardSessionSecret()
+    );
+
+    if (session.accessScope === "full") {
+      return NextResponse.next();
+    }
+
+    if (pathname.startsWith("/api/")) {
+      return MVP_API_EXACT_PATHS.has(pathname)
+        ? NextResponse.next()
+        : NextResponse.json(
+            { success: false, error: "This API is not available in the MVP workspace." },
+            { status: 404 }
+          );
+    }
+
+    if (pathname === "/") {
+      return NextResponse.next();
+    }
+
+    if (MVP_PAGE_PREFIXES.some((prefix) => pathMatchesPrefix(pathname, prefix))) {
+      return NextResponse.next();
+    }
+
+    return NextResponse.redirect(new URL("/products", request.url));
+  } catch {
+    const response = rejectUnauthenticated(request);
+    response.cookies.set(DASHBOARD_SESSION_COOKIE, "", {
+      path: "/",
+      maxAge: 0,
+      sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
+      httpOnly: true,
+    });
+    return response;
+  }
+}
+
+function isPublicRoute(pathname: string): boolean {
+  if (PUBLIC_PAGE_PREFIXES.some((prefix) => pathMatchesPrefix(pathname, prefix))) {
+    return true;
+  }
+
+  if (PUBLIC_API_EXACT_PATHS.has(pathname)) {
+    return true;
+  }
+
+  return PUBLIC_API_PREFIXES.some((prefix) => pathMatchesPrefix(pathname, prefix));
+}
+
+function isStaticAsset(pathname: string): boolean {
+  return (
+    pathname.startsWith("/_next/") ||
+    pathname.startsWith("/assets/") ||
+    /\.(?:css|js|map|png|jpe?g|gif|svg|ico|webp|woff2?)$/i.test(pathname)
+  );
+}
+
+function pathMatchesPrefix(pathname: string, prefix: string): boolean {
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
+function rejectUnauthenticated(request: NextRequest): NextResponse {
+  if (request.nextUrl.pathname.startsWith("/api/")) {
+    return NextResponse.json(
+      { success: false, error: "Authentication is required." },
+      { status: 401 }
+    );
+  }
+
+  return NextResponse.redirect(new URL("/signin", request.url));
 }
 
 export const config = {
-  matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|api/products/public|api/auth/sms-send|api/auth/sms-verify|api/verify-entitlement|api/checkout).*)', //[cite: 7]
-  ],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

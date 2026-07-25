@@ -26,6 +26,7 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
   const [studioKey, setStudioKey] = useState<string>("")
   const [loading, setLoading] = useState<boolean>(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [infoMsg, setInfoMsg] = useState<string | null>(null)
 
   // 🚀 Standard Auth Handshake Token Exchange with Next.js Backend
   const handleTokenExchange = async (idToken: string) => {
@@ -71,6 +72,7 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setErrorMsg(null)
+    setInfoMsg(null)
 
     if (password !== confirmPassword) {
       setErrorMsg("Security Passwords do not match.")
@@ -106,17 +108,17 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
         throw exchangeError
       }
     } catch (err: unknown) {
-      console.error("🚨 Registration Error:", err)
       const authErr = err as AuthError
 
       // User-friendly error mappings
-      if (authErr.code === "auth/email-already-in-reply" || authErr.code === "auth/email-already-in-use") {
-        setErrorMsg("An identity with this email address already exists.")
+      if (authErr.code === "auth/email-already-in-use") {
+        setInfoMsg("Your account is already set up. Sign in to continue.")
       } else if (authErr.code === "auth/invalid-email") {
         setErrorMsg("Please enter a valid email address.")
       } else if (authErr.code === "auth/weak-password") {
         setErrorMsg("Security Password is too weak. Please include letters, numbers and special characters.")
       } else {
+        console.error("🚨 Registration Error:", err)
         setErrorMsg(authErr.message || "An unexpected registration error occurred.")
       }
     } finally {
@@ -157,6 +159,20 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
       </CardHeader>
 
       <CardContent className="px-6 sm:px-10 py-6 flex-grow">
+        {infoMsg && (
+          <div role="status" className="mb-6 rounded-md border border-emerald-500/50 bg-emerald-500/10 p-4 text-sm leading-relaxed text-emerald-100 shadow-inner">
+            <p>{infoMsg}</p>
+            <Button
+              type="button"
+              variant="link"
+              className="mt-2 h-auto p-0 font-bold text-white underline underline-offset-4 hover:text-emerald-100"
+              onClick={() => onStateChange("signin")}
+            >
+              Sign In
+            </Button>
+          </div>
+        )}
+
         {errorMsg && (
           <div className="mb-6 p-4 rounded-md bg-red-900/40 border border-red-500/50 text-red-200 text-sm leading-relaxed shadow-inner">
             {errorMsg}

@@ -58,17 +58,32 @@ function SetupForm() {
         throw new Error(data.error || 'Activation handshake failed.');
       }
 
-      setSuccess(true);
-      
       // 2. Hydrate client side auth using Custom Token
-      await signInWithCustomToken(auth, data.customToken);
+      const credential = await signInWithCustomToken(auth, data.customToken);
+      const idToken = await credential.user.getIdToken();
 
-      // 3. Set standard security token in cookies for Next.js Middleware authentication
-      document.cookie = `session-token=${data.customToken}; path=/; max-age=86400; SameSite=Strict; Secure`;
+      // 3. Exchange the Firebase identity token for the server-signed dashboard session.
+      const sessionResponse = await fetch('/api/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          idToken,
+          studioKey: licenseParam,
+        }),
+      });
+      const sessionData = await sessionResponse.json();
+
+      if (!sessionResponse.ok || !sessionData.success) {
+        throw new Error(sessionData.error || 'Unable to establish the dashboard session.');
+      }
+
+      setSuccess(true);
 
       // 4. Redirect smoothly to active admin layout
       setTimeout(() => {
-        router.push('/');
+        router.push('/products');
       }, 1500);
 
     } catch (err: any) {

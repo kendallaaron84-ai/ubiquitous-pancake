@@ -46,8 +46,8 @@ export default function AuthForm({ currentState }: AuthFormProps) {
 	}
 
 	return (
-		<div className="flex items-center justify-center h-full w-full">
-			<Card className="w-full h-full border-0 md:border shadow-none md:shadow-none flex flex-col rounded-xl md:rounded-none md:rounded-r-xl">
+		<div className="flex w-full items-center justify-center">
+			<Card className="w-full gap-0 overflow-hidden border border-border bg-card py-0 text-card-foreground shadow-2xl">
 				{renderAuthComponent()}
 			</Card>
 		</div>

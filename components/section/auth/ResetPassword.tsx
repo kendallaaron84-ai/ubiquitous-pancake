@@ -41,6 +41,7 @@ export default function ResetPassword({ onStateChange }: ResetPasswordProps) {
 								value={email}
 								onChange={(e) => setEmail(e.target.value)}
 								required
+								className="!border-2 !border-[#7084b5] !bg-[#182343] text-white shadow-inner placeholder:text-slate-300 transition-all focus-visible:!border-[#EFB752] focus-visible:!ring-[#EFB752]/40"
 							/>
 						</div>
 					</div>
@@ -50,7 +51,7 @@ export default function ResetPassword({ onStateChange }: ResetPasswordProps) {
 				</form>
 			</CardContent>
 			<CardFooter className="px-6 py-4 border-t mt-auto">
-				<Button variant="link" className="h-auto p-0" onClick={() => onStateChange("signin")}>
+				<Button variant="link" className="h-auto p-0 font-semibold text-[#f97316] hover:text-[#ff9a4d]" onClick={() => onStateChange("signin")}>
 					Remember your password? Sign In
 				</Button>
 			</CardFooter>
