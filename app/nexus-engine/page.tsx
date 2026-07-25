@@ -1,132 +1,315 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import Layout from "@/components/layout"; // 🔑 The corrected wrapper path!
-import { AuthorIntakeForm } from "@/components/author-intake-form";
-import { BrandProfileModal } from "@/components/brand-profile-modal"; 
-import { AdminControlsModal } from "@/components/admin-controls-modal"; 
-import { AuthorPipelineList } from "@/components/author-pipeline-list";
-import { db } from "@/core/firebase";
-import { collection, query, where, onSnapshot, orderBy } from "firebase/firestore";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  collection,
+  type DocumentData,
+  type QueryConstraint,
+  type QueryDocumentSnapshot,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  startAfter,
+  startAt,
+  where,
+} from "firebase/firestore";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 
-export const dynamic = 'force-dynamic';
+import Layout from "@/components/layout";
+import { AuthorIntakeForm } from "@/components/author-intake-form";
+import { BrandProfileModal } from "@/components/brand-profile-modal";
+import { AdminControlsModal } from "@/components/admin-controls-modal";
+import { BlogEngineGateModal } from "@/components/modals/BlogEngineGateModal";
+import {
+  AuthorPipelineList,
+  type PipelineItem,
+} from "@/components/author-pipeline-list";
+import { db } from "@/core/firebase";
+
+const PAGE_SIZE = 25;
+
+type PageAnchor =
+  | { kind: "first" }
+  | { kind: "after"; document: QueryDocumentSnapshot<DocumentData> }
+  | { kind: "at"; document: QueryDocumentSnapshot<DocumentData> };
 
 export default function NexusEnginePage() {
-	const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
-	const [pipelineItems, setPipelineItems] = useState<any[]>([]);
-	const [loadingAuth, setLoadingAuth] = useState(true);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
+  const [pipelineItems, setPipelineItems] = useState<PipelineItem[]>([]);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [loadingAccess, setLoadingAccess] = useState(true);
+  const [hasContentEngineAccess, setHasContentEngineAccess] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [pageNumber, setPageNumber] = useState(1);
+  const [pageAnchor, setPageAnchor] = useState<PageAnchor>({ kind: "first" });
+  const [lastVisible, setLastVisible] =
+    useState<QueryDocumentSnapshot<DocumentData> | null>(null);
+  const [isPageTransitioning, setIsPageTransitioning] = useState(false);
+  const pageStartCursors = useRef<
+    Array<QueryDocumentSnapshot<DocumentData> | null>
+  >([null]);
 
-	// 1. Establish Secure Identity Handshake Loop
-	useEffect(() => {
-		const auth = getAuth();
-		const unsubscribe = onAuthStateChanged(auth, (user) => {
-			if (user && user.email) {
-				setCurrentUserEmail(user.email);
-			} else {
-				setCurrentUserEmail(null);
-			}
-			setLoadingAuth(false);
-		});
-		return () => unsubscribe();
-	}, []);
+  useEffect(() => {
+    const auth = getAuth();
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUserEmail(user?.email || null);
+      setPipelineItems([]);
+      setPageNumber(1);
+      setPageAnchor({ kind: "first" });
+      setLastVisible(null);
+      setIsPageTransitioning(false);
+      pageStartCursors.current = [null];
+      setLoadingAuth(false);
+    });
 
-	// 2. Real-Time Sync Stream for the Content Engine Queue
-	useEffect(() => {
-		if (!currentUserEmail) return;
+    return unsubscribe;
+  }, []);
 
-		const q = query(
-			collection(db, "content_blueprints"),
-			where("authorEmail", "==", currentUserEmail),
-			orderBy("createdAt", "desc")
-		);
+  useEffect(() => {
+    const controller = new AbortController();
 
-		const unsubscribe = onSnapshot(q, (snapshot) => {
-			const items: any[] = [];
-			snapshot.forEach((doc) => {
-				const data = doc.data();
-				items.push({
-					id: doc.id,
-					title: data.topicTitle || "Untitled Blueprint",
-					brandAllocation: data.brandAllocation || "personal",
-					executionState: data.executionState || "initializing",
-					// 🔑 Pull down the new assets!
-					liveDraftUrl: data.liveDraftUrl || null,
-					facebookCopy: data.facebookCopy || null,
-					instagramCopy: data.instagramCopy || null,
-					imagePrompt: data.imagePrompt || null,
-				});
-			});
-			setPipelineItems(items);
-		}, (error) => {
-			console.error("❌ Live pipeline sync engine fault:", error);
-		});
+    fetch("/api/session", {
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              authenticated?: boolean;
+              isOwner?: boolean;
+              hasContentEngineAccess?: boolean;
+            }
+          | null;
+        if (!response.ok || payload?.authenticated !== true) {
+          throw new Error("Your Blog Engine access could not be verified.");
+        }
+        setHasContentEngineAccess(payload.hasContentEngineAccess === true);
+        setIsAdmin(payload.isOwner === true);
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        console.error("Blog Engine access check failed:", error);
+        setHasContentEngineAccess(false);
+        setIsAdmin(false);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoadingAccess(false);
+      });
 
-		return () => unsubscribe();
-	}, [currentUserEmail]);
+    return () => controller.abort();
+  }, []);
 
-	// Evaluate admin gate privileges
-	const isAdmin = currentUserEmail === "kendall.aaron@koba-i.com";
+  useEffect(() => {
+    if (!currentUserEmail || !hasContentEngineAccess) {
+      setPipelineItems([]);
+      return;
+    }
 
-	if (loadingAuth) {
-		return (
-			<Layout>
-				<div className="p-12 text-center text-sm text-muted-foreground animate-pulse">
-					Authenticating secure operator studio parameters...
-				</div>
-			</Layout>
-		);
-	}
+    const constraints: QueryConstraint[] = [
+      where("authorEmail", "==", currentUserEmail),
+      orderBy("createdAt", "desc"),
+    ];
 
-	return (
-		<Layout>
-			<div className="p-6 space-y-8 max-w-7xl mx-auto animate-in fade-in duration-300">
-				
-				{/* Header Branding Row */}
-				<div>
-					<h1 className="text-2xl font-bold tracking-tight text-white">KOBA-I Nexus Engine</h1>
-					<p className="text-sm text-muted-foreground">
-						Deploy automated blueprints and monitor real-time generation queues across brand vectors.
-					</p>
-				</div>
+    if (pageAnchor.kind === "after") {
+      constraints.push(startAfter(pageAnchor.document));
+    } else if (pageAnchor.kind === "at") {
+      constraints.push(startAt(pageAnchor.document));
+    }
 
-				{/* Intake Form & Operational Metadata Parameters */}
-				<div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-					{/* Left Column: The Generator Form */}
-					<div className="lg:col-span-2">
-						<AuthorIntakeForm />
-					</div>
-					
-					{/* Right Column: Standardized Theme Context Box */}
-					<div className="p-5 bg-card rounded-xl border border-border space-y-4 text-sm text-muted-foreground shadow-sm">
-						<h3 className="font-bold text-foreground">Operational Parameters</h3>
-						<p>Your input triggers the live Cloud Run runtime execution loop matching your active brand settings.</p>
-						
-						<div className="pt-3 border-t border-border space-y-1 text-xs">
-							<div><span className="font-semibold text-foreground">Active Database:</span> content-engine-prod</div>
-							<div className="truncate"><span className="font-semibold text-foreground">Operator Session:</span> {currentUserEmail}</div>
-						</div>
-						
-						{/* Brand Profile & Identity Setup Actions */}
-						<div className="pt-2 space-y-2">
-							<BrandProfileModal />
-							{isAdmin && <AdminControlsModal />}
-						</div>
-					</div>
-				</div>
+    constraints.push(limit(PAGE_SIZE));
 
-				{/* Active Live Pipeline Generation Tracker Section */}
-				<div className="space-y-3 pt-4">
-					<div>
-						<h2 className="text-xl font-bold tracking-tight text-white">Live Execution Blueprints</h2>
-						<p className="text-xs text-muted-foreground">Monitored pipeline traces executing across the CDN.</p>
-					</div>
-					
-					{/* Inject clean data stream elements directly into list layout context */}
-					<AuthorPipelineList items={pipelineItems} onRefresh={() => {}} />
-				</div>
+    const pageQuery = query(
+      collection(db, "content_blueprints"),
+      ...constraints
+    );
 
-			</div>
-		</Layout>
-	);
+    const unsubscribe = onSnapshot(
+      pageQuery,
+      (snapshot) => {
+        const items: PipelineItem[] = snapshot.docs.map((document) => {
+          const data = document.data();
+
+          return {
+            id: document.id,
+            title: data.topicTitle || data.title || "Untitled Blog",
+            brandAllocation: data.brandAllocation || "personal",
+            executionState: normalizeExecutionState(data.executionState),
+            createdAt: data.createdAt ?? null,
+            liveDraftUrl: data.liveDraftUrl || undefined,
+            facebookCopy: data.facebookCopy || undefined,
+            instagramCopy: data.instagramCopy || undefined,
+            imagePrompt: data.imagePrompt || undefined,
+          };
+        });
+
+        setPipelineItems(items);
+        setLastVisible(snapshot.docs.at(-1) || null);
+        pageStartCursors.current[pageNumber - 1] = snapshot.docs[0] || null;
+        setIsPageTransitioning(false);
+      },
+      (error) => {
+        console.error("Live Blogs synchronization failed:", error);
+        setIsPageTransitioning(false);
+      }
+    );
+
+    return unsubscribe;
+  }, [currentUserEmail, hasContentEngineAccess, pageAnchor, pageNumber]);
+
+  const goToNextPage = () => {
+    if (
+      isPageTransitioning ||
+      pipelineItems.length < PAGE_SIZE ||
+      !lastVisible
+    ) {
+      return;
+    }
+
+    setIsPageTransitioning(true);
+    setPageNumber((current) => current + 1);
+    setPageAnchor({ kind: "after", document: lastVisible });
+  };
+
+  const goToPreviousPage = () => {
+    if (isPageTransitioning || pageNumber === 1) {
+      return;
+    }
+
+    const targetPage = pageNumber - 1;
+    setIsPageTransitioning(true);
+
+    if (targetPage === 1) {
+      pageStartCursors.current = [null];
+      setPageNumber(1);
+      setPageAnchor({ kind: "first" });
+      return;
+    }
+
+    const targetCursor = pageStartCursors.current[targetPage - 1];
+    if (!targetCursor) {
+      setIsPageTransitioning(false);
+      return;
+    }
+
+    setPageNumber(targetPage);
+    setPageAnchor({ kind: "at", document: targetCursor });
+  };
+
+  if (loadingAuth || loadingAccess) {
+    return (
+      <Layout>
+        <div className="p-12 text-center text-sm text-muted-foreground animate-pulse">
+          Authenticating your studio workspace...
+        </div>
+      </Layout>
+    );
+  }
+
+  return (
+    <Layout>
+      <BlogEngineGateModal isSubscribed={hasContentEngineAccess}>
+      <div className="p-6 space-y-8 max-w-7xl mx-auto animate-in fade-in duration-300">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-white">
+            KOBA-I Nexus Engine
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Create blog drafts and follow each one through production.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+          <div className="lg:col-span-2">
+            <AuthorIntakeForm />
+          </div>
+
+          <div className="p-5 bg-card rounded-xl border border-border space-y-4 text-sm text-muted-foreground shadow-sm">
+            <h3 className="font-bold text-foreground">Blog Settings</h3>
+            <p>
+              Your request uses the active brand settings connected to this
+              author workspace.
+            </p>
+
+            <div className="pt-3 border-t border-border space-y-1 text-xs">
+              <div>
+                <span className="font-semibold text-foreground">
+                  Active workspace:
+                </span>{" "}
+                Content Blog Engine
+              </div>
+              <div className="truncate">
+                <span className="font-semibold text-foreground">
+                  Signed in as:
+                </span>{" "}
+                {currentUserEmail}
+              </div>
+            </div>
+
+            <div className="pt-2 space-y-2">
+              <BrandProfileModal />
+              {isAdmin && <AdminControlsModal />}
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-3 pt-4">
+          <div>
+            <h2 className="text-xl font-bold tracking-tight text-white">
+              Live Blogs
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              Follow current drafts and review completed blog assets.
+            </p>
+          </div>
+
+          <AuthorPipelineList items={pipelineItems} onRefresh={() => undefined} />
+
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={goToPreviousPage}
+              disabled={pageNumber === 1 || isPageTransitioning}
+              className="rounded-lg border border-border bg-card px-4 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Previous Page
+            </button>
+            <span className="text-xs font-semibold text-muted-foreground">
+              Page {pageNumber}
+            </span>
+            <button
+              type="button"
+              onClick={goToNextPage}
+              disabled={
+                pipelineItems.length < PAGE_SIZE || isPageTransitioning
+              }
+              className="rounded-lg border border-border bg-card px-4 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Next Page
+            </button>
+          </div>
+        </div>
+      </div>
+      </BlogEngineGateModal>
+    </Layout>
+  );
+}
+
+function normalizeExecutionState(value: unknown): PipelineItem["executionState"] {
+  switch (value) {
+    case "initializing":
+    case "queued":
+    case "drafting":
+    case "artwork":
+    case "staging":
+    case "retrying":
+    case "completed":
+    case "failed":
+      return value;
+    case "processing":
+      return "drafting";
+    default:
+      return "initializing";
+  }
 }

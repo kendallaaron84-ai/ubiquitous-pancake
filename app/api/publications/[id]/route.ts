@@ -19,10 +19,10 @@ export async function OPTIONS() {
 
 export async function GET(
   request: Request,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = params;
+    const { id } = await context.params;
 
     // 🔥 DYNAMIC RUNTIME IMPORT: Keeps Firebase isolated from the static build engine
     const admin = require("firebase-admin");

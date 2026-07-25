@@ -1,72 +1,147 @@
 "use client";
 
-import React, { useState } from "react";
-import { db, auth } from "@/core/firebase";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
-import { useToast } from "@/hooks/use-toast";
-import { Sparkles, FileText, Briefcase, Users, LayoutTemplate } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import {
+  addDoc,
+  collection,
+  doc,
+  serverTimestamp,
+  updateDoc,
+} from "firebase/firestore";
+import {
+  Briefcase,
+  FileText,
+  LayoutTemplate,
+  Sparkles,
+  Users,
+} from "lucide-react";
 
-export const dynamic = 'force-dynamic';
+import { auth, db } from "@/core/firebase";
+import { useToast } from "@/hooks/use-toast";
+
+interface GenerateBlogResponse {
+  status?: unknown;
+  blueprintId?: unknown;
+  error?: unknown;
+}
 
 export function AuthorIntakeForm() {
   const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     title: "",
     brand: "personal",
     audience: "",
-    description: ""
+    description: "",
   });
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!formData.title) {
-      toast({ title: "Validation Error", description: "Project title is required.", variant: "destructive" });
+  useEffect(() => {
+    const clearStaleSubmissionError = () => setSubmissionError(null);
+    window.addEventListener(
+      "koba:blog-retry-accepted",
+      clearStaleSubmissionError
+    );
+    return () => {
+      window.removeEventListener(
+        "koba:blog-retry-accepted",
+        clearStaleSubmissionError
+      );
+    };
+  }, []);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (!formData.title.trim()) {
+      toast({
+        title: "Title required",
+        description: "Enter a working title or topic before creating the blog.",
+        variant: "destructive",
+      });
       return;
     }
 
     setIsSubmitting(true);
+    setSubmissionError(null);
+    let blueprintId: string | null = null;
+
     try {
-      // 🚀 STRICT MULTI-TENANT AUTH GATE (No fallbacks)
-      const userEmail = auth.currentUser?.email;
-      
+      const userEmail = auth.currentUser?.email?.trim().toLowerCase();
       if (!userEmail) {
-        toast({ 
-          title: "Authentication Error", 
-          description: "Active session dropped. You must be securely logged in to deploy a blueprint.", 
-          variant: "destructive" 
-        });
-        setIsSubmitting(false);
-        return;
+        throw new Error("Your session expired. Sign in again before creating a blog.");
       }
-      
-      // 2. Inject payload directly into the Cloud Run execution matrix, strictly scoped to the active tenant
-      await addDoc(collection(db, "content_blueprints"), {
-        authorEmail: userEmail,
-        topicTitle: formData.title,
-        title: formData.title, // Saved twice to support both your pipeline pages
-        brandAllocation: formData.brand,
-        targetAudience: formData.audience,
-        synopsis: formData.description,
-        executionState: "initializing",
-        createdAt: serverTimestamp(),
-      });
 
-      toast({ 
-        title: "Blueprint Deployed", 
-        description: "Your content matrix has been pushed to the processing queue." 
-      });
+      const blueprintReference = await addDoc(
+        collection(db, "content_blueprints"),
+        {
+          authorEmail: userEmail,
+          topicTitle: formData.title.trim(),
+          title: formData.title.trim(),
+          brandAllocation: formData.brand,
+          targetAudience: formData.audience.trim(),
+          synopsis: formData.description.trim(),
+          executionState: "initializing",
+          createdAt: serverTimestamp(),
+        }
+      );
+      blueprintId = blueprintReference.id;
 
-      // Clear the form for the next request
-      setFormData({ title: "", brand: "personal", audience: "", description: "" });
-      
-    } catch (error: any) {
-      console.error("Pipeline submission error:", error);
-      toast({ 
-        title: "Deployment Failed", 
-        description: error.message || "Failed to push blueprint to the cloud.", 
-        variant: "destructive" 
+      const response = await fetch("/api/generate-blog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ blueprintId }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | GenerateBlogResponse
+        | null;
+
+      if (
+        !response.ok ||
+        response.status !== 202 ||
+        payload?.status !== "accepted" ||
+        payload.blueprintId !== blueprintId
+      ) {
+        throw new Error(
+          typeof payload?.error === "string"
+            ? payload.error
+            : "The blog engine did not accept this request."
+        );
+      }
+
+      toast({
+        title: "Draft generation queued!",
+        description:
+          "Your article, search metadata, and featured artwork are building in the background. You can safely leave this page.",
+      });
+      setFormData({
+        title: "",
+        brand: "personal",
+        audience: "",
+        description: "",
+      });
+    } catch (error: unknown) {
+      const message = errorMessage(error);
+
+      if (blueprintId) {
+        try {
+          await updateDoc(doc(db, "content_blueprints", blueprintId), {
+            executionState: "failed",
+            errorLog: message.slice(0, 500),
+            updatedAt: serverTimestamp(),
+          });
+        } catch (updateError: unknown) {
+          console.error("Failed to record the blog submission error:", updateError);
+        }
+      }
+
+      setSubmissionError(message);
+      toast({
+        title: "Blog request failed",
+        description: message,
+        variant: "destructive",
       });
     } finally {
       setIsSubmitting(false);
@@ -74,41 +149,49 @@ export function AuthorIntakeForm() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-xl overflow-hidden shadow-lg">
-      <div className="p-5 border-b border-border bg-slate-950/40">
-        <h2 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-          <Sparkles className="w-5 h-5 text-emerald-500" />
-          Content Deployment Engine
+    <form
+      onSubmit={handleSubmit}
+      className="overflow-hidden rounded-xl border border-border bg-card shadow-lg"
+    >
+      <div className="border-b border-border bg-slate-950/40 p-5">
+        <h2 className="flex items-center gap-2 text-xl font-bold tracking-tight text-white">
+          <Sparkles className="h-5 w-5 text-emerald-500" />
+          Create a Blog Draft
         </h2>
-        <p className="text-xs text-muted-foreground mt-1">Configure narrative constraints and initiate the Gemini processing pipeline.</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Add your topic, audience, and direction. The finished article will be
+          staged for review.
+        </p>
       </div>
 
-      <div className="p-5 space-y-5">
-        {/* Topic / Title */}
+      <div className="space-y-5 p-5">
         <div className="space-y-1.5">
-          <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <FileText className="w-3 h-3" /> Working Title / Topic Directive
+          <label className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+            <FileText className="h-3 w-3" /> Working Title / Topic
           </label>
-          <input 
-            type="text" 
+          <input
+            type="text"
             required
             value={formData.title}
-            onChange={(e) => setFormData({...formData, title: e.target.value})}
-            className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-3 text-sm font-semibold text-white focus:outline-none focus:border-emerald-500/50 transition-colors"
+            onChange={(event) =>
+              setFormData({ ...formData, title: event.target.value })
+            }
+            className="w-full rounded-xl border border-border bg-slate-950/50 px-4 py-3 text-sm font-semibold text-white transition-colors focus:border-emerald-500/50 focus:outline-none"
             placeholder="e.g. 5 Reasons Audiobooks Outsell Print"
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          {/* Brand Voice Allocation */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Briefcase className="w-3 h-3" /> Voice Allocation
+            <label className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+              <Briefcase className="h-3 w-3" /> Voice Allocation
             </label>
-            <select 
+            <select
               value={formData.brand}
-              onChange={(e) => setFormData({...formData, brand: e.target.value})}
-              className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors appearance-none"
+              onChange={(event) =>
+                setFormData({ ...formData, brand: event.target.value })
+              }
+              className="w-full appearance-none rounded-xl border border-border bg-slate-950/50 px-4 py-3 text-sm text-white transition-colors focus:border-emerald-500/50 focus:outline-none"
             >
               <option value="personal">Personal Author Brand</option>
               <option value="book_lore">Book Specific Lore</option>
@@ -116,49 +199,76 @@ export function AuthorIntakeForm() {
             </select>
           </div>
 
-          {/* Target Audience */}
           <div className="space-y-1.5">
-            <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Users className="w-3 h-3" /> Target Audience
+            <label className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+              <Users className="h-3 w-3" /> Target Audience
             </label>
-            <input 
-              type="text" 
+            <input
+              type="text"
               value={formData.audience}
-              onChange={(e) => setFormData({...formData, audience: e.target.value})}
-              className="w-full bg-slate-950/50 border border-border rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors"
+              onChange={(event) =>
+                setFormData({ ...formData, audience: event.target.value })
+              }
+              className="w-full rounded-xl border border-border bg-slate-950/50 px-4 py-3 text-sm text-white transition-colors focus:border-emerald-500/50 focus:outline-none"
               placeholder="e.g. Noir Thriller Fans"
             />
           </div>
         </div>
 
-        {/* Synopsis / Instructions */}
         <div className="space-y-1.5">
-          <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <LayoutTemplate className="w-3 h-3" /> Core Synopsis / Agent Instructions
+          <label className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+            <LayoutTemplate className="h-3 w-3" /> Synopsis / Instructions
           </label>
-          <textarea 
+          <textarea
             value={formData.description}
-            onChange={(e) => setFormData({...formData, description: e.target.value})}
-            className="w-full h-24 bg-slate-950/50 border border-border rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors resize-none"
-            placeholder="Outline the core plot points, tone, or specific processing instructions for the AI..."
+            onChange={(event) =>
+              setFormData({ ...formData, description: event.target.value })
+            }
+            className="h-24 w-full resize-none rounded-xl border border-border bg-slate-950/50 px-4 py-3 text-sm text-white transition-colors focus:border-emerald-500/50 focus:outline-none"
+            placeholder="Describe the message, tone, or important points to include."
           />
         </div>
+
+        {submissionError && (
+          <div
+            role="alert"
+            className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300"
+          >
+            <p className="font-semibold">Your draft request was not completed.</p>
+            <p className="mt-1 text-xs">{submissionError}</p>
+            <p className="mt-1 text-xs">
+              Your form was preserved. You can submit it again or retry the failed
+              row in Live Blogs.
+            </p>
+          </div>
+        )}
       </div>
 
-      <div className="pt-2 border-t border-border">
-        <button 
-          type="submit" 
-          onClick={handleSubmit}
+      <div className="border-t border-border pt-2">
+        <button
+          type="submit"
           disabled={isSubmitting}
-          className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 py-3 font-bold text-slate-950 transition-all hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isSubmitting ? (
-            <span className="animate-pulse">Initializing Blueprint...</span>
+            <span className="animate-pulse">Creating Blog Draft...</span>
           ) : (
-            <>Queue Generation <Sparkles className="w-4 h-4" /></>
+            <>
+              Create Blog Draft <Sparkles className="h-4 w-4" />
+            </>
           )}
         </button>
       </div>
-    </div>
+    </form>
   );
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof DOMException && error.name === "TimeoutError") {
+    return "The queue did not confirm this request in time. Your form has been preserved.";
+  }
+
+  return error instanceof Error
+    ? error.message
+    : "The blog request could not be completed.";
 }

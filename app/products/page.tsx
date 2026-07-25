@@ -3,12 +3,19 @@
 import React, { useState, useEffect } from "react";
 import { db, auth } from "@/core/firebase";
 import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
-import { collection, doc, deleteDoc, onSnapshot, getDoc } from "firebase/firestore";
+import { collection, doc, onSnapshot, getDoc, query, where } from "firebase/firestore";
 import { useToast } from "@/hooks/use-toast";
 import Layout from "@/components/layout"; 
+import PaymentReadinessBanner from "@/components/section/dashboard/PaymentReadinessBanner";
 import Link from "next/link"; 
 import { onAuthStateChanged } from "firebase/auth";
 import { Plus, X, UploadCloud, Save, Edit3, Trash2, Globe } from "lucide-react";
+
+interface AuthorIdentityOption {
+  id: string;
+  displayName: string;
+  type: "primary" | "pen_name";
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +25,8 @@ export default function ProductsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
   const [userProfile, setUserProfile] = useState<any | null>(null);
+  const [connectedWpOrigin, setConnectedWpOrigin] = useState("");
+  const [authorIdentities, setAuthorIdentities] = useState<AuthorIdentityOption[]>([]);
   const [uploadProgress, setUploadProgress] = useState<{ cover: number; bg: number }>({ cover: 0, bg: 0 });
   const [isUploading, setIsUploading] = useState<{ cover: boolean; bg: boolean }>({ cover: false, bg: false });
   const { toast } = useToast();
@@ -41,31 +50,90 @@ export default function ProductsPage() {
 
   useEffect(() => {
     if (!currentUserEmail) {
+      setConnectedWpOrigin("");
+      return;
+    }
+
+    const controller = new AbortController();
+    fetch("/api/session", {
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.authenticated) {
+          throw new Error("Your verified publishing site could not be loaded.");
+        }
+        const targetWpOrigin =
+          typeof payload.targetWpOrigin === "string"
+            ? payload.targetWpOrigin.trim()
+            : "";
+        setConnectedWpOrigin(targetWpOrigin);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        console.error("Publishing site lookup failed:", error);
+        setConnectedWpOrigin("");
+      });
+
+    return () => controller.abort();
+  }, [currentUserEmail]);
+
+  useEffect(() => {
+    if (!connectedWpOrigin) return;
+    setEditingProduct((current: any | null) =>
+      current && !current.associatedWebsite
+        ? { ...current, associatedWebsite: connectedWpOrigin }
+        : current
+    );
+  }, [connectedWpOrigin]);
+
+  useEffect(() => {
+    if (!currentUserEmail) {
+      setAuthorIdentities([]);
+      return;
+    }
+    const controller = new AbortController();
+    fetch("/api/author-identities", {
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.success || !Array.isArray(payload.identities)) {
+          throw new Error(payload?.error || "Your registered author names could not be loaded.");
+        }
+        setAuthorIdentities(payload.identities);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        toast({
+          title: "Author names unavailable",
+          description: error instanceof Error ? error.message : "Your author names could not be loaded.",
+          variant: "destructive",
+        });
+      });
+    return () => controller.abort();
+  }, [currentUserEmail, toast]);
+
+  useEffect(() => {
+    if (!currentUserEmail) {
       setProducts([]); 
       return;
     }
 
-    const productsRef = collection(db, "products");
+    const productsRef = query(
+      collection(db, "products"),
+      where("authorId", "==", currentUserEmail.toLowerCase())
+    );
 
     const unsubscribe = onSnapshot(productsRef, (snapshot) => {
-      const allList = snapshot.docs.map(doc => ({
+      const filteredList = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
-
-      const filteredList = allList.filter((product: any) => {
-        const productAuthor = (product.authorId || product.authorEmail || "").toLowerCase();
-        const activeEmail = (currentUserEmail || "").toLowerCase();
-
-        if (!activeEmail) return false;
-        if (productAuthor === activeEmail) return true;
-
-        const activeStudioKey = userProfile?.studioKey;
-        const productKey = product.studioKey || product.wpStudioKey;
-        if (activeStudioKey && productKey && productKey === activeStudioKey) return true;
-
-        return false;
-      });
 
       setProducts(filteredList);
     }, (error) => {
@@ -73,7 +141,7 @@ export default function ProductsPage() {
     });
 
     return () => unsubscribe();
-  }, [currentUserEmail, userProfile]);
+  }, [currentUserEmail]);
 
   const handleCreateDraft = () => {
     const generatedId = `abk_${Math.random().toString(36).substring(2, 9)}`;
@@ -86,20 +154,25 @@ export default function ProductsPage() {
       coverArtUrl: "",
       bgImageUrl: "",
       synopsis: "Draft workspace canvas.",
+      authorIdentityId: authorIdentities[0]?.id || "primary",
       studioKey: userProfile?.studioKey || "",
       wpStudioKey: userProfile?.studioKey || "",
-      stripeConnectId: userProfile?.stripeConnectId || userProfile?.stripeCustomerId || "",
-      associatedWebsite: userProfile?.associatedWebsite || ""
+      associatedWebsite: connectedWpOrigin || userProfile?.associatedWebsite || ""
     });
   };
 
   const handleEditProduct = (product: any) => {
     setEditingProduct({
       ...product,
+      price: product.price ?? product.unitPrice ?? 0,
       studioKey: product.studioKey || userProfile?.studioKey || "",
       wpStudioKey: product.wpStudioKey || product.studioKey || userProfile?.studioKey || "",
-      stripeConnectId: product.stripeConnectId || userProfile?.stripeConnectId || "",
-      associatedWebsite: product.associatedWebsite || userProfile?.associatedWebsite || ""
+      associatedWebsite:
+        connectedWpOrigin ||
+        product.associatedWebsite ||
+        userProfile?.associatedWebsite ||
+        "",
+      authorIdentityId: product.authorIdentityId || authorIdentities[0]?.id || "primary",
     });
   };
 
@@ -127,7 +200,10 @@ export default function ProductsPage() {
       },
       async () => {
         const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-        setEditingProduct(prev => ({ ...prev, [type === "cover" ? "coverArtUrl" : "bgImageUrl"]: downloadUrl }));
+        setEditingProduct((prev: any | null) => prev ? ({
+          ...prev,
+          [type === "cover" ? "coverArtUrl" : "bgImageUrl"]: downloadUrl,
+        }) : prev);
         setIsUploading(prev => ({ ...prev, [type]: false }));
       }
     );
@@ -146,110 +222,68 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
 
   try {
     const numericPrice = Number(editingProduct.price);
-    if (numericPrice >= 0.50 && !editingProduct.stripeConnectId) {
-      throw new Error("A validated Stripe Connect Account ID is required to publish products priced at $0.50 or above.");
+    if (!Number.isFinite(numericPrice) || numericPrice < 0) {
+      throw new Error("Enter a valid product price of zero or greater.");
     }
-
     // 🎯 REPAIR DEPLOYMENT ARCHITECTURE:
     // Inside your handleSaveAndDeploy routine inside app/products/page.tsx
     const payload = {
       bookTitle: editingProduct.title,
+      synopsis: editingProduct.synopsis || editingProduct.description || "",
       coverUrl: editingProduct.coverArtUrl || "", 
       bgImageUrl: editingProduct.bgImageUrl || "", 
       type: editingProduct.type || "audiobook",
-      price: editingProduct.price,
+      price: numericPrice,
       status: editingProduct.status || "published", 
-      authorEmail: currentUserEmail, 
-      associatedWebsite: editingProduct.associatedWebsite || userProfile?.associatedWebsite || "",
+      authorIdentityId: editingProduct.authorIdentityId || authorIdentities[0]?.id || "primary",
       // 🚀 PRESERVE ASSETS: Include track arrays so downstream endpoints never overwrite them with empty values
       chapters: editingProduct.chapters || [],
-      studioTracks: editingProduct.studioTracks || editingProduct.chapters || []
+      studioTracks: editingProduct.studioTracks || editingProduct.chapters || [],
+      ebookPayload: editingProduct.ebookPayload || null,
     };
 
     // 🎯 Target your high-availability Cloud Run Microservice Engine dynamically
-    const targetHostUrl = process.env.NODE_ENV === 'production'
-      ? process.env.NEXT_PUBLIC_ASSET_ENGINE_PROD
-      : process.env.NEXT_PUBLIC_ASSET_ENGINE_DEV;
-
-    // Ensure the environment variable is loaded before making the network call
-    if (!targetHostUrl) {
-      console.error("❌ Execution aborted: targetHostUrl is undefined. Check your .env.local file.");
-      return;
-    }
-
-    // 1. Fire the global master cloud sync to Cloud Run (Now completely non-destructive!)
-    const cloudResponse = await fetch(`${targetHostUrl}/deploy-asset`, {
+    // The server resolves the author, StudioKey, author identity, and payment tenant.
+    // Stripe account IDs and author emails are intentionally never accepted here.
+    const cloudResponse = await fetch("/api/agent/deploy", {
       method: 'POST', 
-      headers: { 
-        'Content-Type': 'application/json' 
-      },
+      headers: { 'Content-Type': 'application/json' },
+      credentials: "same-origin",
       body: JSON.stringify(payload)
     });
 
-    const cloudData = await cloudResponse.json();
+    const cloudData = await cloudResponse.json().catch(() => null);
 
-    if (!cloudResponse.ok || !cloudData.success) {
-      alert(`⚠️ Cloud registration failed: ${cloudData.error || "Unknown Error"}`);
-      return;
+    if (!cloudResponse.ok || !cloudData?.success) {
+      throw new Error(cloudData?.error || "Your publication could not be saved.");
     }
-
-    // 🚀 DIRECT CLIENT FAIL-SAFE: Update Firestore directly from the browser cache
-    // This bypasses any strict property filters on your Cloud Run engine
-    try {
-      const { doc, updateDoc } = await import("firebase/firestore");
-      const directProductRef = doc(db, "products", editingProduct.id);
-      
-      await updateDoc(directProductRef, {
-        chapters: editingProduct.chapters || editingProduct.studioTracks || [],
-        studioTracks: editingProduct.studioTracks || editingProduct.chapters || []
-      });
-      console.log("✨ Direct browser channel safely locked audio track arrays in Firestore.");
-    } catch (directWriteErr: any) {
-      console.error("❌ Direct Firestore track update failed:", directWriteErr.message);
+    const canonicalAssetKey = String(cloudData.assetKey || editingProduct.id);
+    const productResponse = await fetch(`/api/products/${encodeURIComponent(canonicalAssetKey)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        synopsis: payload.synopsis,
+        authorIdentityId: payload.authorIdentityId,
+      }),
+    });
+    const productResult = await productResponse.json().catch(() => ({}));
+    if (!productResponse.ok || !productResult.success) {
+      throw new Error(productResult.error || "The product was deployed, but its synopsis could not be saved.");
     }
+    const updatedProduct = productResult.product;
+    setProducts((current) => {
+      const remaining = current.filter((product) =>
+        product.id !== editingProduct.id && product.id !== canonicalAssetKey
+      );
+      return [...remaining, updatedProduct];
+    });
+    setEditingProduct(updatedProduct);
 
-    // 2. 🚀 LOCAL DEV ENVIRONMENT BYPASS SYNC:
-    if (process.env.NODE_ENV !== 'production') {
-      try {
-        console.log("📡 Staging context verified. Syncing local WordPress infrastructure directly...");
-        
-        const wpLocalResponse = await fetch('http://koba-dev.local/wp-json/koba-ia/v2/provision', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Studio-Key': 'KOBA-AUDIO-E63DC9CA' 
-          },
-          body: JSON.stringify({
-            bookTitle: payload.bookTitle,
-            canonicalSeoKey: cloudData.assetKey, 
-            status: payload.status || 'published',
-            authorEmail: payload.authorEmail,
-            coverUrl: payload.coverUrl || "",
-            bgImageUrl: payload.bgImageUrl || "",
-            // 🚀 FIXED: Passes the live audio components directly down to the local plugin
-            studioTracks: editingProduct.chapters || editingProduct.studioTracks || []
-          })
-        });
-
-        if (wpLocalResponse.ok) {
-          console.log("✨ Local WordPress pages and publications provisioned successfully.");
-        } else {
-          console.warn("⚠️ Local WordPress responded with an issue:", wpLocalResponse.statusText);
-        }
-        
-      } catch (wpLocalErr: any) {
-        console.warn("⚠️ Local WordPress site wasn't reachable via side-channel:", wpLocalErr.message);
-      }
-    }
-
-    // 3. Trigger UI Success state feedback
-    alert(`✨ KOBA-I Standard Met: Global infrastructure synchronized cleanly.\nAsset Key: ${cloudData.assetKey}`);
     toast({
-      title: "Deployment Complete",
-      description: `Successfully synchronized ${data.assetKey} with your live storefront.`,
+      title: "Publication Saved",
+      description: `Your secure product record ${canonicalAssetKey} is ready.`,
     });
 
-    setEditingProduct(null);
   } catch (err: any) {
     toast({ title: "Deployment Failed", description: err.message, variant: "destructive" });
   } finally {
@@ -259,7 +293,14 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
 
   const handleDeleteProduct = async (id: string) => {
     try {
-      await deleteDoc(doc(db, "products", id));
+      const response = await fetch(`/api/products/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error || "The product could not be deleted.");
+      }
       toast({ title: "Product Deleted", description: "Metadata removed from live Firestore catalogs." });
       setEditingProduct(null);
     } catch (err: any) {
@@ -270,6 +311,7 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
   return (
     <Layout>
       <div className="p-6 space-y-8 max-w-7xl mx-auto">
+        <PaymentReadinessBanner />
         
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
@@ -289,7 +331,7 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
             <div><span className="font-semibold text-slate-400">Profile:</span> {currentUserEmail}</div>
             <div><span className="font-semibold text-slate-400">Studio Key:</span> {userProfile.studioKey || "Pending Assignment"}</div>
             <div><span className="font-semibold text-slate-400">Website:</span> {userProfile.associatedWebsite || "Not Connected"}</div>
-            <div><span className="font-semibold text-slate-400">Stripe Account:</span> {userProfile.stripeConnectId || userProfile.stripeCustomerId || "Action Required"}</div>
+            <div><span className="font-semibold text-slate-400">Reader payments:</span> {userProfile.connectionStatus === "active" ? "Ready" : "Setup required"}</div>
           </div>
         )}
 
@@ -383,6 +425,28 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
                     />
                   </div>
 
+                  <div className="flex flex-col space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-300">Published author name</label>
+                    <select
+                      required
+                      value={editingProduct.authorIdentityId || authorIdentities[0]?.id || ""}
+                      onChange={(e) => setEditingProduct({
+                        ...editingProduct,
+                        authorIdentityId: e.target.value,
+                      })}
+                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-[#8b4528]"
+                    >
+                      {authorIdentities.map((identity) => (
+                        <option key={identity.id} value={identity.id}>
+                          {identity.displayName}{identity.type === "pen_name" ? " (Pen name)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[11px] leading-4 text-slate-400">
+                      Only author names registered to this individual license may be published.
+                    </p>
+                  </div>
+
                   <div className="grid grid-cols-2 gap-4">
                     <div className="flex flex-col space-y-1.5">
                       <label className="text-xs font-semibold text-slate-300">Price (USD)</label>
@@ -420,25 +484,22 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
                   </div>
 
                   <div className="flex flex-col space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-300">Stripe Connect ID (Required for paid assets)</label>
-                    <input 
-                      type="text" 
-                      placeholder="acct_1XXXXXXXXXXXXXXX"
-                      value={editingProduct.stripeConnectId || ""} 
-                      onChange={(e) => setEditingProduct({...editingProduct, stripeConnectId: e.target.value})}
-                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm font-mono focus:outline-none focus:border-[#8b4528]"
-                    />
-                  </div>
-
-                  <div className="flex flex-col space-y-1.5">
                     <label className="text-xs font-semibold text-slate-300">Associated WordPress Website URL</label>
                     <input 
                       type="url" 
-                      placeholder="https://myauthorwebsite.com"
-                      value={editingProduct.associatedWebsite || ""} 
-                      onChange={(e) => setEditingProduct({...editingProduct, associatedWebsite: e.target.value})}
-                      className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:outline-none focus:border-[#8b4528]"
+                      readOnly
+                      aria-readonly="true"
+                      placeholder="Connect your site in Setup & Connections"
+                      value={
+                        connectedWpOrigin ||
+                        editingProduct.associatedWebsite ||
+                        ""
+                      }
+                      className="cursor-default rounded-lg border border-[#40527c]/40 bg-[#1a2138] p-2.5 text-sm text-slate-300 focus:outline-none"
                     />
+                    <p className="text-[11px] text-slate-400">
+                      Selected automatically from your verified Setup & Connections profile.
+                    </p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">

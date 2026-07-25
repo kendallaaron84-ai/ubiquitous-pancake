@@ -129,21 +129,21 @@ export async function GET(request: Request) {
     }
 
     const publicContent: any[] = [];
-    
-    contentSnap.forEach(doc => {
-      const data = doc.data();
-      if (data.authorEmail === studioKey || data.studioKey === studioKey || data.authorSlug === studioKey) {
-        publicContent.push({
-          id: doc.id,
-          title: data.topicTitle || data.title || 'Untitled Post',
-          body: data.generatedContent || data.body || '', 
-          excerpt: data.synopsis || data.description || '',
-          category: data.brandAllocation || 'General',
-          targetAudience: data.targetAudience || '',
-          publishedAt: data.completedAt ? (typeof data.completedAt.toDate === 'function' ? data.completedAt.toDate().toISOString() : data.completedAt) : new Date().toISOString()
-        });
-      }
-    });
+
+  contentSnap.forEach((doc: import("firebase-admin/firestore").QueryDocumentSnapshot) => {
+    const data = doc.data();
+    if (data.authorEmail === studioKey || data.studioKey === studioKey || data.authorSlug === studioKey) {
+      publicContent.push({
+        id: doc.id,
+        title: data.topicTitle || data.title || 'Untitled Post',
+        body: data.generatedContent || data.body || '',
+        excerpt: data.synopsis || data.description || '',
+        category: data.brandAllocation || 'General',
+        targetAudience: data.targetAudience || '',
+        publishedAt: data.completedAt ? (typeof data.completedAt.toDate === 'function' ? data.completedAt.toDate().toISOString() : data.completedAt) : new Date().toISOString()
+      });
+    }
+  });
 
     return NextResponse.json({ success: true, content: publicContent }, { status: 200, headers: CORS_HEADERS });
 

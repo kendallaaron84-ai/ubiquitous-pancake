@@ -1,6 +1,7 @@
 import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
+import { getStorage } from 'firebase-admin/storage';
 
 if (!getApps().length) {
   try {
@@ -33,3 +34,4 @@ if (!getApps().length) {
 // Export the modular instances cleanly
 export const adminDb = getApps().length ? getFirestore() : null as any;
 export const adminAuth = getApps().length ? getAuth() : null as any;
+export const adminStorage = getApps().length ? getStorage() : null as any;

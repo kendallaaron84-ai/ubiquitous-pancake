@@ -99,7 +99,7 @@ export function PerformanceChart() {
 	)
 }
 
-function LegendDot({ color, label }) {
+function LegendDot({ color, label }: { color: string; label: string }) {
 	return (
 		<div className="flex items-center gap-2 px-2 py-1 rounded-md bg-gray-100 dark:bg-gray-800">
 			<span className="w-3 h-3 rounded-full" style={{ backgroundColor: color }} />

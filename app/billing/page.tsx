@@ -1,12 +1,5 @@
-import Layout from "@/components/layout"
-import Billing from "@/components/section/billing"
-
-export const dynamic = 'force-dynamic';
+import { redirect } from "next/navigation"
 
 export default function BillingPage() {
-	return (
-		<Layout >
-			<Billing />
-		</Layout>
-	)
+	redirect("/connect")
 }

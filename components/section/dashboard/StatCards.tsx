@@ -1,89 +1,66 @@
 "use client";
 
-import React, { useState } from "react";
-import { MousePointerClick, UserPlus, CheckCircle2, DollarSign } from "lucide-react";
+import { CheckCircle2, DollarSign, MousePointerClick, UserPlus } from "lucide-react";
 
-export default function StatCards() {
-  // Identity validation parameter
-  const currentUserEmail = "kendall.aaron@koba-i.com";
-  const isOwner = currentUserEmail === "kendall.aaron@koba-i.com";
+export interface StatCardsProps {
+  monthlyBudget: number;
+  onOpenMarketingBudget: () => void;
+}
 
-  // State parameter to track monthly overhead across roles
-  const [monthlyCost, setMonthlyCost] = useState(450); // Ads, Travel, SaaS subscriptions
+const TRAFFIC = 45200;
+const ACTIVE_LEADS = 3100;
+const CLOSED_PURCHASES = 185;
 
-  // Individual author tracking fallback states
-  const [manualClicks] = useState(12400);
-  const [manualLeads] = useState(850);
-  const [manualSales] = useState(120);
-  const authorConversionRate = manualClicks > 0 ? ((manualSales / manualClicks) * 100).toFixed(1) : "0.0";
-
-  // Owner live metrics summary variables
-  const ownerMetrics = {
-    clicks: 45200,
-    leads: 3100,
-    sales: 185,
-  };
+export default function StatCards({
+  monthlyBudget,
+  onOpenMarketingBudget,
+}: StatCardsProps) {
+  const conversionRate = TRAFFIC > 0
+    ? ((CLOSED_PURCHASES / TRAFFIC) * 100).toFixed(1)
+    : "0.0";
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-      {/* Card 1: Traffic/Clicks */}
-      <div className="p-5 bg-card border text-card-foreground rounded-xl shadow-sm space-y-3 transition-colors duration-200">
-        <div className="flex justify-between items-center text-xs font-bold text-muted-foreground tracking-wider uppercase">
+    <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <article className="space-y-3 rounded-xl border border-border bg-card p-5 text-card-foreground shadow-sm">
+        <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-muted-foreground">
           <span>Traffic / Clicks</span>
-          <MousePointerClick className="w-4 h-4 text-blue-500" />
+          <MousePointerClick className="h-4 w-4 text-blue-500" />
         </div>
-        <div className="text-2xl font-black">
-          {isOwner ? ownerMetrics.clicks.toLocaleString() : manualClicks.toLocaleString()}
-        </div>
-        <p className="text-xs text-muted-foreground">MoM Funnel Progress Tracker</p>
-      </div>
+        <p className="text-2xl font-black">{TRAFFIC.toLocaleString()}</p>
+        <p className="text-xs text-muted-foreground">Visits to your connected book pages.</p>
+      </article>
 
-      {/* Card 2: Active Leads */}
-      <div className="p-5 bg-card border text-card-foreground rounded-xl shadow-sm space-y-3 transition-colors duration-200">
-        <div className="flex justify-between items-center text-xs font-bold text-muted-foreground tracking-wider uppercase">
+      <article className="space-y-3 rounded-xl border border-border bg-card p-5 text-card-foreground shadow-sm">
+        <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-muted-foreground">
           <span>Active Leads</span>
-          <UserPlus className="w-4 h-4 text-purple-500" />
+          <UserPlus className="h-4 w-4 text-purple-500" />
         </div>
-        <div className="text-2xl font-black">
-          {isOwner ? ownerMetrics.leads.toLocaleString() : manualLeads.toLocaleString()}
-        </div>
-        <p className="text-xs text-muted-foreground">Inbound Conversion Pipeline</p>
-      </div>
+        <p className="text-2xl font-black">{ACTIVE_LEADS.toLocaleString()}</p>
+        <p className="text-xs text-muted-foreground">Readers who have shown purchase interest.</p>
+      </article>
 
-      {/* Card 3: Volume Sales & Conversion */}
-      <div className="p-5 bg-card border text-card-foreground rounded-xl shadow-sm space-y-3 transition-colors duration-200">
-        <div className="flex justify-between items-center text-xs font-bold text-muted-foreground tracking-wider uppercase">
-          <span>Closed Volume</span>
-          <CheckCircle2 className="w-4 h-4 text-green-500" />
+      <article className="space-y-3 rounded-xl border border-border bg-card p-5 text-card-foreground shadow-sm">
+        <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-muted-foreground">
+          <span>Closed Purchases</span>
+          <CheckCircle2 className="h-4 w-4 text-emerald-500" />
         </div>
-        <div className="text-2xl font-black">
-          {isOwner ? ownerMetrics.sales.toLocaleString() : manualSales.toLocaleString()}
-        </div>
-        <p className="text-xs text-muted-foreground font-medium">
-          Conversion: {isOwner ? ((ownerMetrics.sales / ownerMetrics.clicks) * 100).toFixed(1) : authorConversionRate}%
-        </p>
-      </div>
+        <p className="text-2xl font-black">{CLOSED_PURCHASES.toLocaleString()}</p>
+        <p className="text-xs font-medium text-muted-foreground">Conversion: {conversionRate}%</p>
+      </article>
 
-      {/* Card 4: Maintained Monthly Cost Component */}
-      <div className="p-5 bg-card border text-card-foreground rounded-xl shadow-sm space-y-3 transition-colors duration-200">
-        <div className="flex justify-between items-center text-xs font-bold text-muted-foreground tracking-wider uppercase">
-          <span>Monthly Cost Ledger</span>
-          <DollarSign className="w-4 h-4 text-red-500" />
-        </div>
-        <div className="space-y-1">
-          <div className="text-2xl font-black">${monthlyCost.toLocaleString()}</div>
-          <input 
-            type="range" 
-            min="0" 
-            max="5000" 
-            step="50"
-            value={monthlyCost} 
-            onChange={(e) => setMonthlyCost(Number(e.target.value))}
-            className="w-full h-1 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
-          />
-        </div>
-        <p className="text-[10px] text-muted-foreground">Tracks ads, events, and travel expenses</p>
-      </div>
-    </div>
+      <button
+        type="button"
+        onClick={onOpenMarketingBudget}
+        className="space-y-3 rounded-xl border border-border bg-card p-5 text-left text-card-foreground shadow-sm transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f97316]/60"
+        aria-label="Open the marketing budget planner"
+      >
+        <span className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-muted-foreground">
+          <span>Monthly Budget</span>
+          <DollarSign className="h-4 w-4 text-red-500" />
+        </span>
+        <span className="block text-2xl font-black">${monthlyBudget.toLocaleString()}</span>
+        <span className="block text-[10px] text-muted-foreground">Review your marketing budget and sales targets.</span>
+      </button>
+    </section>
   );
 }

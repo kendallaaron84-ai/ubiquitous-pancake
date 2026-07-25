@@ -12,16 +12,26 @@ const modelIcons = {
 	"Sentiment Analyzer": <MessageCircle className="w-5 h-5 text-yellow-500 dark:text-yellow-400" />,
 	"Recommendation Engine": <Star className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />,
 	"Chatbot AI": <User className="w-5 h-5 text-pink-500 dark:text-pink-400" />,
+} as const
+
+type ModelName = keyof typeof modelIcons
+type Severity = "High" | "Medium" | "Low"
+
+interface ErrorLogEntry {
+	model: ModelName
+	error: string
+	time: string
+	severity: Severity
 }
 
-const errorLogs = [
+const errorLogs: ErrorLogEntry[] = [
 	{ model: "Customer Support Assistant", error: "API Timeout", time: "1 hour ago", severity: "High" },
 	{ model: "Product Classifier", error: "Invalid Input", time: "3 hours ago", severity: "Medium" },
 	{ model: "Content Generator", error: "Memory Limit Exceeded", time: "Yesterday", severity: "High" },
 	{ model: "Sentiment Analyzer", error: "Rate Limit Reached", time: "2 days ago", severity: "Low" },
 ]
 
-const severityStyles = {
+const severityStyles: Record<Severity, { bg: string; text: string }> = {
 	High: { bg: "bg-destructive/20", text: "text-destructive" },
 	Medium: { bg: "bg-yellow-200 dark:bg-yellow-800/40", text: "text-yellow-700 dark:text-yellow-300" },
 	Low: { bg: "bg-green-200 dark:bg-green-800/40", text: "text-green-700 dark:text-green-300" },

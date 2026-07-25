@@ -1,359 +1,239 @@
 "use client";
 
-import React, { useState } from "react";
-import { 
-  Settings2, 
-  ChevronLeft, 
-  ChevronRight, 
-  Check, 
-  Calculator,
-  CalendarDays,
-  Sparkles
-} from "lucide-react";
+import React, { useMemo, useState } from "react";
 
-interface ProductItem {
+type Timeline = "month" | "quarter" | "year";
+
+export interface BookSalesGoalProduct {
   id: string;
-  name: string;
-  targetUnits: number; // Stored at Monthly baseline level
-  price: number;
-  actualUnits: number; // Stored at Monthly baseline level
-  statusTag?: string;
-  category: "software" | "book";
+  name?: string | null;
+  targetUnits?: number | null;
+  unitPrice?: number | null;
+  currentSales?: number | null;
+  salesGoal?: number | null;
+  status?: string | null;
 }
 
-type Timeframe = "month" | "quarter" | "year";
+const MONTHLY_DATASET = [
+  { month: "Jan", clicks: 12400, leads: 850, sales: 45 },
+  { month: "Feb", clicks: 14200, leads: 920, sales: 52 },
+  { month: "Mar", clicks: 18500, leads: 1100, sales: 68 },
+  { month: "Apr", clicks: 22000, leads: 1400, sales: 85 },
+  { month: "May", clicks: 28400, leads: 1950, sales: 120 },
+  { month: "Jun", clicks: 31000, leads: 2200, sales: 145 },
+  { month: "Jul", clicks: 35000, leads: 2500, sales: 168 },
+  { month: "Aug", clicks: 32000, leads: 2100, sales: 150 },
+  { month: "Sep", clicks: 38000, leads: 2700, sales: 195 },
+  { month: "Oct", clicks: 42000, leads: 3100, sales: 220 },
+  { month: "Nov", clicks: 45200, leads: 3400, sales: 255 },
+  { month: "Dec", clicks: 48000, leads: 3800, sales: 290 },
+] as const;
 
-export default function UsageChartSection() {
-  const currentUserEmail = "kendall.aaron@koba-i.com";
-  const isOwner = currentUserEmail === "kendall.aaron@koba-i.com";
+const TIMELINE_CONFIG = {
+  month: { multiplier: 1, label: "Month", costLabel: "/mo" },
+  quarter: { multiplier: 3, label: "Quarter", costLabel: "/quarter" },
+  year: { multiplier: 12, label: "Fiscal Year", costLabel: "/year" },
+} as const satisfies Record<Timeline, {
+  multiplier: number;
+  label: string;
+  costLabel: string;
+}>;
 
-  // ⏱️ GLOBAL TIMEFRAME STATE FILTER
-  const [timeframe, setTimeframe] = useState<Timeframe>("month");
+export interface BookSalesGoalsProps {
+  monthlyBudget?: number;
+  annualRevenueGoal?: number;
+  bookPrice?: number | null;
+  isBookPriceLoading?: boolean;
+  products?: readonly BookSalesGoalProduct[];
+}
 
-  // 👑 UNIFIED DATA LEDGER INITIALIZATION
-  const [products, setProducts] = useState<ProductItem[]>(
-    isOwner 
-      ? [
-          /* Master Brand Software Portfolio */
-          { id: "jw", name: "Jubilee Works", targetUnits: 5000, price: 199, actualUnits: 35, statusTag: "Software Core", category: "software" },
-          { id: "ap", name: "KOBA-I Audio Plugin", targetUnits: 5000, price: 299, actualUnits: 0, statusTag: "Active Pipeline", category: "software" },
-          { id: "ac", name: "Audiobook Creations", targetUnits: 5000, price: 1250, actualUnits: 0, statusTag: "Enterprise", category: "software" },
-          /* Kendall Aaron Personal Author Catalog */
-          { id: "dh1", name: "Duncan the Man Hunter: Part 1", targetUnits: 1500, price: 20, actualUnits: 240, statusTag: "Published", category: "book" },
-          { id: "dh2", name: "Duncan the Man Hunter: Part 2", targetUnits: 2000, price: 20, actualUnits: 85, statusTag: "Published", category: "book" },
-          { id: "dh3", name: "Duncan the Man Hunter: Part 3", targetUnits: 3000, price: 25, actualUnits: 0, statusTag: "Pre-Order", category: "book" },
-          { id: "bio", name: "Personal Biography Memoir", targetUnits: 1000, price: 30, actualUnits: 0, statusTag: "Drafting", category: "book" }
-        ]
-      : [
-          /* Standard Author Isolation Sandbox */
-          { id: "ab1", name: "Book 1 Title", targetUnits: 5000, price: 20, actualUnits: 45, statusTag: "Active", category: "book" },
-          { id: "ab2", name: "Book 2 Title", targetUnits: 3000, price: 20, actualUnits: 12, statusTag: "Active", category: "book" },
-          { id: "ab3", name: "Book 3 Title", targetUnits: 2500, price: 25, actualUnits: 0, statusTag: "Draft", category: "book" }
-        ]
-  );
+function isFiniteNumber(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
 
-  // Pagination & Layout Controls
-  const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 3;
+function formatCurrency(value: number | null | undefined) {
+  return isFiniteNumber(value) ? `$${value.toLocaleString()}` : "—";
+}
 
-  // Inline Configuration Form States
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editUnits, setEditUnits] = useState(0);
-  const [editPrice, setEditPrice] = useState(0);
-
-  // Reverse Calculator Tool Processing Parameter States
-  const [calcTargetIncome, setCalcTargetIncome] = useState(100000);
-
-  // Chart Hover Tooltip State (Maintains graph hover sync overlay)
+export function ReaderJourney() {
   const [hoveredMonth, setHoveredMonth] = useState<number | null>(null);
 
-  const monthlyDataset = [
-    { month: "Jan", clicks: 12400, leads: 850, sales: 45 },
-    { month: "Feb", clicks: 14200, leads: 920, sales: 52 },
-    { month: "Mar", clicks: 18500, leads: 1100, sales: 68 },
-    { month: "Apr", clicks: 22000, leads: 1400, sales: 85 },
-    { month: "May", clicks: 28400, leads: 1950, sales: 120 },
-    { month: "Jun", clicks: 31000, leads: 2200, sales: 145 },
-    { month: "Jul", clicks: 35000, leads: 2500, sales: 168 },
-    { month: "Aug", clicks: 32000, bandwidth: 2100, leads: 2100, sales: 150 },
-    { month: "Sep", clicks: 38000, leads: 2700, sales: 195 },
-    { month: "Oct", clicks: 42000, leads: 3100, sales: 220 },
-    { month: "Nov", clicks: 45200, leads: 3400, sales: 255 },
-    { month: "Dec", clicks: 48000, leads: 3800, sales: 290 }
-  ];
+  return (
+    <section className="relative min-w-0 space-y-6 rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm sm:p-6">
+      <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+        <div className="space-y-0.5">
+          <h3 className="text-lg font-bold tracking-tight">Reader Journey</h3>
+          <p className="text-xs text-muted-foreground">
+            See how readers move from discovering your books to completing a purchase.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-3 text-[11px] font-bold tracking-tight sm:gap-4">
+          <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-blue-500" /> Traffic / Clicks</span>
+          <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-purple-500" /> Active Leads</span>
+          <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> Closed Purchases</span>
+        </div>
+      </div>
 
-  // Isolated Edit Core Action Interceptor
-  const startEditing = (prod: ProductItem) => {
-    setEditingId(prod.id);
-    setEditName(prod.name);
-    // Storing edit adjustments natively back down to standard base monthly metrics
-    const baselineUnits = timeframe === "year" ? prod.targetUnits / 12 : timeframe === "quarter" ? prod.targetUnits / 3 : prod.targetUnits;
-    setEditUnits(Math.round(baselineUnits));
-    setEditPrice(prod.price);
-  };
+      <div className="relative flex h-48 items-end justify-between border-b border-border px-1 pt-8 sm:px-2">
+        {hoveredMonth !== null && (
+          <div
+            className="pointer-events-none absolute top-0 z-30 space-y-1.5 rounded-xl border border-border bg-popover p-3 text-xs text-popover-foreground shadow-xl"
+            style={{ left: `${Math.min((hoveredMonth / MONTHLY_DATASET.length) * 100 + 4, 72)}%` }}
+          >
+            <div className="border-b border-border pb-1 font-mono font-bold uppercase tracking-wider text-muted-foreground">
+              {MONTHLY_DATASET[hoveredMonth].month} Reader Activity
+            </div>
+            <div className="flex justify-between gap-5"><span>Traffic:</span><span className="font-mono font-bold text-blue-500">{MONTHLY_DATASET[hoveredMonth].clicks.toLocaleString()}</span></div>
+            <div className="flex justify-between gap-5"><span>Leads:</span><span className="font-mono font-bold text-purple-500">{MONTHLY_DATASET[hoveredMonth].leads.toLocaleString()}</span></div>
+            <div className="flex justify-between gap-5"><span>Purchases:</span><span className="font-mono font-bold text-emerald-500">{MONTHLY_DATASET[hoveredMonth].sales.toLocaleString()}</span></div>
+          </div>
+        )}
 
-  const saveProductConfig = (id: string) => {
-    setProducts(products.map(p => {
-      if (p.id === id) {
-        // Automatically interpret based on active timeframe to accurately save base values
-        const normalizedUnits = timeframe === "year" ? editUnits * 12 : timeframe === "quarter" ? editUnits * 3 : editUnits;
-        return { ...p, name: editName, targetUnits: normalizedUnits, price: editPrice };
-      }
-      return p;
-    }));
-    setEditingId(null);
-  };
+        {MONTHLY_DATASET.map((data, index) => (
+          <div
+            key={data.month}
+            className="group relative flex h-full min-w-0 flex-1 cursor-pointer items-end justify-center px-0.5 sm:px-1"
+            onMouseEnter={() => setHoveredMonth(index)}
+            onMouseLeave={() => setHoveredMonth(null)}
+          >
+            <div className="absolute inset-0 rounded-t-md bg-muted/20 opacity-0 transition-opacity group-hover:opacity-100" />
+            <div className="relative z-10 flex h-full w-full max-w-[24px] items-end justify-center gap-0.5 sm:gap-1">
+              <div style={{ height: `${(data.clicks / 50000) * 100}%` }} className="w-1 rounded-t-sm bg-blue-500 sm:w-1.5" />
+              <div style={{ height: `${((data.leads * 10) / 50000) * 100}%` }} className="w-1 rounded-t-sm bg-purple-500 sm:w-1.5" />
+              <div style={{ height: `${((data.sales * 100) / 50000) * 100}%` }} className="w-1 rounded-t-sm bg-emerald-500 sm:w-1.5" />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex select-none justify-between px-1 font-mono text-[9px] text-muted-foreground sm:px-2 sm:text-[10px]">
+        {MONTHLY_DATASET.map((data) => <span key={data.month} className="min-w-0 flex-1 text-center">{data.month}</span>)}
+      </div>
+    </section>
+  );
+}
 
-  // Timeframe Math Calculation Modifiers
-  const getTimeframeMultiplier = () => {
-    if (timeframe === "year") return 12;
-    if (timeframe === "quarter") return 3;
-    return 1;
-  };
+export function BookSalesGoals({
+  monthlyBudget = 0,
+  annualRevenueGoal = 0,
+  bookPrice = null,
+  isBookPriceLoading = false,
+  products = [],
+}: BookSalesGoalsProps) {
+  const [timeline, setTimeline] = useState<Timeline>("month");
 
-  // Pagination Matrix Processing
-  const indexOfLastItem = currentPage * itemsPerPage;
-  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
-  const currentProducts = products.slice(indexOfFirstItem, indexOfLastItem);
-  const totalPages = Math.ceil(products.length / itemsPerPage);
+  const summary = useMemo(() => {
+    const config = TIMELINE_CONFIG[timeline];
+    return {
+      ...config,
+      timelineBudget: monthlyBudget * config.multiplier,
+      monthBooksToSell: bookPrice ? Math.ceil(monthlyBudget / bookPrice) : null,
+      annualBooksToSell: bookPrice ? Math.ceil(annualRevenueGoal / bookPrice) : null,
+    };
+  }, [annualRevenueGoal, bookPrice, monthlyBudget, timeline]);
 
   return (
-    <div className="space-y-6 w-full">
-      
-      {/* 📊 SECTION 1: FULL WIDTH FUNNEL progress LINE & BAR TREND CHART */}
-      <div className="p-6 bg-card border text-card-foreground rounded-xl shadow-sm space-y-6 relative transition-colors duration-200">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <div className="space-y-0.5">
-            <h3 className="font-bold text-lg tracking-tight">Funnel Conversion Lifecycles</h3>
-            <p className="text-xs text-muted-foreground">Real-time baseline volume tracking running across connected merchant gateways</p>
-          </div>
-          <div className="flex gap-4 text-xs font-bold tracking-tight">
-            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block"></span> Clicks</span>
-            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block"></span> Leads</span>
-            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span> Sales Actuals</span>
-          </div>
+    <section className="min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm sm:p-5">
+      <div className="flex flex-col justify-between gap-3 border-b border-border/70 pb-4 sm:flex-row sm:items-center">
+        <div className="space-y-1">
+          <h3 className="text-base font-bold tracking-tight">Book Sales Goals</h3>
+          <p className="text-[11px] text-muted-foreground">Track product goals and the sales needed to cover marketing.</p>
         </div>
-
-        {/* Chart Visual Canvas Area */}
-        <div className="h-48 flex items-end justify-between pt-8 border-b border-border relative px-2">
-          {hoveredMonth !== null && (
-            <div 
-              className="absolute top-0 p-4 bg-zinc-950/95 text-white border border-zinc-800 rounded-xl shadow-xl z-30 space-y-1.5 pointer-events-none transition-all duration-150 text-xs"
-              style={{ left: `${Math.min((hoveredMonth / monthlyDataset.length) * 100 + 4, 80)}%` }}
-            >
-              <div className="font-bold text-zinc-400 border-b border-zinc-800 pb-1 mb-1 uppercase tracking-wider font-mono">
-                {monthlyDataset[hoveredMonth].month} Conversions
-              </div>
-              <div className="flex justify-between gap-6"><span>Clicks:</span><span className="font-mono font-bold text-blue-400">{monthlyDataset[hoveredMonth].clicks.toLocaleString()}</span></div>
-              <div className="flex justify-between gap-6"><span>Leads:</span><span className="font-mono font-bold text-purple-400">{monthlyDataset[hoveredMonth].leads.toLocaleString()}</span></div>
-              <div className="flex justify-between gap-6"><span>Sales:</span><span className="font-mono font-bold text-emerald-400">{monthlyDataset[hoveredMonth].sales.toLocaleString()}</span></div>
-            </div>
-          )}
-
-          {monthlyDataset.map((data, idx) => {
-            const maxVal = 50000;
+        <div className="grid grid-cols-3 rounded-lg border border-border bg-muted/50 p-1 text-[10px] font-bold">
+          {(Object.keys(TIMELINE_CONFIG) as Timeline[]).map((item) => {
+            const isActive = timeline === item;
             return (
-              <div 
-                key={idx} 
-                className="w-full h-full flex items-end justify-center group relative cursor-pointer px-1"
-                onMouseEnter={() => setHoveredMonth(idx)}
-                onMouseLeave={() => setHoveredMonth(null)}
+              <button
+                key={item}
+                type="button"
+                aria-pressed={isActive}
+                onClick={() => setTimeline(item)}
+                className={isActive
+                  ? "rounded-md bg-background px-2.5 py-1.5 text-foreground shadow-sm ring-1 ring-[#f97316]/60"
+                  : "rounded-md px-2.5 py-1.5 text-muted-foreground transition-colors hover:text-foreground"}
               >
-                <div className="absolute inset-x-0 bottom-0 top-0 bg-muted/20 opacity-0 group-hover:opacity-100 transition-opacity duration-150 rounded-t-md z-0" />
-                <div className="w-full flex items-end justify-center gap-1 max-w-[24px] h-full z-10 relative">
-                  <div style={{ height: `${(data.clicks / maxVal) * 100}%` }} className="w-1.5 bg-blue-500 rounded-t-sm" />
-                  <div style={{ height: `${((data.leads * 10) / maxVal) * 100}%` }} className="w-1.5 bg-purple-500 rounded-t-sm" />
-                  <div style={{ height: `${((data.sales * 100) / maxVal) * 100}%` }} className="w-1.5 bg-emerald-500 rounded-t-sm" />
-                </div>
-              </div>
+                {TIMELINE_CONFIG[item].label}
+              </button>
             );
           })}
         </div>
-        <div className="flex justify-between text-muted-foreground font-mono text-[10px] px-2 select-none">
-          {monthlyDataset.map((d, i) => <span key={i} className="w-full text-center max-w-[24px]">{d.month}</span>)}
-        </div>
       </div>
 
-      {/* 🎯 SECTION 2: TIMEFRAME & PARAMETER TUNING CONTROL PANEL */}
-      <div className="p-6 bg-card border text-card-foreground rounded-xl shadow-sm space-y-6 transition-colors duration-200">
-        
-        {/* Sub-Header Row with Timeline Filter Controls */}
-        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 border-b border-border pb-4">
-          <div className="space-y-0.5">
-            <h3 className="font-bold text-lg tracking-tight flex items-center gap-2">
-              <Settings2 className="w-5 h-5 text-primary" /> Target Parameters Configurator
-            </h3>
-            <p className="text-xs text-muted-foreground">Isolate and scale project metrics across active timeline horizons.</p>
-          </div>
-
-          {/* ⏱️ HORIZON TIMEFRAME SELECTOR TOGGLE BUTTONS */}
-          <div className="flex items-center gap-1 bg-muted p-1 rounded-xl border self-end lg:self-auto text-xs font-semibold">
-            {(["month", "quarter", "year"] as Timeframe[]).map((t) => (
-              <button
-                key={t}
-                onClick={() => { setTimeframe(t); setCurrentPage(1); }}
-                className={`px-3 py-1.5 rounded-lg capitalize transition-all ${
-                  timeframe === t 
-                    ? "bg-background text-foreground shadow-sm font-bold" 
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {t === "year" ? "Fiscal Year" : t}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* 🛠️ Dynamic Grid Area */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {currentProducts.map((prod) => {
-            const mult = getTimeframeMultiplier();
-            const currentTargetUnits = Math.round(prod.targetUnits * mult);
-            const currentActualUnits = Math.round(prod.actualUnits * mult);
-            
-            const plannedGoalValue = currentTargetUnits * prod.price;
-            const actualRevenueValue = currentActualUnits * prod.price;
-            
-            const isEditing = editingId === prod.id;
+      {products.length > 0 ? (
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          {products.map((product) => {
+            const productName = product.name?.trim() || product.id;
+            const targetUnits = product.targetUnits;
+            const unitPrice = product.unitPrice;
+            const hasTarget = isFiniteNumber(targetUnits);
+            const hasPrice = isFiniteNumber(unitPrice);
 
             return (
-              <div 
-                key={prod.id}
-                className={`p-5 rounded-xl border transition-all duration-200 min-h-[160px] flex flex-col justify-between ${
-                  isEditing ? "bg-muted/90 border-primary shadow-sm" : "bg-muted/30 border-border hover:border-muted-foreground/40 hover:bg-muted/40 cursor-pointer"
-                }`}
-                onClick={() => !isEditing && startEditing(prod)}
-              >
-                {isEditing ? (
-                  /* INLINE ISOLATED UPDATING WINDOW */
-                  <div className="space-y-3 w-full text-xs" onClick={(e) => e.stopPropagation()}>
-                    <div className="font-bold text-[10px] text-primary tracking-wide uppercase flex items-center gap-1">
-                      <CalendarDays className="w-3.5 h-3.5" /> Adjusting {timeframe === "year" ? "Annual" : timeframe === "quarter" ? "Quarterly" : "Monthly"} Target
-                    </div>
-                    <input 
-                      type="text" 
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      className="w-full p-2 rounded bg-background border text-xs focus:outline-none focus:border-primary font-bold"
-                    />
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-muted-foreground font-semibold block">Target Units</label>
-                        <input 
-                          type="number" 
-                          value={editUnits}
-                          onChange={(e) => setEditUnits(Number(e.target.value))}
-                          className="w-full p-1.5 rounded bg-background border font-mono text-xs focus:outline-none focus:border-primary"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-muted-foreground font-semibold block">Unit Price ($)</label>
-                        <input 
-                          type="number" 
-                          value={editPrice}
-                          onChange={(e) => setEditPrice(Number(e.target.value))}
-                          className="w-full p-1.5 rounded bg-background border font-mono text-xs focus:outline-none focus:border-primary"
-                        />
-                      </div>
-                    </div>
-                    <button 
-                      onClick={() => saveProductConfig(prod.id)}
-                      className="w-full py-2 rounded bg-primary text-primary-foreground font-bold flex items-center justify-center gap-1 hover:opacity-90 transition-opacity"
-                    >
-                      <Check className="w-4 h-4" /> Save This Parameter Only
-                    </button>
-                  </div>
-                ) : (
-                  /* STANDARD BALANCED INTERFACE CARD DISPLAY */
-                  <>
-                    <div className="flex justify-between items-start">
-                      <div className="space-y-0.5">
-                        <h4 className="font-bold text-sm tracking-tight text-foreground group-hover:text-primary transition-colors">
-                          {prod.name}
-                        </h4>
-                        <p className="text-xs text-muted-foreground font-medium">
-                          Goal: {currentTargetUnits.toLocaleString()} units @ ${prod.price}
-                        </p>
-                      </div>
-                      <span className={`text-[9px] border px-2 py-0.5 rounded-full font-mono font-bold tracking-wider uppercase ${
-                        prod.category === "software" ? "bg-blue-500/10 text-blue-400 border-blue-500/20" : "bg-purple-500/10 text-purple-400 border-purple-500/20"
-                      }`}>
-                        {prod.statusTag || prod.category}
-                      </span>
-                    </div>
-
-                    <div className="flex justify-between items-end pt-4 border-t border-dashed border-border mt-3">
-                      <div>
-                        <div className="text-[9px] text-muted-foreground font-bold uppercase tracking-wider">Actual</div>
-                        <div className="text-base font-black text-emerald-500 font-mono">${actualRevenueValue.toLocaleString()}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-[9px] text-muted-foreground font-bold uppercase tracking-wider">Planned Goal</div>
-                        <div className="text-base font-bold text-foreground font-mono">${plannedGoalValue.toLocaleString()}</div>
-                      </div>
-                    </div>
-                  </>
+              <article key={product.id} className="flex min-h-[132px] flex-col rounded-lg border border-border bg-muted/25 p-4">
+              <div>
+                <div>
+                  <h4 className="text-sm font-bold leading-snug text-foreground">{productName}</h4>
+                  <p className="mt-1 text-[10px] font-medium text-muted-foreground">
+                    {hasTarget && hasPrice
+                      ? `Goal ${targetUnits.toLocaleString()} units @ ${unitPrice.toLocaleString()}`
+                      : hasPrice
+                        ? `Retail price ${formatCurrency(unitPrice)}`
+                        : "Sales target not set"}
+                  </p>
+                </div>
+                {product.status?.trim() && (
+                  <span className="mt-2 inline-flex rounded-full border border-blue-500/20 bg-blue-500/10 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wide text-blue-500">
+                    {product.status}
+                  </span>
                 )}
               </div>
+              <div className="mt-auto grid grid-cols-2 gap-3 border-t border-border/70 pt-3">
+                <div>
+                  <p className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">Current Sales</p>
+                  <p className="mt-1 font-mono text-sm font-bold text-emerald-500">{formatCurrency(product.currentSales)}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">Sales Goal</p>
+                  <p className="mt-1 font-mono text-sm font-black text-foreground">{formatCurrency(product.salesGoal)}</p>
+                </div>
+              </div>
+              </article>
             );
           })}
         </div>
-
-        {/* 🧮 LOWER UTILITY TIER: PAGINATION & AUTOMATED REVERSE INCOME CALCULATOR */}
-        <div className="flex flex-col lg:flex-row justify-between items-center pt-4 border-t border-border gap-4 text-xs">
-          
-          {/* 🔍 Dynamic Reverse Value Income Calculator tool block */}
-          <div className="w-full lg:max-w-md bg-muted/40 border p-3.5 rounded-xl flex items-center gap-4 transition-colors">
-            <div className="p-2 bg-primary/10 rounded-lg text-primary shrink-0">
-              <Calculator className="w-4 h-4" />
-            </div>
-            <div className="space-y-1 w-full">
-              <div className="font-bold text-[11px] text-foreground flex items-center gap-1">
-                <Sparkles className="w-3 h-3 text-yellow-500 animate-pulse" /> Target Income Solver
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-muted-foreground text-[11px] whitespace-nowrap">To clear gross value revenue of:</span>
-                <div className="relative w-28">
-                  <span className="absolute left-1.5 top-1/2 -translate-y-1/2 font-mono text-muted-foreground">$</span>
-                  <input 
-                    type="number" 
-                    value={calcTargetIncome}
-                    onChange={(e) => setCalcTargetIncome(Number(e.target.value))}
-                    className="w-full pl-4 pr-1 py-0.5 bg-background border rounded text-xs font-mono font-bold focus:outline-none"
-                  />
-                </div>
-              </div>
-              <div className="text-[10px] text-muted-foreground font-medium pt-1">
-                📚 At a standard book pricing baseline of <span className="font-bold text-foreground">$20</span>, an author needs to move exactly <span className="font-bold text-primary text-xs font-mono">{(Math.ceil(calcTargetIncome / 20)).toLocaleString()}</span> units.
-              </div>
-            </div>
-          </div>
-
-          {/* Pagination Navigation Interface Footer Buttons */}
-          {totalPages > 1 && (
-            <div className="flex items-center gap-2 bg-muted/60 border p-1 rounded-xl text-xs select-none">
-              <button 
-                onClick={() => setCurrentPage(p => Math.max(p - 1, 1))} 
-                disabled={currentPage === 1}
-                className="p-1.5 rounded-md hover:bg-background disabled:opacity-40 transition-colors"
-              >
-                <ChevronLeft className="w-3.5 h-3.5" />
-              </button>
-              <span className="font-mono px-2">Page {currentPage} of {totalPages}</span>
-              <button 
-                onClick={() => setCurrentPage(p => Math.min(p + 1, totalPages))} 
-                disabled={currentPage === totalPages}
-                className="p-1.5 rounded-md hover:bg-background disabled:opacity-40 transition-colors"
-              >
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
+      ) : (
+        <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-6 text-center">
+          <p className="text-sm font-semibold text-foreground">No catalog products are available yet.</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">Published author products will appear here automatically.</p>
         </div>
+      )}
 
+      <div className="grid grid-cols-1 divide-y divide-border rounded-lg border border-emerald-500/25 bg-emerald-500/[0.06] sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+        <div className="px-4 py-3">
+          <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Month Books to Sell</p>
+          <p className="mt-1 font-mono text-sm font-black text-foreground">
+            {isBookPriceLoading ? "Loading…" : summary.monthBooksToSell === null ? "—" : `${summary.monthBooksToSell.toLocaleString()} books`}
+          </p>
+        </div>
+        <div className="px-4 py-3">
+          <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Annual Books to Sell</p>
+          <p className="mt-1 font-mono text-sm font-black text-foreground">
+            {isBookPriceLoading ? "Loading…" : summary.annualBooksToSell === null ? "—" : `${summary.annualBooksToSell.toLocaleString()} books`}
+          </p>
+        </div>
+        <div className="px-4 py-3">
+          <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Break-even point</p>
+          <p className="mt-1 font-mono text-sm font-black text-emerald-500">${summary.timelineBudget.toLocaleString()}{summary.costLabel}</p>
+        </div>
       </div>
+    </section>
+  );
+}
 
+export default function UsageChartSection(props: BookSalesGoalsProps) {
+  return (
+    <div className="min-w-0 space-y-6">
+      <ReaderJourney />
+      <BookSalesGoals {...props} />
     </div>
   );
 }

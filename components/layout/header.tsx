@@ -5,9 +5,15 @@ import { UserNav } from "@/components/elements/user-nav"
 import { Input } from "@/components/ui/input"
 import { Menu, Search, X } from "lucide-react"
 import Link from "next/link"
+import type { Dispatch, SetStateAction } from "react"
 import { UserNotification } from "../elements/user-notification"
 
-export function DashboardHeader({ mobileOpen, setMobileOpen }) {
+interface DashboardHeaderProps {
+	mobileOpen: boolean
+	setMobileOpen: Dispatch<SetStateAction<boolean>>
+}
+
+export function DashboardHeader({ mobileOpen, setMobileOpen }: DashboardHeaderProps) {
 	return (
 		<>
 			<header className="mx-auto fixed top-0 left-0 right-0 z-50 bg-background/80 backdrop-blur-xl border-0 border-border/50 lg:left-[280px] transition-all duration-300">

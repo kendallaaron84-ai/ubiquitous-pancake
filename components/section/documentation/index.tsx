@@ -9,9 +9,9 @@ import { useState } from "react"
 
 export default function Documentation() {
 	const [activeSection, setActiveSection] = useState("introduction")
-	const [copiedCode, setCopiedCode] = useState(null)
+	const [copiedCode, setCopiedCode] = useState<string | null>(null)
 
-	const copyToClipboard = (text, id) => {
+	const copyToClipboard = (text: string, id: string) => {
 		navigator.clipboard.writeText(text)
 		setCopiedCode(id)
 		setTimeout(() => setCopiedCode(null), 2000)
