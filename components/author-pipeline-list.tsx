@@ -106,6 +106,7 @@ export function AuthorPipelineList({
             : "The retry could not be accepted. Please try again."
         );
       }
+      window.dispatchEvent(new Event("koba:blog-retry-accepted"));
     } catch (error: unknown) {
       const message =
         error instanceof Error

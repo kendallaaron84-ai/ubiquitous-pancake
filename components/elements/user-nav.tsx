@@ -14,12 +14,10 @@ import { LogOut, Settings, User, Wallet } from "lucide-react"
 import Link from "next/link"
 
 // 🔑 Import the Router and Auth modules
-import { useRouter } from "next/navigation"
 import { signOut, getAuth, onAuthStateChanged } from "firebase/auth"
 import { auth } from "@/core/firebase"
 
 export function UserNav() {
-	const router = useRouter();
 	const [userEmail, setUserEmail] = useState<string | null>("Loading...");
 
 	// Dynamically fetch the logged-in user's email to replace the hardcoded placeholder
@@ -38,15 +36,13 @@ export function UserNav() {
 	// 🛑 THE MASTER LOGOUT FUNCTION
 	const handleLogout = async () => {
 		try {
-			// 1. Kill the Firebase auth state
-			await signOut(auth);
+			// Clear both the Firebase client identity and the HTTP-only dashboard session.
+			await Promise.allSettled([
+				signOut(auth),
+				fetch("/api/logout", { method: "POST" }),
+			]);
 
-			// 2. Erase the secure session cookie by setting its expiration to the past
-			document.cookie = "__session=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; SameSite=Strict";
-
-			// 3. Force a hard redirect back to the login screen
-			router.push("/signin");
-			router.refresh();
+			window.location.assign("/signin");
 		} catch (error) {
 			console.error("Logout failed:", error);
 		}

@@ -3,33 +3,52 @@
 import React, { useState, useEffect } from "react";
 import Layout from "@/components/layout";
 import { AudioNarrationTracker } from "@/components/audio-narration-tracker";
-import { AuthorIntakeForm } from "@/components/author-intake-form";
-import { AuthorPipelineList } from "@/components/author-pipeline-list";
-import { db } from "@/core/firebase";
+import { auth, db } from "@/core/firebase";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 import { BookOpen } from "lucide-react";
 
-export const dynamic = 'force-dynamic';
+interface NarrationRequest {
+  id: string;
+  title?: string;
+  currentStage?: number;
+  queuePosition?: number;
+  [key: string]: unknown;
+}
 
 export default function NexusPipelinePage() {
-  const authorEmail = "kendall@domain.com"; // Multi-tenant boundary anchor
-  const [activeRequests, setActiveRequests] = useState<any[]>([]);
+  const [authorEmail, setAuthorEmail] = useState<string | null>(null);
+  const [activeRequests, setActiveRequests] = useState<NarrationRequest[]>([]);
   const [selectedRequestIndex, setSelectedRequestIndex] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(true);
 
+  useEffect(() => onAuthStateChanged(auth, (user) => {
+    setAuthorEmail(user?.email?.trim().toLowerCase() ?? null);
+    setLoading(false);
+  }), []);
+
   // 🔑 SMART LOGIC DATA STREAM: Listens to all active requests for this author
   useEffect(() => {
-    const requestsRef = collection(db, "content_blueprints");
+    if (!authorEmail) {
+      setActiveRequests([]);
+      return;
+    }
+
+    setLoading(true);
+    const requestsRef = collection(db, "audiobook_requests");
     const q = query(requestsRef, where("authorEmail", "==", authorEmail));
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const records: any[] = [];
+      const records: NarrationRequest[] = [];
       snapshot.forEach((doc) => {
-        records.push({ id: doc.id, ...doc.data() });
+        records.push({ id: doc.id, ...doc.data() } as NarrationRequest);
       });
       
       // Sort so highest progress or newest appears top-level
       setActiveRequests(records);
+      setSelectedRequestIndex((currentIndex) => (
+        currentIndex < records.length ? currentIndex : 0
+      ));
       setLoading(false);
     }, (err) => {
       console.error("Failed to stream active narration queue:", err);
@@ -85,13 +104,8 @@ export default function NexusPipelinePage() {
           </div>
         )}
 
-        {/* 3. Main Operational Split Controls Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-          <div className="lg:col-span-2">
-            <AuthorIntakeForm />
-          </div>
-          
-          <div className="p-5 bg-card rounded-2xl border border-border space-y-3 text-sm text-muted-foreground shadow-sm">
+        {/* 3. Production guidance for the selected narration request */}
+        <div className="p-5 bg-card rounded-2xl border border-border space-y-3 text-sm text-muted-foreground shadow-sm">
             <h3 className="font-bold text-foreground">Production Instructions</h3>
             <p className="text-xs leading-relaxed">
               Initiating audiobook narration processes automatically queues voice profiles through ElevenLabs Studio engineering gates.
@@ -99,16 +113,6 @@ export default function NexusPipelinePage() {
             <div className="pt-2 border-t border-border text-[11px]">
               <span className="font-semibold text-foreground">Secure Vault Core Status:</span> Verified Active
             </div>
-          </div>
-        </div>
-
-        {/* 4. Underlying Blog Generation Engine List Layout */}
-        <div className="space-y-3">
-          <div>
-            <h2 className="text-xl font-bold tracking-tight text-white">Live Execution Blueprints</h2>
-            <p className="text-xs text-muted-foreground">Monitored pipeline traces executing across the global CDN matrix.</p>
-          </div>
-          <AuthorPipelineList />
         </div>
 
       </div>

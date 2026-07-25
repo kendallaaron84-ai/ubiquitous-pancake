@@ -9,16 +9,16 @@ import PerformanceMetrics from "./PerformanceMetrics"
 import QuickActions from "./QuickActions"
 import RecentActivity from "./RecentActivity"
 import RecentExperiments from "./RecentExperiments"
-import StatCards from "./StatCards"
+import StatCards, { type StatCardsProps } from "./StatCards"
 import SystemAlerts from "./SystemAlerts"
 import TopModels from "./TopModels"
 import UsageChartSection from "./UsageChartSection"
 
-export default function Home() {
+export default function Home(statCardsProps: StatCardsProps) {
 	return (
 		<div className="space-y-6">
 			{/* Stat Cards */}
-			<StatCards />
+			<StatCards {...statCardsProps} />
 
 			{/* Charts + System Alerts */}
 			<div className="grid gap-6 xl:grid-cols-3">
@@ -61,4 +61,3 @@ export default function Home() {
 		</div>
 	)
 }
-

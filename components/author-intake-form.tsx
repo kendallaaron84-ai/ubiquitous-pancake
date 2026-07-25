@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   addDoc,
   collection,
@@ -35,6 +35,20 @@ export function AuthorIntakeForm() {
     audience: "",
     description: "",
   });
+
+  useEffect(() => {
+    const clearStaleSubmissionError = () => setSubmissionError(null);
+    window.addEventListener(
+      "koba:blog-retry-accepted",
+      clearStaleSubmissionError
+    );
+    return () => {
+      window.removeEventListener(
+        "koba:blog-retry-accepted",
+        clearStaleSubmissionError
+      );
+    };
+  }, []);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();

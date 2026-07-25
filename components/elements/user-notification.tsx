@@ -15,8 +15,17 @@ import { Bell } from "lucide-react"
 import Image from "next/image"
 import { useState } from "react"
 
+interface NotificationItem {
+	id: string
+	title: string
+	description: string
+	timestamp: string
+	image: string
+	read: boolean
+}
+
 export function UserNotification() {
-	const [notifications, setNotifications] = useState([
+	const [notifications, setNotifications] = useState<NotificationItem[]>([
 		{
 			id: "1",
 			title: "New AI model suggestion",
@@ -53,9 +62,11 @@ export function UserNotification() {
 
 	const unreadCount = notifications.filter((n) => !n.read).length
 
-	const markAsRead = (id) => {
-		setNotifications(
-			notifications.map((n) => (n.id === id ? { ...n, read: true } : n))
+	const markAsRead = (id: string) => {
+		setNotifications((currentNotifications) =>
+			currentNotifications.map((notification) => (
+				notification.id === id ? { ...notification, read: true } : notification
+			))
 		)
 	}
 
