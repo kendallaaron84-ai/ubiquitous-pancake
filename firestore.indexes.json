@@ -1,0 +1,19 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "content_blueprints",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "authorEmail",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
