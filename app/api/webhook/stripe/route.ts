@@ -1,247 +1,284 @@
-// Filepath: app/api/webhook/stripe/route.ts
-import { headers } from 'next/headers';
-import { NextResponse } from 'next/server';
-import Stripe from 'stripe';
-import { adminDb } from '@/core/firebase-admin';
-import { randomBytes } from 'crypto';
+import { NextResponse } from "next/server";
+import Stripe from "stripe";
 
-export const dynamic = 'force-dynamic';
+import { provisionAuthorPlugin } from "@/core/security/author-provisioning";
+import { processListenerPurchaseEntitlement } from "@/core/security/listener-entitlement";
+import { processAuthorTranscriptionPayment } from "@/core/security/transcription-payment";
+import { processAuthorSubscriptionPayment } from "@/core/security/author-subscription";
+import { syncConnectedAccountFromWebhook } from "@/core/security/stripe-connect-server";
 
-// Initialize Stripe (Ensure STRIPE_SECRET_KEY is in your Vercel env variables)
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: '2026-06-24.dahlia', // Adjust to match your Stripe dashboard API version
-});
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-// 1. Cryptographically Secure License Generator
-function generateSystemId(prefix = 'KOBA-AUDIO') {
-  const secureRandom = randomBytes(4).toString('hex').toUpperCase();
-  return `${prefix}-${secureRandom}`;
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown webhook failure.";
 }
 
-export async function POST(req: Request) {
-  const body = await req.text();
-  
-  // Guardrail: Check if middleware or something else consumed the body stream
-  if (!body || body.trim() === '') {
-    console.error('🚨 WEBHOOK BODY IS EMPTY. The request body stream may have been consumed by a middleware.');
-    return new NextResponse('Webhook Error: Empty request body payload.', { status: 400 });
+export async function POST(request: Request) {
+  const body = await request.text();
+  if (!body.trim()) {
+    return NextResponse.json(
+      { error: "Webhook request body is required." },
+      { status: 400 }
+    );
   }
 
-  // Dual-layer signature extraction for maximum compatibility with serverless headers
-  let signature = req.headers.get('stripe-signature');
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
+  if (!endpointSecret) {
+    console.error("Stripe webhook signing configuration is missing.");
+    return NextResponse.json(
+      { error: "Webhook configuration unavailable." },
+      { status: 503 }
+    );
+  }
+
+  const signature = request.headers.get("stripe-signature");
   if (!signature) {
-    try {
-      const headersList = headers();
-      signature = headersList.get('stripe-signature');
-    } catch (hErr) {
-      console.warn('⚠️ Could not read global headers helper:', hErr);
-    }
-  }
-
-  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-  // Print non-sensitive debugging information to compare secrets
-  if (endpointSecret) {
-    const formattedSecret = `${endpointSecret.substring(0, 8)}...${endpointSecret.substring(endpointSecret.length - 4)}`;
-    console.log(`🔑 Webhook Secret in Use: ${formattedSecret}`);
-  } else {
-    console.error('🚨 Missing STRIPE_WEBHOOK_SECRET env variable.');
+    return NextResponse.json(
+      { error: "Stripe signature is required." },
+      { status: 400 }
+    );
   }
 
   let event: Stripe.Event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      body,
+      signature,
+      endpointSecret
+    );
+  } catch (error) {
+    console.error("Stripe webhook signature verification failed.");
+    return NextResponse.json(
+      { error: "Webhook signature verification failed." },
+      { status: 400 }
+    );
+  }
+
+  if (event.type === "account.updated") {
+    try {
+      const account = event.data.object as Stripe.Account;
+      await syncConnectedAccountFromWebhook(account);
+      return NextResponse.json(
+        { success: true, connectStatusSynchronized: true, stripeAccountId: account.id },
+        { status: 200 }
+      );
+    } catch (error) {
+      console.error("Stripe Connect account synchronization failed:", errorMessage(error));
+      return NextResponse.json(
+        { error: "Stripe Connect account synchronization failed." },
+        { status: 500 }
+      );
+    }
+  }
+
+  if (
+    event.type !== "checkout.session.completed" &&
+    event.type !== "checkout.session.async_payment_succeeded"
+  ) {
+    return NextResponse.json(
+      { ignoredEvent: event.type },
+      { status: 200 }
+    );
+  }
+
+  const session = event.data.object as Stripe.Checkout.Session;
+  const isListenerPurchase =
+    session.metadata?.checkoutType === "listener_purchase";
+  const isAuthorTranscription =
+    session.metadata?.checkoutType === "author_transcription";
+  const isAuthorSubscription =
+    session.metadata?.checkoutType === "author_subscription";
+
+  if (isAuthorSubscription) {
+    if (event.type === "checkout.session.async_payment_succeeded") {
+      return NextResponse.json({ ignoredEvent: event.type }, { status: 200 });
+    }
+    try {
+      const result = await processAuthorSubscriptionPayment(event, session);
+      return NextResponse.json(
+        { success: true, subscriptionMode: true, ...result },
+        { status: 200 }
+      );
+    } catch (error) {
+      console.error("Author subscription fulfillment failed:", errorMessage(error));
+      return NextResponse.json(
+        { error: "Author subscription fulfillment failed." },
+        { status: 500 }
+      );
+    }
+  }
+
+  if (isAuthorTranscription) {
+    try {
+      const result = await processAuthorTranscriptionPayment(event, session);
+      return NextResponse.json({ success: true, transcriptionMode: true, ...result }, { status: 200 });
+    } catch (error) {
+      console.error("Author transcription fulfillment failed:", errorMessage(error));
+      return NextResponse.json({ error: "Author transcription fulfillment failed." }, { status: 500 });
+    }
+  }
+
+  if (isListenerPurchase) {
+    try {
+      const result = await processListenerPurchaseEntitlement(event, session);
+      if (!result.success) {
+        return NextResponse.json(
+          { error: "Listener entitlement validation failed." },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json(
+        {
+          success: true,
+          listenerMode: true,
+          status: result.status,
+          stripeSessionId: session.id,
+        },
+        { status: 200 }
+      );
+    } catch (error) {
+      console.error(
+        "Listener entitlement processing failed:",
+        errorMessage(error)
+      );
+      return NextResponse.json(
+        { error: "Listener entitlement processing failed." },
+        { status: 500 }
+      );
+    }
+  }
+
+  // Delayed-payment events are only used for listener purchases. The existing
+  // author-software fulfillment remains bound to checkout completion so an
+  // asynchronous event cannot mint a second StudioKey.
+  if (event.type === "checkout.session.async_payment_succeeded") {
+    return NextResponse.json(
+      { ignoredEvent: event.type },
+      { status: 200 }
+    );
+  }
 
   try {
-    if (!signature || !endpointSecret) {
-      throw new Error('Missing Stripe signature or Webhook Secret environment variable.');
-    }
-    // 2. Cryptographic Signature Verification
-    event = stripe.webhooks.constructEvent(body, signature, endpointSecret);
-  } catch (err: any) {
-    console.error(`⚠️ Webhook Signature Verification Failed: ${err.message}`);
-    return new NextResponse(`Webhook Error: ${err.message}`, { status: 400 });
-  }
+    const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
+    const itemAnalysis: Array<Record<string, unknown>> = [];
+    let hasAudiobookPlayer = false;
+    let hasEreader = false;
+    let matchedProductId = "";
+    let matchedProductName = "";
 
-  console.log(`📦 Webhook received event: ${event.type}`);
+    for (const item of lineItems.data) {
+      const productNameRaw = item.description || "";
+      const productName = productNameRaw.toLowerCase();
+      const product = item.price?.product;
+      const productId =
+        typeof product === "string"
+          ? product
+          : product && typeof product === "object"
+            ? product.id
+            : "";
+      const isAudioPlugin =
+        productId === "prod_UpYvZLShITzyej" ||
+        productName.includes("koba-i audio plugin") ||
+        productName.includes("koba-i audio player") ||
+        productName.includes("audio player");
+      const isEReader =
+        productName.includes("jubilee works digital e-reader") ||
+        productName.includes("digital e-reader") ||
+        productName.includes("e-reader");
 
-  // 3. Process the Successful Checkout
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object as Stripe.Checkout.Session;
-    
-    // Check if this is a listener buying an audiobook (Ghost Protocol)
-    const isListenerPurchase = session.metadata?.checkoutType === 'listener_purchase';
+      itemAnalysis.push({
+        incomingDescription: productNameRaw,
+        incomingProductId: productId,
+        evaluatedAsAudioPlugin: isAudioPlugin,
+        evaluatedAsEReader: isEReader,
+      });
 
-    // ====================================================================
-    // SCENARIO A: LISTENER BUYING AUDIOBOOK (The Ghost Protocol)
-    // ====================================================================
-    if (isListenerPurchase) {
-      const assetId = session.metadata?.assetId;
-      const tenantKey = session.metadata?.tenantKey;
-      const customerEmail = session.customer_details?.email || session.customer?.toString();
-      
-      const rawPhone = session.customer_details?.phone || session.metadata?.customerPhone || '';
-      const normalizedPhone = rawPhone.replace(/[^\d+]/g, '');
-
-      if (assetId && tenantKey && normalizedPhone) {
-        try {
-          const entitlementId = `${tenantKey}_${assetId}_${normalizedPhone}`;
-          await adminDb.collection('entitlements').doc(entitlementId).set({
-            assetId, tenantKey, customerEmail, customerPhone: normalizedPhone,
-            stripeSessionId: session.id, stripeCustomerId: session.customer || null,
-            status: 'active', amountTotal: session.amount_total, purchasedAt: new Date().toISOString(),
-          });
-          console.log(`✅ Ghost Protocol Entitlement provisioned for phone: ${normalizedPhone}`);
-          return NextResponse.json({ provisioned: true, listenerMode: true }, { status: 200 });
-        } catch (dbError: any) {
-          console.error('🔥 Firestore Write Error:', dbError.message);
-          return NextResponse.json({ error: 'Database Write Failed', details: dbError.message }, { status: 500 });
-        }
+      if (isAudioPlugin || isEReader) {
+        hasAudiobookPlayer ||= isAudioPlugin;
+        hasEreader ||= isEReader;
+        matchedProductId ||= productId;
+        matchedProductName ||= productNameRaw;
       }
-      return NextResponse.json({ error: 'Missing listener metadata' }, { status: 400 });
     }
 
-    // ====================================================================
-    // SCENARIO B: AUTHOR BUYING KOBA-I SOFTWARE (Intelligent Routing)
-    // ====================================================================
-    else {
-      try {
-        // Reach back into Stripe and fetch the exact items they purchased
-        const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
-        const itemAnalysis: any[] = [];
-        let anyMatchSuccess = false;
-        
-        // Loop through the items to grant the correct licenses
-        for (const item of lineItems.data) {
-          const productNameRaw = item.description || '';
-          const productName = productNameRaw.toLowerCase();
-          
-          // Get product ID safely
-          const productId = typeof item.price?.product === 'string' 
-            ? item.price.product 
-            : (item.price?.product as any)?.id || '';
-          
-          // Strict targeted matching
-          const isAudioPlugin = productId === 'prod_UpYvZLShITzyej' || 
-                                productName.includes('koba-i audio player') ||
-                                productName.includes('audio player');
-                                
-          const isEReader = productName.includes('jubilee works digital e-reader') || 
-                            productName.includes('digital e-reader') ||
-                            productName.includes('e-reader');
+    const metadataPluginType = session.metadata?.pluginType?.trim();
+    if (session.metadata?.checkoutType === "plugin_purchase") {
+      hasAudiobookPlayer ||= metadataPluginType !== "ereader_plugin";
+      hasEreader ||= metadataPluginType === "ereader_plugin" || metadataPluginType === "koba_i_plugin_suite";
+    }
 
-          itemAnalysis.push({
-            incomingDescription: productNameRaw,
-            incomingProductId: productId,
-            evaluatedAsAudioPlugin: isAudioPlugin,
-            evaluatedAsEReader: isEReader
-          });
-
-          // Only generate a key if they actually bought the software
-          if (isAudioPlugin || isEReader) {
-            anyMatchSuccess = true;
-            const customerEmail = session.customer_details?.email || session.customer_email || `customer-${Date.now()}@koba-i.com`;
-            const customerName = session.customer_details?.name || 'Unknown Author';
-            const authorId = session.client_reference_id || customerEmail; 
-
-            // Determine the prefix based on what they bought
-            const prefix = isEReader && !isAudioPlugin ? 'KOBA-READER' : 'KOBA-AUDIO';
-            const licenseType = isEReader && !isAudioPlugin ? 'ereader_plugin' : 'audiobook_plugin';
-            
-            const newStudioKey = generateSystemId(prefix);
-
-            try {
-              if (!adminDb) {
-                throw new Error("adminDb is undefined. The Firebase Admin SDK failed to initialize correctly.");
-              }
-
-              // 1. Write the license key to Firestore
-              await adminDb.collection('licenses').doc(newStudioKey).set({
-                studioKey: newStudioKey,
-                authorId: authorId,
-                authorEmail: customerEmail,
-                authorName: customerName,
-                status: 'active',
-                type: licenseType,
-                stripeSessionId: session.id,
-                productId: productId,
-                productName: productNameRaw,
-                createdAt: new Date().toISOString(),
-                associatedWebsite: null
-              });
-
-              // 2. Seed the user profile document in Firestore
-              await adminDb.collection('users').doc(authorId).set({
-                email: customerEmail,
-                name: customerName,
-                hasActiveLicense: true,
-                authConfigured: false, // Setup is pending password change
-                lastPurchaseDate: new Date().toISOString(),
-              }, { merge: true });
-
-              // 3. DYNAMIC RUNTIME IMPORT: Safely initialize Admin Auth inside serverless execution block
-              const admin = require('firebase-admin');
-              if (admin.apps.length === 0) {
-                admin.initializeApp({
-                  credential: admin.credential.cert({
-                    projectId: process.env.FIREBASE_PROJECT_ID,
-                    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-                    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-                  }),
-                });
-              }
-              const adminAuth = admin.auth();
-
-              // 4. PROGRAMMATIC AUTH PROVISIONING: Immediately create auth account using the license key as their temporary password!
-              let firebaseUser;
-              try {
-                firebaseUser = await adminAuth.getUserByEmail(customerEmail);
-                console.log(`ℹ️ Auth user ${customerEmail} already exists. Syncing password with key: ${newStudioKey}`);
-                await adminAuth.updateUser(firebaseUser.uid, { password: newStudioKey });
-              } catch (authErr: any) {
-                if (authErr.code === 'auth/user-not-found') {
-                  console.log(`🚀 Creating brand-new Auth credentials for ${customerEmail} with temp password: ${newStudioKey}`);
-                  firebaseUser = await adminAuth.createUser({
-                    email: customerEmail,
-                    password: newStudioKey,
-                    displayName: customerName,
-                    emailVerified: true
-                  });
-                } else {
-                  throw authErr;
-                }
-              }
-
-              // 5. Construct the dynamic onboarding setup redirect link
-              const host = req.headers.get('host') || 'bug-free-robot-khaki.vercel.app';
-              const protocol = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
-              const activationLink = `${protocol}://${host}/setup-password?email=${encodeURIComponent(customerEmail)}&license=${newStudioKey}`;
-
-              console.log(`✅ SUCCESS: License ${newStudioKey} successfully written to Firestore and user created in Firebase Auth.`);
-              console.log(`🔗 KOBA-I AUDIO ONBOARDING LINK GENERATED: ${activationLink}`);
-
-            } catch (dbError: any) {
-              console.error('🚨 FIREBASE WRITE ERROR:', dbError.message);
-              return NextResponse.json({ 
-                error: 'Firebase Write Error', 
-                message: dbError.message
-              }, { status: 500 });
-            }
-          }
-        }
-
-        // Return a verbose success package directly to Stripe dashboard response tab
-        return NextResponse.json({ 
-          processed: true, 
-          matchedAndMinted: anyMatchSuccess,
+    if (!hasAudiobookPlayer && !hasEreader) {
+      return NextResponse.json(
+        {
+          processed: true,
+          matchedAndMinted: false,
           receivedSessionId: session.id,
-          analysisLogs: itemAnalysis 
-        }, { status: 200 });
-
-      } catch (err: any) {
-        console.error('🔥 Server Error processing line items:', err);
-        return new NextResponse(`Internal Server Error: ${err.message}`, { status: 500 });
-      }
+          analysisLogs: itemAnalysis,
+        },
+        { status: 200 }
+      );
     }
-  }
 
-  return NextResponse.json({ ignoredEvent: event.type }, { status: 200 });
+    if (session.status !== "complete" || session.payment_status !== "paid") {
+      return NextResponse.json(
+        { error: "Plugin access requires a completed, paid Stripe session." },
+        { status: 409 }
+      );
+    }
+
+    const customerEmail = (
+      session.customer_details?.email || session.customer_email || ""
+    ).trim().toLowerCase();
+    const customerName = (
+      session.customer_details?.name || session.metadata?.authorName || ""
+    ).trim();
+    if (!customerEmail || !customerName) {
+      return NextResponse.json(
+        { error: "Stripe customer name and email are required for plugin fulfillment." },
+        { status: 422 }
+      );
+    }
+
+    const result = await provisionAuthorPlugin({
+      authorName: customerName,
+      authorEmail: customerEmail,
+      source: "stripe_plugin_purchase",
+      idempotencyKey: session.id,
+      hasAudiobookPlayer,
+      hasEreader,
+      stripeSessionId: session.id,
+      stripeEventId: event.id,
+      stripeCustomerId: stripeObjectId(session.customer),
+      productId: matchedProductId || null,
+      productName: matchedProductName || null,
+    });
+
+    return NextResponse.json(
+      {
+        processed: true,
+        matchedAndMinted: true,
+        receivedSessionId: session.id,
+        studioKey: result.studioKey,
+        created: result.created,
+        welcomeEmailSent: result.welcomeEmailSent,
+        analysisLogs: itemAnalysis,
+      },
+      { status: 200 }
+    );
+  } catch (error) {
+    console.error("Author checkout processing failed:", errorMessage(error));
+    return NextResponse.json(
+      { error: "Author checkout processing failed." },
+      { status: 500 }
+    );
+  }
+}
+
+function stripeObjectId(value: string | { id: string } | null): string | null {
+  if (typeof value === "string") return value;
+  return value && typeof value.id === "string" ? value.id : null;
 }

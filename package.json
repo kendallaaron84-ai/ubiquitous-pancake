@@ -10,6 +10,8 @@
     "test:security": "node --test core/security/__tests__/*.test.mjs"
   },
   "dependencies": {
+    "@google-cloud/secret-manager": "^6.2.0",
+    "@google-cloud/tasks": "^6.2.1",
     "@google/genai": "^2.8.0",
     "@hookform/resolvers": "^5.2.2",
     "@opentelemetry/api": "^1.9.1",
@@ -55,6 +57,7 @@
     "lucide-react": "^0.545.0",
     "next": "^15.5.18",
     "next-themes": "^0.4.6",
+    "nodemailer": "^9.0.3",
     "react": "^19.0.0",
     "react-day-picker": "9.11.1",
     "react-dom": "^19.0.0",
@@ -74,6 +77,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.14",
     "@types/node": "^24",
+    "@types/nodemailer": "^8.0.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "env-cmd": "^11.0.0",
