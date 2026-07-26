@@ -139,7 +139,7 @@ export default function Home() {
 									<div className="space-y-2">
 										<label className="text-xs font-semibold text-muted-foreground">Author Name</label>
 										<Input
-											placeholder="e.g. Sharon Meeks"
+											placeholder="e.g. Full Name"
 											value={targetAuthorName}
 											onChange={(e) => setTargetAuthorName(e.target.value)}
 										required

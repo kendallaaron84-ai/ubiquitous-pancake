@@ -199,7 +199,7 @@ export default function SignupStorefront() {
                   autoComplete="name"
                   required
                   className="w-full rounded-lg border border-[#6f84b5] bg-[#172443] px-4 py-3 text-white outline-none placeholder:text-slate-500 focus:border-[#f97316] focus:ring-2 focus:ring-[#f97316]/30"
-                  placeholder="Sharon Meeks"
+                  placeholder="Full Name"
                 />
               </label>
               <label className="space-y-2 text-sm font-semibold">
