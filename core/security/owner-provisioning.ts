@@ -72,6 +72,8 @@ export async function ensureOwnerWorkspace(db: Firestore, input: OwnerInput) {
     status: "active",
     tier: "bundle",
     licenseSource: legacy ? "legacy_owner_migration" : "owner_bootstrap",
+    migratedFromLegacy: Boolean(legacy),
+    ...(legacy ? { legacyLicenseId: legacy.id } : {}),
     hasContentEngineAccess: true,
     hasBlogEngineAccess: true,
     entitlements,

@@ -174,7 +174,7 @@ export async function POST(request: Request) {
     const ownerWorkspace = await ensureOwnerWorkspace(adminDb, {
       email,
       uid: decodedToken.uid,
-      userData,
+      userData: userData ?? undefined,
       displayName: trimString(decodedToken.name),
     });
     if (ownerWorkspace) {

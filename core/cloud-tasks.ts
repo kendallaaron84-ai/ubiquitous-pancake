@@ -3,12 +3,22 @@ import { createRequire } from "node:module";
 
 import type { CloudTasksClient } from "@google-cloud/tasks";
 
+export interface BlogSeoStrategy {
+  primary: string;
+  secondary: string;
+  longTail: string;
+  allKeywords: string[];
+  framework: "rank_math";
+  readabilityTarget: "grade_5_6";
+}
+
 export interface BlogGenerationTaskPayload {
   blueprintId: string;
   generationAttemptId: string;
   studioKey: string;
   targetWpOrigin: string;
   secretCredentialRef: string;
+  seo: BlogSeoStrategy;
 }
 
 export interface AudiobookTranscriptionTaskPayload {

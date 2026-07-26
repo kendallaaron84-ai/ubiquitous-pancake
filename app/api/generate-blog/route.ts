@@ -9,7 +9,10 @@ import {
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
-import { dispatchBlogGenerationTask } from "@/core/cloud-tasks";
+import {
+  dispatchBlogGenerationTask,
+  type BlogSeoStrategy,
+} from "@/core/cloud-tasks";
 import { adminDb } from "@/core/firebase-admin";
 import {
   AuthorIdentityError,
@@ -41,6 +44,7 @@ interface LockedBlueprint {
   attemptId: string;
   blueprintId: string;
   connection: VerifiedBlogConnection;
+  seo: BlogSeoStrategy;
 }
 
 class RouteError extends Error {
@@ -153,6 +157,7 @@ export async function POST(request: Request) {
         }
 
         const data = snapshot.data() || {};
+        const seo = normalizeSeoStrategy(data);
         const storedEmail = trimString(data.authorEmail).toLowerCase();
         const sessionEmail = dashboardSession.email.trim().toLowerCase();
         if (!storedEmail || storedEmail !== sessionEmail) {
@@ -191,6 +196,18 @@ export async function POST(request: Request) {
         transaction.update(blueprintReference, {
           ...destinationReset,
           executionState: "queued",
+          seoKeywords: {
+            primary: seo.primary,
+            secondary: seo.secondary,
+            longTail: seo.longTail,
+          },
+          seoKeywordsList: seo.allKeywords,
+          seoRequirements: {
+            framework: seo.framework,
+            readabilityTarget: seo.readabilityTarget,
+            primaryPlacements: ["title", "introduction"],
+            longTailPlacement: "h2",
+          },
           generationAttemptId: attemptId,
           authorIdentityId: authorIdentity.id,
           authorName: authorIdentity.displayName,
@@ -206,7 +223,7 @@ export async function POST(request: Request) {
           lastWorkerError: FieldValue.delete(),
         });
 
-        return { attemptId, blueprintId, connection };
+        return { attemptId, blueprintId, connection, seo };
       }
     );
     lockedBlueprint = locked;
@@ -217,6 +234,7 @@ export async function POST(request: Request) {
       studioKey: locked.connection.studioKey,
       targetWpOrigin: locked.connection.targetWpOrigin,
       secretCredentialRef: locked.connection.secretCredentialRef,
+      seo: locked.seo,
     });
 
     await adminDb.runTransaction(async (transaction: Transaction) => {
@@ -296,6 +314,45 @@ async function markAttemptFailed(
   } catch (updateError: unknown) {
     console.error("Failed to record the queue dispatch error:", updateError);
   }
+}
+
+function normalizeSeoStrategy(data: DocumentData): BlogSeoStrategy {
+  const raw =
+    typeof data.seoKeywords === "object" && data.seoKeywords !== null
+      ? (data.seoKeywords as Record<string, unknown>)
+      : {};
+  const storedList = Array.isArray(data.seoKeywordsList)
+    ? data.seoKeywordsList
+        .map((value: unknown) => normalizeSeoKeyword(value))
+        .filter(Boolean)
+    : [];
+
+  const primary = normalizeSeoKeyword(raw.primary) || storedList[0] || "";
+  const secondary = normalizeSeoKeyword(raw.secondary) || storedList[1] || "";
+  const longTail = normalizeSeoKeyword(raw.longTail) || storedList[2] || "";
+
+  const allKeywords: string[] = [];
+  const seen = new Set<string>();
+  for (const keyword of [primary, secondary, longTail]) {
+    const dedupeKey = keyword.toLowerCase();
+    if (keyword && !seen.has(dedupeKey)) {
+      seen.add(dedupeKey);
+      allKeywords.push(keyword);
+    }
+  }
+
+  return {
+    primary,
+    secondary,
+    longTail,
+    allKeywords,
+    framework: "rank_math",
+    readabilityTarget: "grade_5_6",
+  };
+}
+
+function normalizeSeoKeyword(value: unknown): string {
+  return trimString(value).replace(/\s+/g, " ").slice(0, 160);
 }
 
 function trimString(value: unknown): string {
