@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { DocumentData } from "firebase-admin/firestore";
 
 import { adminAuth, adminDb } from "@/core/firebase-admin";
+import { ensureOwnerWorkspace } from "@/core/security/owner-provisioning";
 import {
   DASHBOARD_SESSION_COOKIE,
   DASHBOARD_SESSION_MAX_AGE_SECONDS,
@@ -117,7 +118,7 @@ export async function POST(request: Request) {
     }
 
     const idToken = trimString(payload.idToken);
-    const requestedStudioKey = trimString(payload.studioKey);
+    let requestedStudioKey = trimString(payload.studioKey);
 
     if (!idToken) {
       return NextResponse.json(
@@ -165,6 +166,20 @@ export async function POST(request: Request) {
         userDoc = userQuery.docs[0];
         userData = userDoc.data() || null;
       }
+    }
+
+    // Owners are allowed to bootstrap the dashboard without a checkout. Reconcile
+    // the legacy `licenses` record into the canonical `plugin_licenses` collection
+    // so all feature gates (including Blog Engine) see the same entitlement.
+    const ownerWorkspace = await ensureOwnerWorkspace(adminDb, {
+      email,
+      uid: decodedToken.uid,
+      userData,
+      displayName: trimString(decodedToken.name),
+    });
+    if (ownerWorkspace) {
+      requestedStudioKey = ownerWorkspace.studioKey;
+      userData = ownerWorkspace.userData;
     }
 
     const existingStudioKey = trimString(userData?.studioKey);

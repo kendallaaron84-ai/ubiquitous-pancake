@@ -34,6 +34,9 @@ export function AuthorIntakeForm() {
     brand: "personal",
     audience: "",
     description: "",
+    primaryKeyword: "",
+    secondaryKeyword: "",
+    longTailKeyword: "",
   });
 
   useEffect(() => {
@@ -79,9 +82,17 @@ export function AuthorIntakeForm() {
           topicTitle: formData.title.trim(),
           title: formData.title.trim(),
           brandAllocation: formData.brand,
-          targetAudience: formData.audience.trim(),
-          synopsis: formData.description.trim(),
-          executionState: "initializing",
+        targetAudience: formData.audience.trim(),
+        synopsis: formData.description.trim(),
+        seoKeywords: {
+          primary: formData.primaryKeyword.trim(),
+          secondary: formData.secondaryKeyword.trim(),
+          longTail: formData.longTailKeyword.trim(),
+        },
+        seoKeywordsList: [formData.primaryKeyword, formData.secondaryKeyword, formData.longTailKeyword]
+          .map((keyword) => keyword.trim())
+          .filter(Boolean),
+        executionState: "initializing",
           createdAt: serverTimestamp(),
         }
       );
@@ -121,6 +132,9 @@ export function AuthorIntakeForm() {
         brand: "personal",
         audience: "",
         description: "",
+        primaryKeyword: "",
+        secondaryKeyword: "",
+        longTailKeyword: "",
       });
     } catch (error: unknown) {
       const message = errorMessage(error);
@@ -211,6 +225,49 @@ export function AuthorIntakeForm() {
               }
               className="w-full rounded-xl border border-border bg-slate-950/50 px-4 py-3 text-sm text-white transition-colors focus:border-emerald-500/50 focus:outline-none"
               placeholder="e.g. Noir Thriller Fans"
+            />
+          </div>
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-300">
+              SEO Keywords
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Add up to three phrases to guide search optimization.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <input
+              type="text"
+              value={formData.primaryKeyword}
+              onChange={(event) =>
+                setFormData({ ...formData, primaryKeyword: event.target.value })
+              }
+              className="w-full rounded-xl border border-border bg-slate-950/50 px-4 py-3 text-sm text-white transition-colors focus:border-emerald-500/50 focus:outline-none"
+              placeholder="Primary keyword"
+              maxLength={120}
+            />
+            <input
+              type="text"
+              value={formData.secondaryKeyword}
+              onChange={(event) =>
+                setFormData({ ...formData, secondaryKeyword: event.target.value })
+              }
+              className="w-full rounded-xl border border-border bg-slate-950/50 px-4 py-3 text-sm text-white transition-colors focus:border-emerald-500/50 focus:outline-none"
+              placeholder="Secondary keyword"
+              maxLength={120}
+            />
+            <input
+              type="text"
+              value={formData.longTailKeyword}
+              onChange={(event) =>
+                setFormData({ ...formData, longTailKeyword: event.target.value })
+              }
+              className="w-full rounded-xl border border-border bg-slate-950/50 px-4 py-3 text-sm text-white transition-colors focus:border-emerald-500/50 focus:outline-none"
+              placeholder="Long-tail keyword"
+              maxLength={160}
             />
           </div>
         </div>
