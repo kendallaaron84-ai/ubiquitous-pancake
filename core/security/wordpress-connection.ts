@@ -154,13 +154,16 @@ export async function verifyAndProvisionWordPressConnection(
       secretResourceName,
       configuration.workerServiceAccount
     );
-  } catch {
+  } catch (error: unknown) {
+    console.error("❌ Secret Manager Provisioning Failed:", {
+      code: grpcStatusCode(error),
+      message: error instanceof Error ? error.message : String(error),
+      secretResourceName,
+    });
     throw new WordPressConnectionDiagnosticError(
       "VAULT_PROVISION_FAIL",
       "Your site was verified, but secure setup could not finish. Please retry."
     );
-  } finally {
-    secretPayload.fill(0);
   }
 
   return { studioKey, targetWpOrigin, wpUsername, secretCredentialRef };

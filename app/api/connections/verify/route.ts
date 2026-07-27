@@ -107,16 +107,12 @@ export async function GET(request: Request) {
       { headers: { "Cache-Control": "private, no-store" } }
     );
   } catch (error: unknown) {
-    // 🔍 ENHANCED GCP LOGGING
     const err = error as Record<string, unknown> | null;
-    console.error("❌ Secret Manager / Connection Route Failed:", {
-      stage: err?.stage || "provisioning_or_verification",
-      code: err?.code, // e.g., 7 (PERMISSION_DENIED), 3 (INVALID_ARGUMENT), 16 (UNAUTHENTICATED)
+    console.error("❌ WordPress POST Connection Failed:", {
       message: err instanceof Error ? err.message : String(error),
-      details: err?.details || null,
+      code: err?.code || null,
       stack: err instanceof Error ? err.stack : undefined,
     });
-
     return connectionErrorResponse(error);
   }
 }
