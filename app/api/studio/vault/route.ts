@@ -1,65 +1,92 @@
-// app/api/studio/vault/route.ts
+import crypto from "node:crypto";
+
+import { FieldValue } from "firebase-admin/firestore";
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import crypto from "crypto";
+
+import { adminDb } from "@/core/firebase-admin";
+import {
+  DASHBOARD_SESSION_COOKIE,
+  resolveDashboardSessionSecret,
+  verifyDashboardSession,
+} from "@/core/security/dashboard-session";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+interface VaultRequestBody {
+  assetId?: unknown;
+}
+
+interface StudioTrack {
+  id?: unknown;
+  title?: unknown;
+  [key: string]: unknown;
+}
 
 export async function POST(request: Request) {
   try {
-    const { assetId } = await request.json();
+    const token = (await cookies()).get(DASHBOARD_SESSION_COOKIE)?.value;
+    if (!token) {
+      return failure(401, "Sign in to secure this publication.");
+    }
 
+    const session = await verifyDashboardSession(
+      token,
+      resolveDashboardSessionSecret()
+    ).catch(() => null);
+    if (!session?.studioKey) {
+      return failure(
+        403,
+        "Your dashboard session is not connected to a StudioKey."
+      );
+    }
+
+    const body = (await request.json().catch(() => null)) as
+      | VaultRequestBody
+      | null;
+    const assetId = clean(body?.assetId);
     if (!assetId) {
-      return NextResponse.json(
-        { success: false, message: "Missing asset identifier context." },
-        { status: 400 }
-      );
+      return failure(400, "Missing asset identifier context.");
     }
 
-    console.log(`🔒 Initiating Secure C2PA Cryptographic Signature Protocol for Asset: ${assetId}`);
+    console.info(
+      `Initiating secure C2PA signature protocol for asset: ${assetId}`
+    );
 
-    // 🔥 DYNAMIC RUNTIME IMPORT: Keeps Firebase completely isolated from the build engine
-    const admin = require("firebase-admin");
-
-    if (!admin || !admin.apps || !admin.apps.length) {
-      try {
-        admin.initializeApp({
-          credential: admin.credential.applicationDefault(),
-        });
-      } catch (e) {
-        console.warn("⚠️ Firebase Admin initialization bypassed during build pass.");
-        return NextResponse.json(
-          { success: false, message: "Database offline during build check." },
-          { status: 500 }
-        );
-      }
-    }
-
-    const db = admin.firestore();
-
-    // 1. Pull the Master Production Manifest from Firestore
-    const productRef = db.collection("products").doc(assetId);
+    const productRef = adminDb.collection("products").doc(assetId);
     const productDoc = await productRef.get();
-
     if (!productDoc.exists) {
-      return NextResponse.json(
-        { success: false, message: "Asset workspace profile not found." },
-        { status: 404 }
+      return failure(404, "Asset workspace profile not found.");
+    }
+
+    const productData = productDoc.data() || {};
+    const productStudioKey = clean(productData.studioKey);
+    const productAuthor = clean(
+      productData.authorEmail || productData.authorId
+    ).toLowerCase();
+    if (
+      productStudioKey !== session.studioKey ||
+      productAuthor !== session.email.toLowerCase()
+    ) {
+      return failure(
+        403,
+        "This publication belongs to another author workspace."
       );
     }
 
-    const productData = productDoc.data();
-    const bookTitle = productData?.title || "Untitled Work";
-    const authorName = productData?.authorName || "Sovereign Author";
-    const tracks = productData?.studioTracks || [];
-
+    const bookTitle = clean(productData.title) || "Untitled Work";
+    const authorName = clean(productData.authorName) || "Sovereign Author";
+    const tracks = Array.isArray(productData.studioTracks)
+      ? (productData.studioTracks as StudioTrack[])
+      : [];
     if (tracks.length === 0) {
-      return NextResponse.json(
-        { success: false, message: "No track or segment components found to cryptographically secure." },
-        { status: 400 }
+      return failure(
+        400,
+        "No track or segment components found to cryptographically secure."
       );
     }
 
-    // 2. Generate the Immutable C2PA Assertion Manifest
     const c2paManifest = {
       vendor: "KOBA-I Audio Sentinel v1.2.0",
       claimGenerator: "KOBA-I_Audio_Platform",
@@ -68,8 +95,8 @@ export async function POST(request: Request) {
         {
           label: "c2pa.actions",
           data: {
-            actions: [{ action: "c2pa.created" }]
-          }
+            actions: [{ action: "c2pa.created" }],
+          },
         },
         {
           label: "c2pa.rights",
@@ -78,50 +105,61 @@ export async function POST(request: Request) {
               {
                 owner: authorName,
                 holder: "Sovereign Distribution Network",
-                license: "All Rights Reserved to the Creator"
-              }
-            ]
-          }
-        }
-      ]
+                license: "All Rights Reserved to the Creator",
+              },
+            ],
+          },
+        },
+      ],
     };
 
-    // 3. Process and Sign Each Track Segment In the Waveform Layer
-    const signedTracks = tracks.map((track: any) => {
-      const rawPayload = `${track.id}-${track.title}-${assetId}`;
+    const signedTracks = tracks.map((track) => {
+      const rawPayload = `${clean(track.id)}-${clean(track.title)}-${assetId}`;
       const contentHash = crypto
         .createHash("sha256")
         .update(rawPayload)
         .digest("hex");
-      
+
       return {
         ...track,
         c2paStatus: "verified",
         sha256Hash: contentHash,
         c2paSignedAt: new Date().toISOString(),
-        manifestContext: c2paManifest
+        manifestContext: c2paManifest,
       };
     });
 
-    // 4. Update the Master Ledger State in Firestore
     await productRef.update({
       studioTracks: signedTracks,
       vaultStatus: "secured",
-      lastLockedAt: admin.firestore.FieldValue.serverTimestamp()
+      lastLockedAt: FieldValue.serverTimestamp(),
     });
 
     return NextResponse.json({
       success: true,
-      message: "C2PA Claim Profile securely generated and bound to audio binaries.",
+      message:
+        "C2PA Claim Profile securely generated and bound to audio binaries.",
       vaultStatus: "secured",
-      sha256ManifestRoot: crypto.createHash("sha256").update(assetId).digest("hex")
+      sha256ManifestRoot: crypto
+        .createHash("sha256")
+        .update(assetId)
+        .digest("hex"),
     });
-
-  } catch (error: any) {
-    console.error("❌ Voice Vault Structural Execution Defect:", error);
-    return NextResponse.json(
-      { success: false, message: error.message || "Internal structural signature execution error." },
-      { status: 500 }
+  } catch (error: unknown) {
+    console.error("Voice Vault structural execution failed:", error);
+    return failure(
+      500,
+      error instanceof Error
+        ? error.message
+        : "Internal structural signature execution error."
     );
   }
+}
+
+function clean(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function failure(status: number, message: string) {
+  return NextResponse.json({ success: false, message }, { status });
 }

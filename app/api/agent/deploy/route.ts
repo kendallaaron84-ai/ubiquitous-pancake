@@ -1,6 +1,5 @@
-import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
-import { Buffer } from "node:buffer";
 import { FieldValue } from "firebase-admin/firestore";
+import { GoogleAuth } from "google-auth-library";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
@@ -19,13 +18,79 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const ALLOWED_STATUSES = new Set(["draft", "ready", "published"]);
-const secretManager = new SecretManagerServiceClient({
-  projectId: process.env.FIREBASE_PROJECT_ID?.trim(),
-  credentials: {
-    client_email: process.env.FIREBASE_CLIENT_EMAIL?.trim(),
-    private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n").trim(),
-  },
-});
+const DEFAULT_PRODUCTION_WORDPRESS_GATEWAY =
+  "https://wordpress-egress-gateway-prod-aoosgrwosq-uc.a.run.app";
+let gatewayAuthClient: GoogleAuth | null = null;
+
+interface WordPressGatewayDeploymentResponse {
+  success?: boolean;
+  code?: string;
+  error?: string;
+  targetWpOrigin?: string;
+  publication_id?: unknown;
+  page_id?: unknown;
+  bookshelf_page_id?: unknown;
+  url?: unknown;
+  bookshelf_url?: unknown;
+}
+
+function getGatewayAuthClient(): GoogleAuth {
+  if (gatewayAuthClient) return gatewayAuthClient;
+
+  const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY
+    ?.replace(/\\n/g, "\n")
+    .trim();
+  if (!projectId || !clientEmail || !privateKey) {
+    throw new WordPressDeploymentError(
+      503,
+      "The secure WordPress deployment service is not configured."
+    );
+  }
+
+  gatewayAuthClient = new GoogleAuth({
+    projectId,
+    credentials: {
+      client_email: clientEmail,
+      private_key: privateKey,
+    },
+  });
+  return gatewayAuthClient;
+}
+
+function resolveWordPressGatewayUrl(): string {
+  const configured =
+    process.env.WORDPRESS_EGRESS_GATEWAY_URL?.trim() ||
+    (process.env.NODE_ENV === "production"
+      ? DEFAULT_PRODUCTION_WORDPRESS_GATEWAY
+      : "");
+  if (!configured) {
+    throw new WordPressDeploymentError(
+      503,
+      "The secure WordPress deployment service is unavailable."
+    );
+  }
+
+  try {
+    const parsed = new URL(configured);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new Error("invalid gateway URL");
+    }
+    return parsed.origin;
+  } catch {
+    throw new WordPressDeploymentError(
+      503,
+      "The secure WordPress deployment service is misconfigured."
+    );
+  }
+}
 
 interface ProductBody {
   bookTitle?: unknown;
@@ -269,12 +334,14 @@ async function deployPublicationToWordPress(
     .get();
   const connection = connectionSnapshot.data() || {};
   const targetWpOrigin = normalizeOrigin(connection.targetWpOrigin);
+  const wpUsername = clean(connection.wpUsername);
   const secretCredentialRef = clean(connection.secretCredentialRef);
   if (
     !connectionSnapshot.exists ||
     connection.status !== "active" ||
     connection.verificationStatus !== "verified" ||
     !targetWpOrigin ||
+    !wpUsername ||
     !/^projects\/[0-9]+\/secrets\/WP_CREDS_[A-Za-z0-9_-]+\/versions\/latest$/.test(
       secretCredentialRef
     )
@@ -285,74 +352,23 @@ async function deployPublicationToWordPress(
     );
   }
 
-  let secretResponse:
-    | [{ payload?: { data?: Uint8Array | string | null } }]
-    | { payload?: { data?: Uint8Array | string | null } };
+  const gatewayUrl = resolveWordPressGatewayUrl();
+  let gatewayResponse: {
+    status: number;
+    data: WordPressGatewayDeploymentResponse;
+  };
   try {
-    secretResponse = (await secretManager.accessSecretVersion({
-      name: secretCredentialRef,
-    })) as typeof secretResponse;
-  } catch {
-    throw new WordPressDeploymentError(
-      503,
-      "Your WordPress connection is protected, but its credentials could not be accessed. Retry in a moment."
-    );
-  }
-
-  const secretVersion = Array.isArray(secretResponse)
-    ? secretResponse[0]
-    : secretResponse;
-  const encodedSecret = secretVersion?.payload?.data;
-  if (!encodedSecret) {
-    throw new WordPressDeploymentError(
-      503,
-      "Your saved WordPress connection is incomplete. Reconnect the site and retry."
-    );
-  }
-
-  const secretBuffer = Buffer.isBuffer(encodedSecret)
-    ? Buffer.from(encodedSecret)
-    : typeof encodedSecret === "string"
-      ? Buffer.from(encodedSecret, "base64")
-      : Buffer.from(encodedSecret);
-
-  try {
-    const stored = JSON.parse(secretBuffer.toString("utf8")) as {
-      wordpressUrl?: unknown;
-      username?: unknown;
-      applicationPassword?: unknown;
-    };
-    const storedOrigin = normalizeOrigin(stored.wordpressUrl);
-    const username = clean(stored.username);
-    const applicationPassword = clean(stored.applicationPassword);
-    if (
-      storedOrigin !== targetWpOrigin ||
-      !username ||
-      !applicationPassword
-    ) {
-      throw new WordPressDeploymentError(
-        503,
-        "Your saved WordPress connection does not match this author workspace. Reconnect the site and retry."
-      );
-    }
-
-    const authorization = Buffer.from(
-      `${username}:${applicationPassword}`,
-      "utf8"
-    ).toString("base64");
-    let response: Response;
-    try {
-      response = await fetch(
-        `${targetWpOrigin}/wp-json/kobai/v1/publish-vault`,
-        {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            Authorization: `Basic ${authorization}`,
-            "Content-Type": "application/json",
-            "User-Agent": "KOBA-I-Dashboard/2.0",
-          },
-          body: JSON.stringify({
+    const authenticatedClient =
+      await getGatewayAuthClient().getIdTokenClient(gatewayUrl);
+    const response =
+      await authenticatedClient.request<WordPressGatewayDeploymentResponse>({
+        url: `${gatewayUrl}/publish-vault`,
+        method: "POST",
+        data: {
+          studioKey: input.studioKey,
+          targetWpOrigin,
+          wpUsername,
+          publication: {
             assetKey: input.assetKey,
             bookTitle: input.title,
             bookSlug: input.assetKey,
@@ -368,72 +384,68 @@ async function deployPublicationToWordPress(
             chapters: input.chapters,
             studioTracks: input.chapters,
             ebookPayload: input.ebookPayload,
-          }),
-          cache: "no-store",
-          redirect: "manual",
-          signal: AbortSignal.timeout(20_000),
-        }
-      );
-    } catch (error) {
-      console.error("WordPress publication deployment request failed.", {
-        assetKey: input.assetKey,
-        targetWpOrigin,
-        reason: error instanceof Error ? error.message : "Unknown network failure",
+          },
+        },
+        timeout: 25_000,
+        validateStatus: () => true,
       });
-      throw new WordPressDeploymentError(
-        502,
-        "KOBA-I could not reach your saved WordPress address. Test the connection in Setup & Connections, then retry Save & Sync."
-      );
-    }
-
-    const payload = (await response.json().catch(() => null)) as
-      | {
-          success?: unknown;
-          message?: unknown;
-          url?: unknown;
-          page_id?: unknown;
-          publication_id?: unknown;
-          bookshelf_page_id?: unknown;
-          bookshelf_url?: unknown;
-        }
-      | null;
-    if (!response.ok || payload?.success !== true) {
-      throw new WordPressDeploymentError(
-        502,
-        clean(payload?.message) ||
-          `WordPress rejected the publication deployment (HTTP ${response.status}).`
-      );
-    }
-
-    const publicationId = positiveInteger(payload.publication_id);
-    const pageId = positiveInteger(payload.page_id);
-    const bookshelfPageId = positiveInteger(payload.bookshelf_page_id);
-    const publicationUrl = clean(payload.url);
-    const bookshelfUrl = clean(payload.bookshelf_url);
-    if (
-      !publicationId ||
-      !pageId ||
-      !bookshelfPageId ||
-      !publicationUrl ||
-      !bookshelfUrl
-    ) {
-      throw new WordPressDeploymentError(
-        502,
-        "WordPress responded, but did not confirm every required publication page."
-      );
-    }
-
-    return {
-      targetWpOrigin,
-      publicationId,
-      pageId,
-      bookshelfPageId,
-      publicationUrl,
-      bookshelfUrl,
+    gatewayResponse = {
+      status: response.status,
+      data: response.data || {},
     };
-  } finally {
-    secretBuffer.fill(0);
+  } catch (error) {
+    console.error("WordPress publication gateway request failed.", {
+      assetKey: input.assetKey,
+      targetWpOrigin,
+      reason: error instanceof Error ? error.message : "Unknown network failure",
+    });
+    throw new WordPressDeploymentError(
+      502,
+      "KOBA-I could not reach the secure WordPress deployment service. Retry Save & Sync."
+    );
   }
+
+  const payload = gatewayResponse.data;
+  if (
+    gatewayResponse.status < 200 ||
+    gatewayResponse.status >= 300 ||
+    payload.success !== true
+  ) {
+    throw new WordPressDeploymentError(
+      gatewayResponse.status === 409 ? 409 : 502,
+      clean(payload.error) ||
+        `The secure WordPress service rejected the deployment (HTTP ${gatewayResponse.status}).`
+    );
+  }
+
+  const confirmedOrigin = normalizeOrigin(payload.targetWpOrigin);
+  const publicationId = positiveInteger(payload.publication_id);
+  const pageId = positiveInteger(payload.page_id);
+  const bookshelfPageId = positiveInteger(payload.bookshelf_page_id);
+  const publicationUrl = clean(payload.url);
+  const bookshelfUrl = clean(payload.bookshelf_url);
+  if (
+    confirmedOrigin !== targetWpOrigin ||
+    !publicationId ||
+    !pageId ||
+    !bookshelfPageId ||
+    !publicationUrl ||
+    !bookshelfUrl
+  ) {
+    throw new WordPressDeploymentError(
+      502,
+      "The secure WordPress service responded, but did not confirm every required publication page."
+    );
+  }
+
+  return {
+    targetWpOrigin,
+    publicationId,
+    pageId,
+    bookshelfPageId,
+    publicationUrl,
+    bookshelfUrl,
+  };
 }
 
 class WordPressDeploymentError extends Error {
