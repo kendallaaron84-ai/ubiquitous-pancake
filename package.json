@@ -53,6 +53,7 @@
     "firebase": "^12.13.0",
     "firebase-admin": "^14.0.0",
     "geist": "latest",
+    "google-auth-library": "^10.7.0",
     "input-otp": "1.4.2",
     "jose": "4.15.5",
     "lucide-react": "^0.545.0",

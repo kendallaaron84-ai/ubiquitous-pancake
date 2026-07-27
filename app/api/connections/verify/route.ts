@@ -1,4 +1,5 @@
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
+import { GoogleAuth } from "google-auth-library";
 import { createHash } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { cookies } from "next/headers";
@@ -27,6 +28,7 @@ export const runtime = "nodejs";
 export const maxDuration = 20;
 
 let secretManagerClient: SecretManagerServiceClient | null = null;
+let gatewayAuthClient: GoogleAuth | null = null;
 const DEFAULT_PRODUCTION_WORDPRESS_GATEWAY =
   "https://wordpress-egress-gateway-prod-aoosgrwosq-uc.a.run.app";
 
@@ -74,6 +76,30 @@ function getSecretManagerClient(): SecretManagerServiceClient {
   return secretManagerClient;
 }
 
+function getGatewayAuthClient(): GoogleAuth {
+  if (gatewayAuthClient) return gatewayAuthClient;
+
+  const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY
+    ?.replace(/\\n/g, "\n")
+    .trim();
+
+  if (!projectId || !clientEmail || !privateKey) {
+    throw new Error("Cloud Run gateway authentication is not configured.");
+  }
+
+  gatewayAuthClient = new GoogleAuth({
+    projectId,
+    credentials: {
+      client_email: clientEmail,
+      private_key: privateKey,
+    },
+  });
+
+  return gatewayAuthClient;
+}
+
 function resolveWordPressGatewayUrl(): string {
   const configured =
     process.env.WORDPRESS_EGRESS_GATEWAY_URL?.trim() ||
@@ -103,7 +129,6 @@ function resolveWordPressGatewayUrl(): string {
 }
 
 async function verifyAndProvisionThroughGateway(
-  secretManager: SecretManagerServiceClient,
   gatewayUrl: string,
   input: {
     studioKey: string;
@@ -119,7 +144,7 @@ async function verifyAndProvisionThroughGateway(
 
   try {
     const authenticatedClient =
-      await secretManager.auth.getIdTokenClient(gatewayUrl);
+      await getGatewayAuthClient().getIdTokenClient(gatewayUrl);
     const response = await authenticatedClient.request<WordPressGatewayResponse>(
       {
         url: `${gatewayUrl}/verify-wordpress`,
@@ -353,7 +378,6 @@ export async function POST(request: Request) {
       };
       verified = gatewayUrl
         ? await verifyAndProvisionThroughGateway(
-            secretManager,
             gatewayUrl,
             connectionInput
           )

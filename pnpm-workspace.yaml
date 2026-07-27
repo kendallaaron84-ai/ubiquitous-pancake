@@ -2,6 +2,7 @@ allowBuilds:
   '@ampproject/toolbox-optimizer': true
   '@firebase/util': true
   '@google/genai': true
+  '@sentry/cli': set this to true or false
   'es5-ext': true
   'protobufjs': true
   'sharp': true
