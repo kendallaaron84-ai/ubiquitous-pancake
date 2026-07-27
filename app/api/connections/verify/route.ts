@@ -18,6 +18,7 @@ import {
   verifyAndProvisionWordPressConnection,
   verifyStoredWordPressConnection,
   WordPressConnectionDiagnosticError,
+  type VerifiedWordPressConnection,
   type WordPressConnectionDiagnosticCode,
 } from "@/core/security/wordpress-connection";
 
@@ -25,13 +26,181 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 20;
 
-const secretManager = new SecretManagerServiceClient({
-  projectId: process.env.FIREBASE_PROJECT_ID?.trim(),
-  credentials: {
-    client_email: process.env.FIREBASE_CLIENT_EMAIL?.trim(),
-    private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n").trim(),
-  },
-});
+let secretManagerClient: SecretManagerServiceClient | null = null;
+const DEFAULT_PRODUCTION_WORDPRESS_GATEWAY =
+  "https://wordpress-egress-gateway-prod-aoosgrwosq-uc.a.run.app";
+
+interface WordPressGatewayResponse {
+  success?: boolean;
+  code?: string;
+  error?: string;
+  targetWpOrigin?: string;
+  wpUsername?: string;
+  secretCredentialRef?: string;
+}
+
+function getSecretManagerClient(): SecretManagerServiceClient {
+  if (secretManagerClient) return secretManagerClient;
+
+  const projectId =
+    process.env.CONNECTION_SECRET_PROJECT_ID?.trim() ||
+    process.env.FIREBASE_PROJECT_ID?.trim();
+
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY
+    ?.replace(/\\n/g, "\n")
+    .trim();
+
+  const missing = [
+    !projectId && "CONNECTION_SECRET_PROJECT_ID/FIREBASE_PROJECT_ID",
+    !clientEmail && "FIREBASE_CLIENT_EMAIL",
+    !privateKey && "FIREBASE_PRIVATE_KEY",
+  ].filter(Boolean);
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Secret Manager client configuration is incomplete: ${missing.join(", ")}`
+    );
+  }
+
+  secretManagerClient = new SecretManagerServiceClient({
+    projectId,
+    credentials: {
+      client_email: clientEmail,
+      private_key: privateKey,
+    },
+  });
+
+  return secretManagerClient;
+}
+
+function resolveWordPressGatewayUrl(): string {
+  const configured =
+    process.env.WORDPRESS_EGRESS_GATEWAY_URL?.trim() ||
+    (process.env.NODE_ENV === "production"
+      ? DEFAULT_PRODUCTION_WORDPRESS_GATEWAY
+      : "");
+  if (!configured) return "";
+
+  let parsed: URL;
+  try {
+    parsed = new URL(configured);
+  } catch {
+    throw new Error("WORDPRESS_EGRESS_GATEWAY_URL is invalid.");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error(
+      "WORDPRESS_EGRESS_GATEWAY_URL must be a public HTTPS service URL."
+    );
+  }
+  return parsed.origin;
+}
+
+async function verifyAndProvisionThroughGateway(
+  secretManager: SecretManagerServiceClient,
+  gatewayUrl: string,
+  input: {
+    studioKey: string;
+    targetWpOrigin: unknown;
+    wpUsername: unknown;
+    wpAppPassword: unknown;
+  }
+): Promise<VerifiedWordPressConnection> {
+  let gatewayResponse: {
+    status: number;
+    data: WordPressGatewayResponse;
+  };
+
+  try {
+    const authenticatedClient =
+      await secretManager.auth.getIdTokenClient(gatewayUrl);
+    const response = await authenticatedClient.request<WordPressGatewayResponse>(
+      {
+        url: `${gatewayUrl}/verify-wordpress`,
+        method: "POST",
+        data: input,
+        timeout: 20_000,
+        validateStatus: () => true,
+      }
+    );
+    gatewayResponse = {
+      status: response.status,
+      data: response.data || {},
+    };
+  } catch (error: unknown) {
+    console.error("[WordPress Connection] Egress gateway request failed.", {
+      name: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw new WordPressConnectionDiagnosticError(
+      "NETWORK_TIMEOUT_TLS",
+      "KOBA-I could not reach the secure WordPress connection service. Please retry."
+    );
+  }
+
+  const payload = gatewayResponse.data;
+  if (gatewayResponse.status < 200 || gatewayResponse.status >= 300) {
+    const gatewayCode = clean(payload.code);
+    const publicMessage =
+      clean(payload.error) ||
+      "KOBA-I could not complete the secure WordPress connection.";
+    const diagnosticCodes = new Set<WordPressConnectionDiagnosticCode>([
+      "INVALID_CREDENTIALS",
+      "INSUFFICIENT_PERMISSIONS",
+      "FIREWALL_CHALLENGE",
+      "NETWORK_TIMEOUT_TLS",
+      "REST_API_DISABLED",
+      "VAULT_PROVISION_FAIL",
+    ]);
+
+    if (
+      diagnosticCodes.has(gatewayCode as WordPressConnectionDiagnosticCode)
+    ) {
+      throw new WordPressConnectionDiagnosticError(
+        gatewayCode as WordPressConnectionDiagnosticCode,
+        publicMessage,
+        { httpStatus: gatewayResponse.status }
+      );
+    }
+    if (gatewayResponse.status === 401 || gatewayResponse.status === 403) {
+      throw new WordPressConnectionDiagnosticError(
+        "VAULT_PROVISION_FAIL",
+        "KOBA-I could not authorize the secure WordPress connection service. Please retry."
+      );
+    }
+    throw new Error(publicMessage);
+  }
+
+  const targetWpOrigin = clean(payload.targetWpOrigin);
+  const wpUsername = clean(payload.wpUsername);
+  const secretCredentialRef = clean(payload.secretCredentialRef);
+  if (
+    payload.success !== true ||
+    !targetWpOrigin ||
+    !wpUsername ||
+    !/^projects\/[0-9]+\/secrets\/WP_CREDS_[A-Za-z0-9_-]+\/versions\/latest$/.test(
+      secretCredentialRef
+    )
+  ) {
+    throw new WordPressConnectionDiagnosticError(
+      "VAULT_PROVISION_FAIL",
+      "Your site was verified, but secure setup returned an incomplete result. Please retry."
+    );
+  }
+
+  return {
+    studioKey: clean(input.studioKey),
+    targetWpOrigin,
+    wpUsername,
+    secretCredentialRef,
+  };
+}
 
 type AuthorRecord = Record<string, unknown>;
 
@@ -59,7 +228,7 @@ export async function GET(request: Request) {
         throw new ConnectionRouteError(409, "Connect your WordPress site before testing it.");
       }
       try {
-        await verifyStoredWordPressConnection(secretManager, {
+        await verifyStoredWordPressConnection(getSecretManagerClient(), {
           targetWpOrigin: connection.targetWpOrigin,
           wpUsername: connection.wpUsername,
           secretCredentialRef: connection.secretCredentialRef,
@@ -108,7 +277,7 @@ export async function GET(request: Request) {
     );
   } catch (error: unknown) {
     const err = error as Record<string, unknown> | null;
-    console.error("❌ WordPress POST Connection Failed:", {
+    console.error("[WordPress Connection] Status request failed.", {
       message: err instanceof Error ? err.message : String(error),
       code: err?.code || null,
       stack: err instanceof Error ? err.stack : undefined,
@@ -135,18 +304,64 @@ export async function POST(request: Request) {
     }
     const requestedOrigin = safeOrigin(body.targetWpOrigin ?? body.targetUrl);
 
-    let verified;
+    let configuration: ReturnType<
+      typeof loadWordPressConnectionConfiguration
+    >;
     try {
-      verified = await verifyAndProvisionWordPressConnection(
-        secretManager,
-        loadWordPressConnectionConfiguration(),
-        {
-          studioKey: context.studioKey,
-          targetWpOrigin: body.targetWpOrigin ?? body.targetUrl,
-          wpUsername: body.wpUsername,
-          wpAppPassword: body.wpAppPassword,
-        }
+      configuration = loadWordPressConnectionConfiguration();
+      console.info("[WordPress Connection] Configuration loaded.", {
+        secretProjectId: configuration.secretProjectId,
+        secretProjectNumber: configuration.secretProjectNumber,
+        workerServiceAccount: configuration.workerServiceAccount,
+        credentialServiceAccount:
+          process.env.FIREBASE_CLIENT_EMAIL?.trim() || "missing",
+      });
+    } catch (error: unknown) {
+      console.error("[WordPress Connection] Configuration failed.", {
+        message: error instanceof Error ? error.message : String(error),
+        hasSecretProjectId: Boolean(
+          process.env.CONNECTION_SECRET_PROJECT_ID?.trim()
+        ),
+        hasSecretProjectNumber: Boolean(
+          process.env.CONNECTION_SECRET_PROJECT_NUMBER?.trim()
+        ),
+        hasWorkerServiceAccount: Boolean(
+          process.env.CONTENT_WORKER_SERVICE_ACCOUNT?.trim()
+        ),
+        hasFirebaseClientEmail: Boolean(
+          process.env.FIREBASE_CLIENT_EMAIL?.trim()
+        ),
+        hasFirebasePrivateKey: Boolean(
+          process.env.FIREBASE_PRIVATE_KEY?.trim()
+        ),
+      });
+      throw new ConnectionRouteError(
+        503,
+        "KOBA-I secure connection storage is not configured correctly."
       );
+    }
+
+    let verified: VerifiedWordPressConnection;
+    try {
+      const secretManager = getSecretManagerClient();
+      const gatewayUrl = resolveWordPressGatewayUrl();
+      const connectionInput = {
+        studioKey: context.studioKey,
+        targetWpOrigin: body.targetWpOrigin ?? body.targetUrl,
+        wpUsername: body.wpUsername,
+        wpAppPassword: body.wpAppPassword,
+      };
+      verified = gatewayUrl
+        ? await verifyAndProvisionThroughGateway(
+            secretManager,
+            gatewayUrl,
+            connectionInput
+          )
+        : await verifyAndProvisionWordPressConnection(
+            secretManager,
+            configuration,
+            connectionInput
+          );
     } catch (error: unknown) {
       if (error instanceof WordPressConnectionDiagnosticError) {
         throw await diagnosticRouteError(error, context, requestedOrigin);
@@ -155,7 +370,15 @@ export async function POST(request: Request) {
       if (isWordPressInputFailure(message)) {
         throw new ConnectionRouteError(400, message);
       }
-      console.error("Author WordPress secure connection setup failed.");
+      console.error("[WordPress Connection] Unexpected setup failure.", {
+        name: error instanceof Error ? error.name : "UnknownError",
+        message: error instanceof Error ? error.message : String(error),
+        code:
+          typeof error === "object" && error !== null && "code" in error
+            ? (error as { code?: unknown }).code
+            : null,
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       throw await diagnosticRouteError(
         new WordPressConnectionDiagnosticError(
           "VAULT_PROVISION_FAIL",

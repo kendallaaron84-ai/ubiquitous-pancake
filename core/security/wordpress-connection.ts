@@ -139,27 +139,44 @@ export async function verifyAndProvisionWordPressConnection(
     "utf8"
   );
 
+  let provisioningStage:
+    | "create_secret"
+    | "add_secret_version"
+    | "grant_worker_access" = "create_secret";
+
   try {
     await createSecretIfMissing(
       secretManager,
       configuration.secretProjectId,
       secretId
     );
+
+    provisioningStage = "add_secret_version";
     await secretManager.addSecretVersion({
       parent: secretResourceName,
       payload: { data: secretPayload },
     });
+
+    provisioningStage = "grant_worker_access";
     await grantWorkerSecretAccess(
       secretManager,
       secretResourceName,
       configuration.workerServiceAccount
     );
   } catch (error: unknown) {
-    console.error("❌ Secret Manager Provisioning Failed:", {
-      code: grpcStatusCode(error),
-      message: error instanceof Error ? error.message : String(error),
+    const grpcCode = grpcStatusCode(error);
+    const rawMessage =
+      error instanceof Error ? error.message : String(error);
+
+    console.error("[WordPress Connection] Secret Manager provisioning failed.", {
+      stage: provisioningStage,
+      grpcCode,
+      message: rawMessage.slice(0, 1_000),
       secretResourceName,
+      secretProjectId: configuration.secretProjectId,
+      workerServiceAccount: configuration.workerServiceAccount,
     });
+
     throw new WordPressConnectionDiagnosticError(
       "VAULT_PROVISION_FAIL",
       "Your site was verified, but secure setup could not finish. Please retry."
