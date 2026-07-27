@@ -90,7 +90,11 @@ export function loadWordPressConnectionConfiguration(
   if (!/^[0-9]{6,20}$/.test(secretProjectNumber)) {
     throw new Error("CONNECTION_SECRET_PROJECT_NUMBER is invalid.");
   }
-  if (!workerServiceAccount.endsWith(".iam.gserviceaccount.com")) {
+  if (
+    !/^[a-z0-9][a-z0-9._-]*@[a-z0-9][a-z0-9.-]*\.gserviceaccount\.com$/i.test(
+      workerServiceAccount
+    )
+  ) {
     throw new Error("CONTENT_WORKER_SERVICE_ACCOUNT is invalid.");
   }
 
