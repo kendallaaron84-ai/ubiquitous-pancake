@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { CheckCircle2, Link2, Loader2, ShieldCheck } from "lucide-react";
+import { FormEvent, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { CheckCircle2, Link2, Loader2, ShieldCheck, UserPlus } from "lucide-react";
 
 import Layout from "@/components/layout";
 
@@ -12,6 +13,11 @@ type FormState = {
   wpAppPassword: string;
 };
 
+type ProvisionFormState = {
+  authorName: string;
+  authorEmail: string;
+};
+
 const EMPTY_FORM: FormState = {
   studioKey: "",
   targetWpOrigin: "",
@@ -19,11 +25,107 @@ const EMPTY_FORM: FormState = {
   wpAppPassword: "",
 };
 
+const EMPTY_PROVISION_FORM: ProvisionFormState = {
+  authorName: "",
+  authorEmail: "",
+};
+
 export default function AdminConnectionsPage() {
+  const router = useRouter();
+  const [ownerCheckComplete, setOwnerCheckComplete] = useState(false);
+  const [provisionForm, setProvisionForm] = useState<ProvisionFormState>(EMPTY_PROVISION_FORM);
+  const [isProvisioning, setIsProvisioning] = useState(false);
+  const [provisionError, setProvisionError] = useState("");
+  const [provisionedAuthor, setProvisionedAuthor] = useState<{
+    studioKey: string;
+    welcomeEmailSent: boolean;
+    message: string;
+  } | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [verifiedOrigin, setVerifiedOrigin] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    fetch("/api/session", {
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Owner session unavailable.");
+        return response.json() as Promise<{ isOwner?: boolean }>;
+      })
+      .then((payload) => {
+        if (payload.isOwner !== true) {
+          router.replace("/products");
+          return;
+        }
+        setOwnerCheckComplete(true);
+      })
+      .catch((sessionError: unknown) => {
+        if (sessionError instanceof DOMException && sessionError.name === "AbortError") return;
+        router.replace("/products");
+      });
+
+    return () => controller.abort();
+  }, [router]);
+
+  async function provisionAuthor(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isProvisioning) return;
+
+    setIsProvisioning(true);
+    setProvisionError("");
+    setProvisionedAuthor(null);
+
+    try {
+      const response = await fetch("/api/admin/provision-author", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify(provisionForm),
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            success?: boolean;
+            error?: string;
+            message?: string;
+            studioKey?: string;
+            welcomeEmailSent?: boolean;
+          }
+        | null;
+
+      if (!response.ok || !payload?.success || !payload.studioKey) {
+        throw new Error(payload?.error || "The author workspace could not be provisioned.");
+      }
+
+      setProvisionedAuthor({
+        studioKey: payload.studioKey,
+        welcomeEmailSent: payload.welcomeEmailSent === true,
+        message: payload.message || "The author workspace is ready.",
+      });
+      setForm((current) => ({ ...current, studioKey: payload.studioKey || "" }));
+    } catch (submissionError: unknown) {
+      setProvisionError(
+        submissionError instanceof Error
+          ? submissionError.message
+          : "The author workspace could not be provisioned."
+      );
+    } finally {
+      setIsProvisioning(false);
+    }
+  }
+
+  function continueToConnection() {
+    document.getElementById("wordpress-connection")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+    window.setTimeout(() => document.getElementById("studioKey")?.focus(), 350);
+  }
 
   async function submitConnection(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -61,89 +163,221 @@ export default function AdminConnectionsPage() {
     }
   }
 
+  if (!ownerCheckComplete) {
+    return (
+      <Layout>
+        <main className="flex min-h-full items-center justify-center bg-[#1E2B53] text-white">
+          <Loader2 className="h-6 w-6 animate-spin text-[#EFB752]" aria-label="Confirming owner access" />
+        </main>
+      </Layout>
+    );
+  }
+
   return (
     <Layout>
-      <main className="min-h-full bg-[#1a2238] px-4 py-8 text-white sm:px-6 lg:px-10">
+      <main className="min-h-full bg-[#1E2B53] px-4 py-8 text-white sm:px-6 lg:px-10">
         <section className="mx-auto w-full max-w-2xl">
           <header className="mb-7">
-            <div className="mb-3 flex items-center gap-2 text-[#f6b63c]">
+            <div className="mb-3 flex items-center gap-2 text-[#EFB752]">
               <ShieldCheck className="h-5 w-5" aria-hidden="true" />
               <span className="text-xs font-bold uppercase tracking-[0.16em]">Owner control plane</span>
             </div>
-            <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Connect an author&apos;s WordPress site</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-slate-300">
-              Verify the site, protect its credentials, and bind it to one StudioKey.
+            <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Author Connections</h1>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-slate-200">
+              Provision an author workspace, then securely connect its WordPress site.
             </p>
           </header>
 
-          <form
-            onSubmit={submitConnection}
-            className="rounded-2xl border border-white/10 bg-[#222b45] p-5 shadow-[0_16px_40px_rgba(0,0,0,0.35)] sm:p-7"
-          >
-            <div className="grid gap-5">
-              <ConnectionField
-                id="studioKey"
-                label="StudioKey"
-                value={form.studioKey}
-                placeholder="Author's assigned StudioKey"
-                onChange={(value) => setForm((current) => ({ ...current, studioKey: value }))}
-              />
-              <ConnectionField
-                id="targetWpOrigin"
-                label="WordPress site"
-                type="url"
-                value={form.targetWpOrigin}
-                placeholder="https://author-site.com"
-                onChange={(value) => setForm((current) => ({ ...current, targetWpOrigin: value }))}
-              />
-              <ConnectionField
-                id="wpUsername"
-                label="WordPress username"
-                value={form.wpUsername}
-                autoComplete="username"
-                placeholder="WordPress account username"
-                onChange={(value) => setForm((current) => ({ ...current, wpUsername: value }))}
-              />
-              <ConnectionField
-                id="wpAppPassword"
-                label="WordPress Application Password"
-                type="password"
-                value={form.wpAppPassword}
-                autoComplete="new-password"
-                placeholder="Paste the Application Password"
-                onChange={(value) => setForm((current) => ({ ...current, wpAppPassword: value }))}
-              />
+          <section aria-labelledby="provision-author-heading" className="mb-8">
+            <div className="mb-4">
+              <h2 id="provision-author-heading" className="text-xl font-bold text-white">
+                Provision an Author Workspace
+              </h2>
+              <p className="mt-1 text-sm leading-6 text-slate-200">
+                Create or recover the author&apos;s StudioKey and send their welcome package.
+              </p>
             </div>
 
-            <p className="mt-5 text-xs leading-5 text-slate-400">
-              The password is tested once, stored in Google Secret Manager, and never returned to this screen.
-            </p>
-
-            {error ? (
-              <div role="alert" className="mt-5 rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                {error}
-              </div>
-            ) : null}
-
-            {verifiedOrigin ? (
-              <div role="status" className="mt-5 flex items-start gap-3 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                <span><strong>Connection verified.</strong> {verifiedOrigin} is active for this StudioKey.</span>
-              </div>
-            ) : null}
-
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-[#f97316] px-4 py-3 text-sm font-bold text-white shadow-md transition hover:bg-[#e06613] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f6b63c] focus-visible:ring-offset-2 focus-visible:ring-offset-[#222b45] disabled:cursor-not-allowed disabled:opacity-60"
+            <form
+              onSubmit={provisionAuthor}
+              className="rounded-2xl border border-[#EFB752]/20 bg-[#293A71] p-5 shadow-[0_16px_40px_rgba(0,0,0,0.28)] sm:p-7"
             >
-              {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Link2 className="h-4 w-4" aria-hidden="true" />}
-              {isSubmitting ? "Verifying connection…" : "Verify and save connection"}
-            </button>
-          </form>
+              <div className="grid gap-5 sm:grid-cols-2">
+                <ProvisionField
+                  id="authorName"
+                  label="Author name"
+                  value={provisionForm.authorName}
+                  placeholder="Author's published name"
+                  autoComplete="name"
+                  onChange={(value) => setProvisionForm((current) => ({ ...current, authorName: value }))}
+                />
+                <ProvisionField
+                  id="authorEmail"
+                  label="Author email"
+                  type="email"
+                  value={provisionForm.authorEmail}
+                  placeholder="author@example.com"
+                  autoComplete="email"
+                  onChange={(value) => setProvisionForm((current) => ({ ...current, authorEmail: value }))}
+                />
+              </div>
+
+              {provisionError ? (
+                <div role="alert" className="mt-5 rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+                  {provisionError}
+                </div>
+              ) : null}
+
+              {provisionedAuthor ? (
+                <div role="status" className="mt-5 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-4 text-sm text-emerald-50">
+                  <div className="flex items-start gap-3">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                    <div>
+                      <p className="font-semibold">{provisionedAuthor.message}</p>
+                      <p className="mt-2 break-all font-mono text-xs text-white">{provisionedAuthor.studioKey}</p>
+                      <p className="mt-2 text-xs text-emerald-50/80">
+                        {provisionedAuthor.welcomeEmailSent
+                          ? "The welcome package was sent to the author."
+                          : "The workspace is ready, but the welcome email was not confirmed."}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={continueToConnection}
+                    className="mt-4 inline-flex items-center gap-2 rounded-lg border border-emerald-300/30 bg-emerald-400/10 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-400/20"
+                  >
+                    <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    Continue to WordPress connection
+                  </button>
+                </div>
+              ) : null}
+
+              <button
+                type="submit"
+                disabled={isProvisioning}
+                className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-[#733026] px-4 py-3 text-sm font-bold text-[#EFB752] shadow-md transition hover:bg-[#61271f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#EFB752] focus-visible:ring-offset-2 focus-visible:ring-offset-[#293A71] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isProvisioning ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <UserPlus className="h-4 w-4" aria-hidden="true" />}
+                {isProvisioning ? "Provisioning author…" : "Provision author workspace"}
+              </button>
+            </form>
+          </section>
+
+          <section id="wordpress-connection" aria-labelledby="wordpress-connection-heading" className="scroll-mt-6">
+            <div className="mb-4">
+              <h2 id="wordpress-connection-heading" className="text-xl font-bold text-white">
+                Connect an Author&apos;s WordPress Site
+              </h2>
+              <p className="mt-1 text-sm leading-6 text-slate-200">
+                Verify the site, protect its credentials, and bind it to one StudioKey.
+              </p>
+            </div>
+
+            <form
+              onSubmit={submitConnection}
+              className="rounded-2xl border border-[#EFB752]/20 bg-[#293A71] p-5 shadow-[0_16px_40px_rgba(0,0,0,0.28)] sm:p-7"
+            >
+              <div className="grid gap-5">
+                <ConnectionField
+                  id="studioKey"
+                  label="StudioKey"
+                  value={form.studioKey}
+                  placeholder="Author's assigned StudioKey"
+                  onChange={(value) => setForm((current) => ({ ...current, studioKey: value }))}
+                />
+                <ConnectionField
+                  id="targetWpOrigin"
+                  label="WordPress site"
+                  type="url"
+                  value={form.targetWpOrigin}
+                  placeholder="https://author-site.com"
+                  onChange={(value) => setForm((current) => ({ ...current, targetWpOrigin: value }))}
+                />
+                <ConnectionField
+                  id="wpUsername"
+                  label="WordPress username"
+                  value={form.wpUsername}
+                  autoComplete="username"
+                  placeholder="WordPress account username"
+                  onChange={(value) => setForm((current) => ({ ...current, wpUsername: value }))}
+                />
+                <ConnectionField
+                  id="wpAppPassword"
+                  label="WordPress Application Password"
+                  type="password"
+                  value={form.wpAppPassword}
+                  autoComplete="new-password"
+                  placeholder="Paste the Application Password"
+                  onChange={(value) => setForm((current) => ({ ...current, wpAppPassword: value }))}
+                />
+              </div>
+
+              <p className="mt-5 text-xs leading-5 text-slate-300">
+                The password is tested once, stored in Google Secret Manager, and never returned to this screen.
+              </p>
+
+              {error ? (
+                <div role="alert" className="mt-5 rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+                  {error}
+                </div>
+              ) : null}
+
+              {verifiedOrigin ? (
+                <div role="status" className="mt-5 flex items-start gap-3 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-50">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span><strong>Connection verified.</strong> {verifiedOrigin} is active for this StudioKey.</span>
+                </div>
+              ) : null}
+
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-[#f97316] px-4 py-3 text-sm font-bold text-white shadow-md transition hover:bg-[#e06613] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#EFB752] focus-visible:ring-offset-2 focus-visible:ring-offset-[#293A71] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Link2 className="h-4 w-4" aria-hidden="true" />}
+                {isSubmitting ? "Verifying connection…" : "Verify and save connection"}
+              </button>
+            </form>
+          </section>
         </section>
       </main>
     </Layout>
+  );
+}
+
+function ProvisionField({
+  id,
+  label,
+  value,
+  placeholder,
+  onChange,
+  type = "text",
+  autoComplete,
+}: {
+  id: keyof ProvisionFormState;
+  label: string;
+  value: string;
+  placeholder: string;
+  onChange(value: string): void;
+  type?: "text" | "email";
+  autoComplete?: string;
+}) {
+  return (
+    <label htmlFor={id} className="grid gap-2 text-sm font-semibold text-white">
+      {label}
+      <input
+        id={id}
+        name={id}
+        type={type}
+        required
+        value={value}
+        autoComplete={autoComplete}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded-lg border border-[#5b6d9e] bg-[#151d35] px-3 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-[#EFB752] focus:ring-2 focus:ring-[#EFB752]/30"
+      />
+    </label>
   );
 }
 
@@ -165,7 +399,7 @@ function ConnectionField({
   autoComplete?: string;
 }) {
   return (
-    <label htmlFor={id} className="grid gap-2 text-sm font-semibold text-slate-100">
+    <label htmlFor={id} className="grid gap-2 text-sm font-semibold text-white">
       {label}
       <input
         id={id}
@@ -176,7 +410,7 @@ function ConnectionField({
         autoComplete={autoComplete}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-lg border border-slate-600 bg-[#131826] px-3 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[#f97316] focus:ring-2 focus:ring-[#f97316]/30"
+        className="w-full rounded-lg border border-[#5b6d9e] bg-[#151d35] px-3 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-[#f97316] focus:ring-2 focus:ring-[#f97316]/30"
       />
     </label>
   );

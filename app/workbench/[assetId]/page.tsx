@@ -7,6 +7,7 @@ import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, Shield
 import Link from "next/link";
 import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
 import { toast } from "@/components/ui/use-toast";
+import { ModeToggle } from "@/components/elements/mode-toggle";
 
 // 🛠️ THEME-RESPONSIVE TOOLTIP
 const Tooltip = ({ text, children }: { text: string, children: React.ReactNode }) => {
@@ -227,10 +228,10 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   }
 
   return (
-    <div className="flex h-screen bg-slate-50 dark:bg-[#0b0f19] text-slate-900 dark:text-slate-200 overflow-hidden font-sans transition-colors duration-300 relative">
+    <div className="flex h-screen bg-[#f4f7ff] dark:bg-[#1E2B53] text-[#1E2B53] dark:text-white overflow-hidden font-sans transition-colors duration-300 relative">
       
       {/* ⬅️ LEFT PANEL: Manuscript Navigation */}
-      <div className="w-64 bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-[#7C2B22]/30 flex flex-col transition-colors duration-300 shrink-0">
+      <div className="w-64 bg-[#f4f7ff] dark:bg-[#1E2B53] border-r border-[#d7e0f5] dark:border-[#293A71] flex flex-col transition-colors duration-300 shrink-0">
         <div className="p-4 border-b border-slate-200 dark:border-[#7C2B22]/30 flex items-center gap-3">
           <Link href="/products" className="p-1.5 bg-slate-100 dark:bg-[#7C2B22]/20 rounded-md hover:bg-slate-200 dark:hover:bg-[#7C2B22]/40 transition-colors">
             <ChevronLeft className="w-4 h-4 text-slate-500 dark:text-[#F9B437]" />
@@ -262,9 +263,11 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
       </div>
 
       {/* ⏺️ CENTER PANEL: The Distraction-Free Canvas */}
-      <div className="flex-1 flex flex-col relative">
+      <div className="flex-1 flex flex-col relative bg-white dark:bg-[#293A71] transition-colors duration-300">
         <div className="absolute top-0 w-full p-4 flex justify-end gap-3 z-10 pointer-events-none">
           <div className="pointer-events-auto flex gap-2">
+
+            <ModeToggle />
 
             <button 
               onClick={() => setAiPanelOpen(!aiPanelOpen)}
@@ -293,7 +296,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
                 newChapters[activeChapterIndex].title = e.target.value;
                 setBookData({ ...bookData, chapters: newChapters });
               }}
-              className="w-full bg-transparent text-3xl font-bold text-slate-900 dark:text-[#F9B437] border-none outline-none focus:ring-0 placeholder-slate-400 dark:placeholder-[#F9B437]/30 transition-colors"
+              className="w-full bg-transparent text-3xl font-bold text-[#1E2B53] dark:text-white border-none outline-none focus:ring-0 placeholder-slate-400 dark:placeholder-white/40 transition-colors"
               placeholder="Chapter Title"
             />
             <textarea
@@ -304,7 +307,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
                 newChapters[activeChapterIndex].textContent = e.target.value;
                 setBookData({ ...bookData, chapters: newChapters });
               }}
-              className="w-full h-[60vh] bg-transparent text-lg text-slate-700 dark:text-[#F9B437] border-none outline-none focus:ring-0 resize-none leading-relaxed font-serif placeholder-slate-400 dark:placeholder-[#F9B437]/20 transition-colors"
+              className="w-full h-[60vh] bg-transparent text-lg text-[#293A71] dark:text-white border-none outline-none focus:ring-0 resize-none leading-relaxed font-serif placeholder-slate-400 dark:placeholder-white/40 transition-colors"
               placeholder="Drafting continues..."
             />
           </div>
@@ -314,7 +317,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
       {/* ➡️ RIGHT PANEL: Gemini AI Suite */}
       {/* ➡️ RIGHT PANEL: Gemini AI Suite */}
       {aiPanelOpen && (
-        <div className="w-[340px] shrink-0 overflow-x-hidden bg-white dark:bg-slate-950 border-l border-slate-200 dark:border-[#7C2B22]/30 flex flex-col animate-in slide-in-from-right-8 duration-300 transition-colors">
+        <div className="w-[340px] shrink-0 overflow-x-hidden bg-[#f4f7ff] dark:bg-[#1E2B53] border-l border-[#d7e0f5] dark:border-[#293A71] flex flex-col animate-in slide-in-from-right-8 duration-300 transition-colors">
           <div className="p-5 border-b border-slate-200 dark:border-[#7C2B22]/30 flex items-center justify-between">
             <div className="flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-orange-500 dark:text-[#F9B437]" />
