@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { adminDb } from "@/core/firebase-admin";
+import { normalizePhoneE164 } from "@/core/security/crypto";
 
 export const dynamic = "force-dynamic";
 
@@ -49,8 +50,24 @@ export async function POST(request: Request) {
 
     console.log(`🎯 Resolved Parameters -> Phone: ${finalPhone}, Asset: ${finalAssetId}, Key: ${finalStudioKey}`);
 
-    // Build unique multi-tenant document reference path
-    const normalizedPhone = finalPhone.replace(/\D/g, ""); 
+    let phoneE164: string;
+
+    try {
+      phoneE164 = normalizePhoneE164(String(finalPhone));
+    } catch {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Enter a complete phone number in E.164 format, for example +12106878982.",
+        },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+
+    // Build unique multi-tenant document reference path. Preserve the
+    // existing digits-only identifiers while sending canonical E.164 to Twilio.
+    const normalizedPhone = phoneE164.slice(1);
     const compositeId = `${finalStudioKey}_${finalAssetId}_${normalizedPhone}`;
     
     const entitlementRef = adminDb.collection("entitlements").doc(compositeId);
@@ -95,7 +112,7 @@ export async function POST(request: Request) {
 
     const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
     const twilioParams = new URLSearchParams({
-        To: `+${normalizedPhone}`,
+        To: phoneE164,
         From: twilioNumber,
         Body: `Your KOBA-I Audio verification code is: ${otpCode}. It expires in 10 minutes.`
     });

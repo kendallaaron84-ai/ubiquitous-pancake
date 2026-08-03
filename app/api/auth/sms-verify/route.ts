@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb } from "@/core/firebase-admin";
-import { hmacHex } from "@/core/security/crypto";
+import { hmacHex, normalizePhoneE164 } from "@/core/security/crypto";
 import { signReaderToken } from "@/core/security/reader-token";
 import { bindReaderEntitlements } from "@/core/security/reader-access";
 import { FieldValue } from "firebase-admin/firestore";
@@ -10,6 +10,8 @@ export const dynamic = "force-dynamic";
 
 const ALLOWED_ORIGINS = new Set([
   "http://koba-dev.local",
+  "http://jubilee-author-1.local",
+  "https://jubilee-author-1.local",
   "https://audio.koba-i.com",
   "https://www.audio.koba-i.com",
 ]);
@@ -75,17 +77,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const normalizedPhone = rawPhone.replace(/\D/g, "");
+    let phoneE164: string;
 
-    if (normalizedPhone.length < 10) {
+    try {
+      phoneE164 = normalizePhoneE164(rawPhone);
+    } catch {
       return NextResponse.json(
         {
           success: false,
-          error: "Malformed Input: Invalid phone number.",
+          error:
+            "Enter a complete phone number in E.164 format, for example +12106878982.",
         },
         { status: 400, headers: responseHeaders }
       );
     }
+
+    // Existing entitlement and reader-binding records use the digits-only
+    // form. E.164 validation happens first so the country code is guaranteed.
+    const normalizedPhone = phoneE164.slice(1);
 
     const entitlementId =
       `${studioKey}_${assetId}_${normalizedPhone}`;
