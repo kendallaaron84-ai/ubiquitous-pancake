@@ -1,0 +1,13 @@
+# Ignore local device syncing and backups
+CrossDevice/
+CrossDevice/**
+**Note10+**
+
+# Ignore standard heavy folders
+node_modules/
+.git/
+.gitignore
+
+# Ignore operating system artifacts
+.DS_Store
+Thumbs.db
