@@ -14,12 +14,13 @@ import {
   startAt,
   where,
 } from "firebase/firestore";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
+import { getAuth, onAuthStateChanged, type User } from "firebase/auth";
 
 import Layout from "@/components/layout";
 import { AuthorIntakeForm } from "@/components/author-intake-form";
 import { BrandProfileModal } from "@/components/brand-profile-modal";
 import { AdminControlsModal } from "@/components/admin-controls-modal";
+import { NexusKnowledgePanel } from "@/components/nexus-knowledge-panel";
 import { BlogEngineGateModal } from "@/components/modals/BlogEngineGateModal";
 import {
   AuthorPipelineList,
@@ -52,7 +53,7 @@ export default function NexusEnginePage() {
 
   useEffect(() => {
     const auth = getAuth();
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, (user: User | null) => {
       setCurrentUserEmail(user?.email || null);
       setPipelineItems([]);
       setPageNumber(1);
@@ -213,10 +214,10 @@ export default function NexusEnginePage() {
       <div className="p-6 space-y-8 max-w-7xl mx-auto animate-in fade-in duration-300">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">
-            KOBA-I Nexus Engine
+            Nexus SEO Engine
           </h1>
           <p className="text-sm text-muted-foreground">
-            Create blog drafts and follow each one through production.
+            Create grounded SEO drafts and follow each one through production.
           </p>
         </div>
 
@@ -254,10 +255,12 @@ export default function NexusEnginePage() {
           </div>
         </div>
 
+        <NexusKnowledgePanel />
+
         <div className="space-y-3 pt-4">
           <div>
             <h2 className="text-xl font-bold tracking-tight text-white">
-              Live Blogs
+              SEO Draft Pipeline
             </h2>
             <p className="text-xs text-muted-foreground">
               Follow current drafts and review completed blog assets.
