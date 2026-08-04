@@ -17,7 +17,9 @@
     { "collectionGroup": "reader_purchase_items", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "purchaseId", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }] },
     { "collectionGroup": "reader_entitlements", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "readerUid", "order": "ASCENDING" }, { "fieldPath": "tenantId", "order": "ASCENDING" }, { "fieldPath": "assetId", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }] },
     { "collectionGroup": "reader_sessions", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "readerUid", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "expiresAt", "order": "ASCENDING" }] },
-    { "collectionGroup": "legacy_reader_migrations", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "updatedAt", "order": "ASCENDING" }] }
+    { "collectionGroup": "legacy_reader_migrations", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "updatedAt", "order": "ASCENDING" }] },
+    { "collectionGroup": "nexus_story_worlds", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "studioKey", "order": "ASCENDING" }, { "fieldPath": "authorId", "order": "ASCENDING" }] },
+    { "collectionGroup": "reference_guides", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "sourceSha256", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }] }
   ],
   "fieldOverrides": []
 }

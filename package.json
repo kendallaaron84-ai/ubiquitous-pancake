@@ -7,7 +7,8 @@
     "dev": "next dev",
     "lint": "next lint",
     "start": "next start",
-    "test:security": "node --test core/security/__tests__/*.test.mjs"
+    "test:security": "node --test core/security/__tests__/*.test.mjs",
+    "test:nexus": "node --test core/nexus/__tests__/*.test.mjs"
   },
   "dependencies": {
     "@google-cloud/secret-manager": "^6.2.0",
