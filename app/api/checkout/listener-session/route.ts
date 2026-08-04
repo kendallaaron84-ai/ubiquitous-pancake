@@ -214,6 +214,7 @@ export async function POST(request: Request) {
           product_data: {
             name: cleanString(productData.title) || "KOBA-I Publication",
             images: optionalStripeImage(productData),
+            metadata: { tenantId: tenantKey, assetId: assetKey },
           },
           unit_amount: amountInCents,
         },

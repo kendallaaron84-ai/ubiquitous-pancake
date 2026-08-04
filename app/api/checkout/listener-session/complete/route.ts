@@ -6,6 +6,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { decodeJwt } from "jose";
+import { processCanonicalReaderPurchase } from "@/core/security/reader-platform-stripe";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -262,6 +263,23 @@ export async function POST(request: Request) {
       throw new Error("READER_TOKEN_EXPIRATION_MISSING");
     }
 
+    const canonical = await processCanonicalReaderPurchase(
+      {
+        id: `reconcile:${session.id}`,
+        object: "event",
+        api_version: null,
+        created: session.created,
+        data: { object: session },
+        livemode: session.livemode,
+        pending_webhooks: 0,
+        request: null,
+        type: "checkout.session.completed",
+        account: paymentModel === "author_direct" ? connectedAccountId : undefined,
+      } as unknown as Stripe.Event,
+      session,
+      stripe
+    );
+
     return NextResponse.json(
       {
         success: true,
@@ -275,6 +293,7 @@ export async function POST(request: Request) {
           type: cleanString(session.metadata?.productType) ||
             (assetKey.startsWith("ebk_") ? "ebook" : "audiobook"),
         },
+        readerPlatformClaimId: canonical.claimId,
       },
       { status: 200, headers }
     );

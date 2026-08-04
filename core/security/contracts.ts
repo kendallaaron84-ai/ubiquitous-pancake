@@ -1,5 +1,7 @@
 import type { Timestamp } from "firebase-admin/firestore";
 
+export * from "./reader-contracts";
+
 export type PrincipalType =
   | "wordpress_user"
   | "platform_user"

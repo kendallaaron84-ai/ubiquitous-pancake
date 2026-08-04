@@ -1,0 +1,13 @@
+import { normalizeReaderEmail, requireNonEmpty } from "../reader-contracts/index.ts";
+import { appendReaderAuditEvent } from "./audit-service.ts";
+import { readerPlatformCollections, serverTimestamp, type ReaderPlatformDb } from "./service-support.ts";
+export interface UpsertReaderProfileInput { uid: string; email: string; emailVerified: boolean; displayName?: string | null; authProvider: "password" | "google" | "mixed"; correlationId: string; }
+export async function upsertReaderProfile(db: ReaderPlatformDb, input: UpsertReaderProfileInput): Promise<void> {
+  const uid = requireNonEmpty(input.uid, "uid"); const emailNormalized = normalizeReaderEmail(input.email); if (!emailNormalized.includes("@")) throw new Error("READER_EMAIL_INVALID");
+  const reference = db.collection(readerPlatformCollections.profiles).doc(uid);
+  await db.runTransaction(async (transaction) => { const emailQuery = db.collection(readerPlatformCollections.profiles).where("emailNormalized", "==", emailNormalized).limit(2); const [existing, emailMatches] = await Promise.all([transaction.get(reference), transaction.get(emailQuery)]); if (existing.exists && existing.data()?.accountStatus === "deleted") throw new Error("READER_ACCOUNT_DELETED"); if (emailMatches.docs.some((document) => document.id !== uid && document.data()?.accountStatus !== "deleted")) throw new Error("READER_EMAIL_ALREADY_IN_USE");
+    transaction.set(reference, { uid, email: input.email.trim(), emailNormalized, emailVerified: input.emailVerified, displayName: input.displayName?.trim() || null, accountStatus: existing.data()?.accountStatus || "active", authProvider: input.authProvider, createdAt: existing.data()?.createdAt || serverTimestamp(), updatedAt: serverTimestamp(), deletedAt: null }, { merge: true });
+    await appendReaderAuditEvent(db, { eventType: existing.exists ? "reader_profile.updated" : "reader_profile.created", actorType: "reader", actorId: uid, subjectType: "reader", subjectId: uid, correlationId: input.correlationId, idempotencyKey: `${input.correlationId}:${existing.exists ? "update" : "create"}`, metadata: { emailVerified: input.emailVerified } }, transaction);
+  });
+}
+export async function requireActiveVerifiedReader(db: ReaderPlatformDb, uid: string): Promise<Record<string, unknown>> { const snapshot = await db.collection(readerPlatformCollections.profiles).doc(requireNonEmpty(uid, "uid")).get(); if (!snapshot.exists) throw new Error("READER_PROFILE_NOT_FOUND"); const profile = snapshot.data() || {}; if (profile.accountStatus !== "active") throw new Error("READER_ACCOUNT_NOT_ACTIVE"); if (profile.emailVerified !== true) throw new Error("READER_EMAIL_NOT_VERIFIED"); return profile; }

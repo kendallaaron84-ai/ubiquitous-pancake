@@ -6,6 +6,8 @@ import { processListenerPurchaseEntitlement } from "@/core/security/listener-ent
 import { processAuthorTranscriptionPayment } from "@/core/security/transcription-payment";
 import { processAuthorSubscriptionPayment } from "@/core/security/author-subscription";
 import { syncConnectedAccountFromWebhook } from "@/core/security/stripe-connect-server";
+import { processCanonicalReaderPurchase } from "@/core/security/reader-platform-stripe";
+import { processCanonicalReaderFinancialEvent } from "@/core/security/reader-platform-financial-events";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -74,6 +76,16 @@ export async function POST(request: Request) {
     }
   }
 
+  if (["charge.refunded", "charge.dispute.created", "charge.dispute.closed"].includes(event.type)) {
+    try {
+      const financialResult = await processCanonicalReaderFinancialEvent(event);
+      return NextResponse.json({ success: true, readerPlatformFinancialEvent: financialResult }, { status: 200 });
+    } catch (error) {
+      console.error("Canonical reader financial event failed:", errorMessage(error));
+      return NextResponse.json({ error: "Reader purchase financial reconciliation failed." }, { status: 500 });
+    }
+  }
+
   if (
     event.type !== "checkout.session.completed" &&
     event.type !== "checkout.session.async_payment_succeeded"
@@ -131,11 +143,15 @@ export async function POST(request: Request) {
         );
       }
 
+      const canonical = await processCanonicalReaderPurchase(event, session, stripe);
+
       return NextResponse.json(
         {
           success: true,
           listenerMode: true,
           status: result.status,
+          readerPlatformPurchaseId: canonical.purchaseId,
+          readerPlatformClaimId: canonical.claimId,
           stripeSessionId: session.id,
         },
         { status: 200 }
