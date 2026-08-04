@@ -44,7 +44,7 @@ export async function retrieveNexusKnowledge(database: FirebaseFirestore.Firesto
   const guide = guideSnapshot.data() as NexusReferenceGuide;
   if (guide.studioKey !== query.studioKey || guide.authorId !== query.authorId || guide.universeId !== query.universeId || guide.status !== "ready") throw new Error("NEXUS_REFERENCE_GUIDE_NOT_READY");
 
-  const chunkSnapshot = await guideRef.collection("chunks").where("referenceGuideVersion", "==", guide.version).limit(120).get();
+  const chunkSnapshot = await guideRef.collection("versions").doc(String(guide.version)).collection("chunks").orderBy("chunkIndex").limit(120).get();
   const terms = tokenize([query.topic, query.targetAudience, query.seoKeywords.primary, query.seoKeywords.secondary, query.seoKeywords.longTail, query.goal].join(" "));
   const limit = Math.max(1, Math.min(query.maxChunks, 10));
   const chunks = chunkSnapshot.docs

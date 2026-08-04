@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 
 import type { CloudTasksClient } from "@google-cloud/tasks";
 
+import type { NexusContentSource, NexusGoal, NexusStrategySelectionMode } from "@/core/nexus/contracts";
+
 export interface BlogSeoStrategy {
   primary: string;
   secondary: string;
@@ -19,6 +21,19 @@ export interface BlogGenerationTaskPayload {
   targetWpOrigin: string;
   secretCredentialRef: string;
   seo: BlogSeoStrategy;
+  schemaVersion?: 1;
+  authorId?: string;
+  authorEmail?: string;
+  requestedByUid?: string;
+  websiteConnectionId?: string;
+  contentSource?: NexusContentSource;
+  universeId?: string | null;
+  referenceGuideId?: string | null;
+  requestedGoal?: NexusGoal | "automatic";
+  strategyGuideSelectionMode?: NexusStrategySelectionMode;
+  primaryStrategyGuideId?: string | null;
+  supportingStrategyGuideId?: string | null;
+  customDirectives?: string;
 }
 
 export interface AudiobookTranscriptionTaskPayload {

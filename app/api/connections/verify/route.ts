@@ -15,6 +15,10 @@ import {
 } from "@/core/security/dashboard-session";
 import { resolveContentEngineAccess } from "@/core/security/content-engine-access";
 import {
+  assertWebsiteCapacityAndUniqueness,
+  websiteConnectionIdForOrigin,
+} from "@/core/nexus/website-connections";
+import {
   loadWordPressConnectionConfiguration,
   verifyAndProvisionWordPressConnection,
   verifyStoredWordPressConnection,
@@ -322,12 +326,32 @@ export async function POST(request: Request) {
           targetUrl?: unknown;
           wpUsername?: unknown;
           wpAppPassword?: unknown;
+          websiteConnectionId?: unknown;
+          displayName?: unknown;
+          contentRole?: unknown;
+          defaultUniverseId?: unknown;
         }
       | null;
     if (!body) {
       throw new ConnectionRouteError(400, "Enter your WordPress connection details.");
     }
     const requestedOrigin = safeOrigin(body.targetWpOrigin ?? body.targetUrl);
+    const rootConnectionRef = adminDb.collection("connections").doc(context.studioKey);
+    const rootSnapshot = await rootConnectionRef.get();
+    const requestedConnectionId = clean(body.websiteConnectionId);
+    const websiteConnectionId = requestedConnectionId ||
+      (rootSnapshot.exists && rootSnapshot.data()?.status === "active"
+        ? websiteConnectionIdForOrigin(requestedOrigin)
+        : "primary");
+    if (websiteConnectionId !== "primary" && !/^site_[a-f0-9]{16}$/.test(websiteConnectionId)) {
+      throw new ConnectionRouteError(400, "The website connection selection is invalid.");
+    }
+    await assertWebsiteCapacityAndUniqueness(adminDb, {
+      studioKey: context.studioKey,
+      authorId: clean(context.licenseData.authorId) || context.session.email.toLowerCase(),
+      wordpressOrigin: requestedOrigin,
+      excludeId: websiteConnectionId,
+    });
 
     let configuration: ReturnType<
       typeof loadWordPressConnectionConfiguration
@@ -371,7 +395,9 @@ export async function POST(request: Request) {
       const secretManager = getSecretManagerClient();
       const gatewayUrl = resolveWordPressGatewayUrl();
       const connectionInput = {
-        studioKey: context.studioKey,
+        studioKey: websiteConnectionId === "primary"
+          ? context.studioKey
+          : `${context.studioKey}-${websiteConnectionId}`,
         targetWpOrigin: body.targetWpOrigin ?? body.targetUrl,
         wpUsername: body.wpUsername,
         wpAppPassword: body.wpAppPassword,
@@ -413,7 +439,9 @@ export async function POST(request: Request) {
       );
     }
 
-    const connectionRef = adminDb.collection("connections").doc(context.studioKey);
+    const connectionRef = websiteConnectionId === "primary"
+      ? rootConnectionRef
+      : rootConnectionRef.collection("websites").doc(websiteConnectionId);
     const existingConnection = await connectionRef.get();
     const existingData = existingConnection.data() || {};
     const timestamp = FieldValue.serverTimestamp();
@@ -423,6 +451,13 @@ export async function POST(request: Request) {
         connectionRef,
         {
           studioKey: context.studioKey,
+          authorId: clean(context.licenseData.authorId) || context.session.email.toLowerCase(),
+          websiteConnectionId,
+          displayName: clean(body.displayName).slice(0, 120) || new URL(verified.targetWpOrigin).hostname,
+          contentRole: body.contentRole === "business_brand" || body.contentRole === "story_world"
+            ? body.contentRole
+            : "both",
+          defaultUniverseId: clean(body.defaultUniverseId) || null,
           status: "active",
           verificationStatus: "verified",
           targetWpOrigin: verified.targetWpOrigin,
@@ -436,20 +471,22 @@ export async function POST(request: Request) {
         },
         { merge: true }
       );
-      transaction.set(
-        context.userRef,
-        {
-          wpConnection: {
-            targetUrl: verified.targetWpOrigin,
-            wpUsername: verified.wpUsername,
-            status: "connected",
-            lastVerifiedAt: timestamp,
-            studioKey: context.studioKey,
+      if (websiteConnectionId === "primary") {
+        transaction.set(
+          context.userRef,
+          {
+            wpConnection: {
+              targetUrl: verified.targetWpOrigin,
+              wpUsername: verified.wpUsername,
+              status: "connected",
+              lastVerifiedAt: timestamp,
+              studioKey: context.studioKey,
+            },
+            updatedAt: timestamp,
           },
-          updatedAt: timestamp,
-        },
-        { merge: true }
-      );
+          { merge: true }
+        );
+      }
     });
 
     return NextResponse.json({
@@ -459,6 +496,7 @@ export async function POST(request: Request) {
         : "Your WordPress site is securely connected. Blog draft delivery will be ready when you activate the Blog Engine.",
       connection: {
         status: "connected",
+        websiteConnectionId,
         targetWpOrigin: verified.targetWpOrigin,
         wpUsername: verified.wpUsername,
       },
