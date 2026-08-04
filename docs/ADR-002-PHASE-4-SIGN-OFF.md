@@ -1,188 +1,136 @@
-# ADR-002 Phase 4 Lead Engineer Sign-Off Package
+# ADR-002 Phase 4 Lead Engineer Sign-Off Package — Amended
 
 ## Decision status
 
-**Implementation complete for repository review; production approval is withheld.**
+| Gate | Status |
+| --- | --- |
+| IMPLEMENTED | **PASS** — repository implementation and fail-closed worker routing exist locally |
+| VERIFIED | **PASS, with one repository build blocker** — direct worker, Nexus, security, TypeScript, Python, and gateway checks pass |
+| DEMONSTRATED | **NOT COMPLETE** — live two-site demonstrations require deployment and production credentials |
+| DEPLOYED | **NOT COMPLETE** — deployment is expressly approval-gated and was not performed |
+| COMPLETE | **NO** — strategy-source ingestion, production build lint, live demonstrations, and deployment equivalence remain open |
 
-The repository implementation is committed behind rollback flags. No dashboard, worker, gateway, Firestore index, or Firestore rule deployment was performed. Production approval remains blocked by the evidence gates listed below.
+Production approval remains withheld. This report does not claim that the six strategy books are integrated.
 
-## Implementation report
+## Hardening implemented
 
-### Implemented
+- Added direct Python tests that import and execute the ADR-002 worker functions rather than relying on source-text assertions.
+- Added isolated fakes/mocks for Firestore, Secret Manager, Gemini text generation, artwork generation, and WordPress requests.
+- Added explicit blueprint schema/version routing:
+  - ADR-002 blueprints use `schemaVersion: 1` and must declare `contentSource` as `business_brand` or `story_world`.
+  - Missing or malformed `contentSource` on a version-1 blueprint fails closed with `PermanentTaskError`.
+  - Legacy generation is allowed only for `schemaVersion: 0` plus `blueprintKind: legacy_content_blueprint`.
+  - Unversioned, future-version, and ambiguously marked blueprints fail closed.
+- Prevented malformed new tasks from reaching the title/genre-only `fetch_book_context()` legacy path.
+- Preserved worker lease, retry, completed-attempt deduplication, transcription routing, image/social generation, Secret Manager credential resolution, and WordPress draft staging behavior.
 
-- Imported the current Content Engine worker and WordPress egress gateway into `services/` as separate baseline source, with equivalence notes.
-- Added canonical Nexus contracts for Business Brand and Story World. Technical content is not available for new generation.
-- Extended the existing `connections/{studioKey}` model to support at most two active WordPress websites; the primary record remains compatible and an optional second site lives below `connections/{studioKey}/websites`.
-- Added authenticated, author-scoped Nexus context, website, Business Profile, Story World, Reference Guide, and blueprint APIs.
-- Adapted `users/{authorEmail}/profile/brand_voice` as the Business Profile rather than creating a competing profile store.
-- Added PDF, DOCX, Markdown, and text Reference Guide ingestion, extraction, versioning, deduplication, private GCS storage, chunking, and author/universe-scoped retrieval.
-- Added deterministic automatic strategy selection and manual selection of one primary plus at most one distinct support strategy.
-- Bound each blueprint and Cloud Task to the selected website connection, exact WordPress origin, Secret Manager credential reference, content source, knowledge IDs, and strategy decision.
-- Extended the worker with source-aware prompting, Story World retrieval, strategy context, safe-HTML checks, canon/spoiler/grounding validation, and validation metadata.
-- Preserved direct WordPress draft staging and returned WordPress result data through the existing worker path; no separate editorial interface was added.
-- Added feature flags, index declarations, operations gates, and targeted regression tests.
+## Direct worker test evidence
 
-### Principal created files
-
-- `services/content-engine-worker/*`
-- `services/wordpress-egress-gateway/*`
-- `services/BASELINE_EQUIVALENCE.md`
-- `core/nexus/*`
-- `app/api/nexus/*`
-- `components/nexus-knowledge-panel.tsx`
-- `docs/ADR-002-PHASE-4-OPERATIONS.md`
-
-### Principal modified files
-
-- `app/nexus-engine/page.tsx`
-- `components/author-intake-form.tsx`
-- `app/api/connections/verify/route.ts`
-- `core/cloud-tasks.ts`
-- `firestore.indexes.json`
-- `package.json`
-- `pnpm-lock.yaml`
-
-### Preserved behavior
-
-- Cloud Tasks HMAC/OIDC signature and queue checks.
-- Worker leases, retry/idempotency paths, terminal states, and legacy blueprints.
-- Exact destination-origin and Secret Manager credential binding.
-- WordPress draft-only staging and existing-draft updates.
-- Featured-image and social-copy generation.
-- Audiobook transcription through the shared worker entry point.
-- Existing primary WordPress connection behavior.
-- Reader Platform and SMS behavior were not changed.
-
-### Deferred or blocked
-
-- Export, review, emulator testing, and deployment of the authoritative production Firestore rules.
-- Deployment of declared Firestore indexes.
-- Production-like end-to-end demonstrations against both target WordPress websites.
-- A complete integration-test matrix for upload parsing, worker retries, WordPress staging, image/social output, and transcription.
-- Actual vector embeddings. Current chunks record `embeddingModel: "lexical-v1"` and use deterministic lexical retrieval because ADR-002 did not identify an embedding model, vector store, or production embedding contract.
-- Platform-owned source documents for the six strategy guides. The implementation has a fixed safe catalog and deterministic guidance summaries, but the authoritative guide artifacts/storage paths were not present in the repository.
-
-### Deviations and risks
-
-1. **Embedding gap:** Reference Guides are extracted, chunked, scoped, and retrievable, but are not vector-embedded. Calling this compliant with the embedding acceptance criterion would be inaccurate.
-2. **Strategy-source gap:** Six catalog entries exist, but no authoritative strategy-guide source files were available to import or verify.
-3. **Rules gap:** Adding collections before reviewing deployed rules may create denied operations or overly broad access if infrastructure is changed without the required audit.
-4. **Integration gap:** Local contract/regression tests cannot prove behavior against Cloud Tasks, Secret Manager, GCS, or the two WordPress sites.
-5. **Build gate:** TypeScript and targeted tests pass, but the Next.js production build stalled during optimized compilation. It did not emit `BUILD_ID`; therefore the build criterion is not passed.
-
-## Architecture map
+Command:
 
 ```text
-Author input
-   ↓
-Authenticated Nexus API
-   ↓
-Blueprint (`content_blueprints/{blueprintId}`)
-   ↓
-Website binding (`connections/{studioKey}` or one child website)
-   ↓
-Content-source routing (Business Brand | Story World)
-   ↓
-Knowledge retrieval (brand_voice | scoped Reference Guide chunks)
-   ↓
-Strategy selection (one primary + optional support)
-   ↓
-Signed Cloud Task
-   ↓
-Leased Content Engine worker
-   ↓
-Grounded generation and validation
-   ↓
-Featured image and social copy
-   ↓
-Secret-bound WordPress egress
-   ↓
-WordPress draft and edit URL
+python -m unittest discover -s services/content-engine-worker/tests -p "test_*.py"
 ```
 
-## Data report
+Result: **17 passed, 0 failed**.
 
-| Store | Purpose | Scope / identity |
-| --- | --- | --- |
-| `users/{authorEmail}/profile/brand_voice` | Adapted Business Profile | Authenticated author email and StudioKey context |
-| `connections/{studioKey}` | Existing primary WordPress site | StudioKey |
-| `connections/{studioKey}/websites/{websiteConnectionId}` | Optional second active WordPress site | StudioKey + author ID; hard maximum of two total |
-| `nexus_story_worlds/{universeId}` | Story World metadata | StudioKey + author ID |
-| `.../reference_guides/{referenceGuideId}` | Active guide pointer and spoiler policy | Universe + StudioKey + author ID |
-| `.../versions/{version}` | Immutable extracted guide version metadata | Reference Guide version |
-| `.../versions/{version}/chunks/{chunkId}` | Ordered knowledge chunks | Universe + guide version + tenant fields |
-| `content_blueprints/{blueprintId}` | Input, binding, strategy, retrieval, execution and output metadata | Author + StudioKey + task attempt |
+The tests directly cover:
 
-Reference Guide objects are stored privately under:
+1. Business Brand resolves without Story World context.
+2. Story World requires `contentSource`, `universeId`, `referenceGuideId`, and an active version.
+3. Cross-tenant knowledge chunks are rejected.
+4. Restricted spoiler chunks are excluded.
+5. Blueprint strategy IDs are validated and resolved.
+6. Grounding failure raises `PermanentTaskError`.
+7. Spoiler validation failure raises `PermanentTaskError`.
+8. Failed validation prevents artwork and WordPress calls.
+9. Warning validation permits draft staging and records warnings.
+10. Successful Story World execution stages `status=draft`.
+11. Audiobook transcription routing remains unchanged.
+12. Retry accounting remains unchanged.
+13. Completed-attempt deduplication remains unchanged.
+14. `build_grounded_article_prompt()` includes retrieved Reference Guide facts and strategy context.
+15. Active Reference Guide version mismatch fails closed.
+16. Explicit legacy blueprints may use `fetch_book_context()`.
+17. Malformed ADR-002 blueprints cannot use `fetch_book_context()`.
 
-```text
-nexus/{studioKey}/story-worlds/{universeId}/reference-guides/{referenceGuideId}/v{version}/source/{safeFileName}
-nexus/{studioKey}/story-worlds/{universeId}/reference-guides/{referenceGuideId}/v{version}/extracted.txt
-```
-
-The active guide is replaced only after the new version reaches `ready`; failed replacements leave the prior ready version active. SHA-256 provides per-world deduplication. No destructive backfill or migration was added.
-
-`firestore.indexes.json` declares the Story World tenancy lookup and Reference Guide deduplication indexes. They have not been deployed. No Firestore rule change was invented or deployed.
-
-## Security report
-
-- All Nexus routes require the existing author session and active Content Engine authorization.
-- Website, Story World, guide, and blueprint access is checked against StudioKey and author identity.
-- The browser cannot supply an untrusted destination or raw WordPress password to the worker. The selected stored website produces the exact origin and Secret Manager reference placed into the signed task.
-- WordPress credentials remain in Secret Manager; Firestore stores references, not passwords.
-- The worker re-resolves blueprint context and validates source-specific knowledge before generation.
-- Story World retrieval is restricted to the selected universe, ready guide, active version, and recorded chunk IDs.
-- Task signature, queue identity, lease, retry, and terminal-state code paths remain present.
-- Logs record IDs and validation state, not raw credentials or uploaded source text.
-- Platform strategy metadata is read-only in the UI/API. Author selection records IDs and reasons only.
-
-The authoritative deployed Firestore rules remain an explicit security blocker until exported, stored, audited, and emulator-tested.
-
-## Test report
+## Required verification results
 
 | Check | Result |
 | --- | --- |
-| Nexus contract/regression tests | **7 passed, 0 failed** |
-| Existing security regression suite | **74 passed, 0 failed** |
-| TypeScript `tsc --noEmit` | **Passed** |
-| WordPress gateway syntax check | **Passed** |
-| Content worker Python compile check | **Passed** |
-| Next.js production build | **Inconclusive / blocked** — entered optimized compilation, stalled without CPU progress, no `BUILD_ID` |
-| Firestore emulator rule tests | **Not run** — authoritative rules absent |
-| Live two-site integration suite | **Not run** — deployment prohibited and credentials unavailable |
+| Direct Python worker tests | **PASS — 17/17** |
+| Nexus tests | **PASS — 7/7** |
+| Security regression suite | **PASS — 74/74** |
+| TypeScript `tsc --noEmit` | **PASS** |
+| Python worker/test compilation | **PASS** |
+| WordPress gateway `node --check` | **PASS** |
+| Next.js optimized compilation | **PASS** |
+| Next.js production build | **FAIL — repository-wide ESLint gate** |
 
-Targeted tests cover content-source contracts, the two-site limit, deterministic/manual strategy selection, file limits and chunking, feature-flag defaults, and source-level regression assertions for signature, lease, origin, draft, image/social, and transcription paths. They are not a substitute for the required live integration matrix.
+The production build reached `Compiled successfully` and then failed during lint enforcement. The errors are distributed across pre-existing auth, checkout, reader, generic UI, and documentation files (for example `no-explicit-any`, `no-require-imports`, unescaped JSX entities, and React hook purity rules). Correcting that repository-wide lint debt is outside ADR-002 verification scope. No unrelated files were modified to conceal the failure. TypeScript validation passes independently.
 
-## Demonstration evidence
+## Strategy-library status
 
-| Required demonstration | Evidence status |
+**Authoritative source ingestion is incomplete.**
+
+The worker currently uses a fixed in-code strategy catalog and summaries. No approved source files for the six strategy books were present, and no source content was fabricated. Therefore:
+
+- strategy ID validation and deterministic selection are implemented and tested;
+- authoritative strategy-guide ingestion/version evidence is absent;
+- production approval remains withheld.
+
+The acceptable closeout is to ingest and version owner-approved strategy source files in a later approved change, or amend ADR-002 with an approved strategy-summary contract.
+
+## Live demonstration status
+
+No deployment or live production mutation was authorized in this verification pass.
+
+| Required demonstration | Status |
 | --- | --- |
-| Business Brand draft staged to `audio.koba-i.com` | **Pending live test** |
-| Story World draft staged to `duncanhunter.koba-i.com` | **Pending live test** |
-| Reference Guide influenced Story World draft | **Pending live test**; worker records chunk IDs and validation metadata in code |
-| Strategy selection recorded | **Implemented and unit-tested**; live record pending |
-| Both WordPress edit URLs returned | **Pending live test** |
-| Technical mode absent | **Implemented and unit-tested** |
-| Audiobook transcription operational | **Code-preservation and existing regression checks passed; live regression pending** |
+| Business Brand → `audio.koba-i.com` | **Pending** |
+| Story World → `duncanhunter.koba-i.com` | **Pending** |
+| Story World blueprint fields and active guide version observed | **Pending** |
+| Reference-Guide-only fact appears in draft | **Pending** |
+| Protected spoiler absent | **Pending** |
+| WordPress status confirmed as draft | **Pending** |
+| Returned edit URL bound to selected origin | **Pending** |
 
-## Controlled commits
+These demonstrations must run only after review and explicit deployment approval.
 
-1. `5b3a7af6761d1200722ac0850adec145bd919813` — production service baselines
-2. `cc9c095` — contracts and service foundation
-3. `43638d7465cf597e69806103eff2db5971df5fb0` — protected knowledge and blueprint APIs
-4. `625517fd9ac6e41a805b3f6b4d99c0ac8881aa3b` — SEO draft and knowledge workspace
-5. `a9ab3866d2253b85b3625ed3b73eb34f95717a54` — source-aware grounded worker generation
-6. `820111a01529339db54edec32d093b71be0bdbc6` — knowledge and website management
-7. `7cc6ff104cbc5dddb3533ab43b927a8029bc3dac` — regression and operations gates
+## Deployment-equivalence status
+
+No deployment was performed. Consequently, the following evidence is intentionally not yet available:
+
+| Evidence | Value |
+| --- | --- |
+| Approved deployed source commit | **Not assigned** |
+| Deployed source SHA-256 | **Not recorded** |
+| Cloud Run/Function revision | **Not created** |
+| Deployment timestamp | **Not applicable** |
+
+After approval, the deployment procedure must record the approved Git commit, calculate the SHA-256 of `services/content-engine-worker/main.py`, deploy that exact source, record the resulting revision/timestamp, and compare the deployed artifact digest/source with the approved file before marking DEPLOYED.
+
+## Preserved security and behavior
+
+- Cloud Tasks signature and queue validation remain unchanged.
+- Worker leases, retries, terminal failure handling, and idempotent completed attempts remain intact.
+- Destination origin and Secret Manager credential references remain server-bound.
+- Failed grounding or spoiler validation stops execution before artwork and WordPress staging.
+- Warning-only validation can stage a WordPress draft and records the warning state.
+- WordPress staging remains draft-only.
+- Featured-image and social-copy generation remain on the successful article path.
+- Audiobook transcription remains routed through the existing transcription handler.
+- Reader Platform and active SMS behavior were not changed.
+
+## Remaining blockers
+
+1. Provide and approve authoritative strategy-guide source files, then ingest/version them, or formally approve the current summaries as the contract.
+2. Resolve or explicitly waive the repository-wide ESLint production-build gate without hiding errors.
+3. Review the hardening commit and approve a deployment candidate.
+4. Deploy the exact approved worker source and record commit/digest/revision equivalence.
+5. Execute and retain evidence for both required live WordPress demonstrations.
+6. Export, audit, emulator-test, and approve the authoritative Firestore rules before related infrastructure changes.
 
 ## Approval recommendation
 
-Approve the commits for continued review, **not production deployment**. Before production approval:
-
-1. Resolve the embedding and strategy-source contract gaps with explicit ADR-002-compatible decisions.
-2. Export and commit the authoritative Firestore rules baseline, audit it, and run emulator tests.
-3. Deploy indexes only after review.
-4. Resolve the production build stall and obtain a clean build exit.
-5. Run the required two-site, worker, gateway, image/social, and transcription integration demonstrations.
-6. Exercise and record rollback-flag behavior.
-
+Approve the hardening changes for code review. **Do not approve production deployment or label Phase 4 COMPLETE yet.**

@@ -26,6 +26,9 @@ EXPECTED_QUEUE = os.environ.get("CLOUD_TASKS_QUEUE", "content-generation-queue")
 TASK_HMAC_SECRET = os.environ.get("KOBA_TASK_HMAC_SECRET", "")
 MAX_TASK_ATTEMPTS = int(os.environ.get("MAX_TASK_ATTEMPTS", "3"))
 LEASE_MINUTES = 10
+NEXUS_BLUEPRINT_SCHEMA_VERSION = 1
+LEGACY_BLUEPRINT_SCHEMA_VERSION = 0
+LEGACY_BLUEPRINT_KIND = "legacy_content_blueprint"
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,160}$")
 STUDIO_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{3,160}$")
 SECRET_VERSION_PATTERN = re.compile(
@@ -823,6 +826,35 @@ def resolve_nexus_generation_context(
     return None, story_context, strategy_context
 
 
+def resolve_blueprint_generation_mode(data: dict[str, Any]) -> str:
+    """Fail closed unless a blueprint declares a supported generation contract."""
+    raw_schema_version = data.get("schemaVersion")
+    if isinstance(raw_schema_version, bool):
+        raise PermanentTaskError("Blueprint schema version is invalid.")
+    try:
+        schema_version = int(raw_schema_version)
+    except (TypeError, ValueError) as error:
+        raise PermanentTaskError("Blueprint schema version is required.") from error
+
+    content_source = str(data.get("contentSource") or "").strip()
+    if schema_version == NEXUS_BLUEPRINT_SCHEMA_VERSION:
+        if content_source not in {"business_brand", "story_world"}:
+            raise PermanentTaskError(
+                "ADR-002 blueprints require Business Brand or Story World contentSource."
+            )
+        return "nexus"
+
+    blueprint_kind = str(data.get("blueprintKind") or "").strip()
+    if (
+        schema_version == LEGACY_BLUEPRINT_SCHEMA_VERSION
+        and blueprint_kind == LEGACY_BLUEPRINT_KIND
+        and not content_source
+    ):
+        return "legacy"
+
+    raise PermanentTaskError("Blueprint schema is unsupported for worker execution.")
+
+
 def generate_featured_image(prompt: str) -> bytes:
     response = image_client.models.generate_content(
         model=ARTWORK_MODEL,
@@ -1066,8 +1098,9 @@ def execute_generation(
             "deduplicated": True,
         }
 
+    generation_mode = resolve_blueprint_generation_mode(data)
     content_source = str(data.get("contentSource") or "").strip()
-    is_nexus_blueprint = bool(content_source)
+    is_nexus_blueprint = generation_mode == "nexus"
     business_context: dict[str, Any] | None = None
     story_context: dict[str, Any] | None = None
     strategy_context: list[dict[str, Any]] = []
@@ -1095,8 +1128,8 @@ def execute_generation(
                     strategy_context=strategy_context,
                 )
             )
-        else:
-            # Historical blueprints keep their production behavior during rollout.
+        elif generation_mode == "legacy":
+            # Only explicitly versioned legacy blueprints retain the historical path.
             article = generate_article(data)
         update_attempt(
             reference,
