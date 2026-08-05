@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
-import type { DocumentData } from "firebase-admin/firestore";
+import type { DocumentData, Firestore } from "firebase-admin/firestore";
 
-import { adminAuth, adminDb } from "@/core/firebase-admin";
+import {
+  FirebaseAdminConfigurationError,
+  getFirebaseAdminServices,
+} from "@/core/firebase-admin";
 import { ensureOwnerWorkspace } from "@/core/security/owner-provisioning";
 import {
   DASHBOARD_SESSION_COOKIE,
@@ -10,6 +13,11 @@ import {
   resolveDashboardAccessScope,
   resolveDashboardSessionSecret,
 } from "@/core/security/dashboard-session";
+import {
+  LOGIN_ID_TOKEN_ERROR_CODES,
+  LoginIdTokenError,
+  verifyLoginIdToken,
+} from "@/core/security/login-id-token";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +58,7 @@ function normalizePluginEntitlements(licenseData: DocumentData): string[] {
 }
 
 async function findExactLicense(
+  adminDb: Firestore,
   studioKey: string
 ): Promise<ResolvedLicense | null> {
   const stripeLicenseDoc = await adminDb
@@ -122,23 +131,70 @@ export async function POST(request: Request) {
 
     if (!idToken) {
       return NextResponse.json(
-        { success: false, error: "Identity exchange token is required." },
+        {
+          success: false,
+          code: LOGIN_ID_TOKEN_ERROR_CODES.missingToken,
+          error: "Identity exchange token is required.",
+        },
         { status: 400 }
+      );
+    }
+
+    let adminServices;
+    try {
+      adminServices = getFirebaseAdminServices();
+    } catch (error: unknown) {
+      const configurationError =
+        error instanceof FirebaseAdminConfigurationError ? error : null;
+      console.error("Firebase Admin authentication configuration failed.", {
+        code: LOGIN_ID_TOKEN_ERROR_CODES.adminNotConfigured,
+        missingVariables: configurationError?.missingVariables ?? [],
+      });
+      return NextResponse.json(
+        {
+          success: false,
+          code: LOGIN_ID_TOKEN_ERROR_CODES.adminNotConfigured,
+          error: "Firebase Admin authentication is not configured on this server.",
+        },
+        { status: 500 }
       );
     }
 
     let decodedToken;
 
     try {
-      decodedToken = await adminAuth.verifyIdToken(idToken);
+      decodedToken = await verifyLoginIdToken(
+        idToken,
+        () => adminServices.auth
+      );
     } catch (error: unknown) {
-      const details = errorMessage(error);
-      console.error("ID token verification failed:", details);
+      const tokenError =
+        error instanceof LoginIdTokenError
+          ? error
+          : new LoginIdTokenError(
+              401,
+              LOGIN_ID_TOKEN_ERROR_CODES.invalidToken,
+              "Invalid identity token.",
+              error
+            );
+      console.error("ID token verification failed.", {
+        code: tokenError.code,
+        causeName:
+          tokenError.cause instanceof Error
+            ? tokenError.cause.name
+            : "UnknownError",
+      });
       return NextResponse.json(
-        { success: false, error: "Invalid identity token.", details },
-        { status: 401 }
+        {
+          success: false,
+          code: tokenError.code,
+          error: tokenError.message,
+        },
+        { status: tokenError.status }
       );
     }
+
+    const adminDb = adminServices.db;
 
     const email = trimString(decodedToken.email).toLowerCase();
 
@@ -211,7 +267,10 @@ export async function POST(request: Request) {
         );
       }
 
-      const resolvedLicense = await findExactLicense(requestedStudioKey);
+      const resolvedLicense = await findExactLicense(
+        adminDb,
+        requestedStudioKey
+      );
 
       if (!resolvedLicense || resolvedLicense.data.status !== "active") {
         return NextResponse.json(
@@ -316,7 +375,10 @@ export async function POST(request: Request) {
     return response;
   } catch (error: unknown) {
     const details = errorMessage(error);
-    console.error("Identity exchange processing failed:", error);
+    console.error("Identity exchange processing failed.", {
+      name: error instanceof Error ? error.name : "UnknownError",
+      message: details,
+    });
     return NextResponse.json(
       {
         success: false,
