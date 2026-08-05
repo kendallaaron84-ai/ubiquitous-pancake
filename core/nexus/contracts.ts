@@ -122,6 +122,7 @@ export interface NexusReferenceGuide {
   mimeType: string;
   fileSizeBytes: number;
   extractedCharacterCount: number;
+  wordCount: number;
   estimatedTokenCount: number;
   chunkCount: number;
   version: number;
@@ -135,6 +136,10 @@ export interface NexusReferenceGuide {
   updatedAt: unknown;
   readyAt: unknown | null;
   errorMessage: string | null;
+  contentPolicyVersion: 1;
+  publicSafeAcknowledged: true;
+  publicSafeAcknowledgedAt: unknown;
+  publicSafeAcknowledgedByUid: string;
 }
 
 export interface NexusKnowledgeChunk {
@@ -191,6 +196,15 @@ export type NexusStrategyFocus =
   | "conversion_copy"
   | "trust_authority";
 
+export interface NexusStrategyCatalogEntry {
+  id: string;
+  displayName: string;
+  focus: NexusStrategyFocus;
+  description: string;
+  goals: NexusGoal[];
+}
+
+/** Reserved for future owner-approved, ingested and versioned strategy sources. */
 export interface NexusStrategyGuide {
   schemaVersion: 1;
   strategyGuideId: string;
@@ -229,12 +243,35 @@ export interface NexusBlueprintAdditions {
   strategySelectionReason: string;
   knowledgeChunkIds: string[];
   knowledgeRetrievalVersion: number;
+  knowledgeMode: "business_profile" | "full_reference_guide";
+  referenceGuideWordCount: number | null;
+  referenceGuideCharacterCount: number | null;
+  topicGroundingAssessment: NexusTopicGroundingAssessment | null;
+  fullContextValidation: NexusFullContextValidationResult | null;
   groundingStatus: "pending" | "grounded" | "failed";
   groundingWarnings: string[];
   canonValidationStatus: "not_applicable" | "passed" | "warning" | "failed";
   spoilerValidationStatus: "not_applicable" | "passed" | "warning" | "failed";
   wordpressPostId: number | null;
   liveDraftUrl: string | null;
+}
+
+export interface NexusTopicGroundingAssessment {
+  status: "supported" | "warning" | "insufficient";
+  confidence: number;
+  supportingFacts: string[];
+  missingInformation: string[];
+  warnings: string[];
+  authorGuidance: string;
+}
+
+export interface NexusFullContextValidationResult {
+  status: "passed" | "warning" | "failed";
+  unsupportedClaims: string[];
+  inventedCanon: string[];
+  contradictions: string[];
+  spoilerLeaks: string[];
+  warnings: string[];
 }
 
 export const BUSINESS_BRAND_GOALS: readonly NexusGoal[] = [

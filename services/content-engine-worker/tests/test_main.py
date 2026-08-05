@@ -171,6 +171,20 @@ class FakeResponse:
             raise RuntimeError(f"HTTP {self.status_code}")
 
 
+class FakeModelResult:
+    def __init__(self, payload):
+        self.text = json.dumps(payload)
+
+
+def complete_guide_text():
+    facts = (
+        "Mara tends the silver harbor lantern during winter storms. "
+        "The lantern guides boats, represents communal memory, and links the harbor keepers. "
+        "Citizens call the winter light the moon beacon, an indirect name for the same lantern. "
+    )
+    return (facts * 45).strip()
+
+
 class FakeWordPressSession:
     def __init__(self, base_url):
         self.base_url = base_url
@@ -191,6 +205,8 @@ class FakeRequest:
 
 
 def story_store(*, include_safe=True, include_restricted=False, cross_tenant=False):
+    guide_text = complete_guide_text()
+    word_count, character_count = worker.reference_guide_counts(guide_text)
     base = {
         ("nexus_story_worlds", "universe_01"): {
             "studioKey": "KOBA-001",
@@ -205,10 +221,22 @@ def story_store(*, include_safe=True, include_restricted=False, cross_tenant=Fal
             "universeId": "universe_01",
             "status": "ready",
             "version": 3,
+            "wordCount": word_count,
+            "extractedCharacterCount": character_count,
+            "publicSafeAcknowledged": True,
+            "contentPolicyVersion": 1,
             "spoilerPolicy": {
                 "thingsSafeToDiscuss": "The harbor and its lantern keepers",
                 "thingsNeverToReveal": "Queen Iris is the traitor",
             },
+        },
+        ("nexus_story_worlds", "universe_01", "reference_guides", "guide_0001", "versions", "3"): {
+            "status": "ready",
+            "normalizedText": guide_text,
+            "wordCount": word_count,
+            "extractedCharacterCount": character_count,
+            "publicSafeAcknowledged": True,
+            "contentPolicyVersion": 1,
         },
     }
     prefix = (
@@ -274,6 +302,7 @@ def nexus_blueprint(content_source="story_world"):
                 "referenceGuideId": "guide_0001",
                 "referenceGuideVersion": 3,
                 "knowledgeChunkIds": ["chunk_0001"],
+                "knowledgeMode": "full_reference_guide",
             }
         )
     return data
@@ -302,7 +331,7 @@ class WorkerContractTests(unittest.TestCase):
         with self.assertRaises(worker.PermanentTaskError):
             worker.resolve_blueprint_generation_mode(malformed)
 
-        for missing_field in ("universeId", "referenceGuideId", "referenceGuideVersion", "knowledgeChunkIds"):
+        for missing_field in ("universeId", "referenceGuideId", "referenceGuideVersion", "knowledgeChunkIds", "knowledgeMode"):
             with self.subTest(missing_field=missing_field):
                 data = nexus_blueprint()
                 data.pop(missing_field)
@@ -316,9 +345,40 @@ class WorkerContractTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.PermanentTaskError, "changed after"):
             worker.resolve_nexus_generation_context(data, "KOBA-001")
 
+    def test_reference_guide_requires_public_safe_acknowledgement(self):
+        store = story_store()
+        guide_key = ("nexus_story_worlds", "universe_01", "reference_guides", "guide_0001")
+        store[guide_key]["publicSafeAcknowledged"] = False
+        worker.db = FakeFirestore(store)
+        with self.assertRaisesRegex(worker.PermanentTaskError, "acknowledged"):
+            worker.retrieve_story_world_knowledge(
+                studio_key="KOBA-001", author_id="author_01", universe_id="universe_01",
+                reference_guide_id="guide_0001", approved_chunk_ids=["chunk_0001"]
+            )
+
+    def test_reference_guide_limit_fails_without_truncation(self):
+        store = story_store()
+        version_key = (
+            "nexus_story_worlds", "universe_01", "reference_guides", "guide_0001",
+            "versions", "3",
+        )
+        oversized = " ".join(f"word{index}" for index in range(worker.REFERENCE_GUIDE_MAXIMUM_WORDS + 1))
+        word_count, character_count = worker.reference_guide_counts(oversized)
+        store[version_key].update({
+            "normalizedText": oversized,
+            "wordCount": word_count,
+            "extractedCharacterCount": character_count,
+        })
+        worker.db = FakeFirestore(store)
+        with self.assertRaisesRegex(worker.PermanentTaskError, "exceeds.*not truncated"):
+            worker.retrieve_story_world_knowledge(
+                studio_key="KOBA-001", author_id="author_01", universe_id="universe_01",
+                reference_guide_id="guide_0001", approved_chunk_ids=["chunk_0001"]
+            )
+
     def test_cross_tenant_chunks_are_rejected(self):
         worker.db = FakeFirestore(story_store(cross_tenant=True))
-        with self.assertRaisesRegex(worker.PermanentTaskError, "No permitted"):
+        with self.assertRaisesRegex(worker.PermanentTaskError, "Cross-tenant"):
             worker.retrieve_story_world_knowledge(
                 studio_key="KOBA-001", author_id="author_01", universe_id="universe_01",
                 reference_guide_id="guide_0001", topic="", target_audience="",
@@ -332,7 +392,8 @@ class WorkerContractTests(unittest.TestCase):
             reference_guide_id="guide_0001", topic="", target_audience="",
             seo_keywords={}, goal="", max_chunks=10
         )
-        self.assertEqual(["chunk_0001"], [chunk["chunkId"] for chunk in result["chunks"]])
+        self.assertEqual(["chunk_0001"], result["traceabilityChunkIds"])
+        self.assertNotIn("Queen Iris is the traitor", result["completeReferenceGuide"])
 
     def test_blueprint_strategy_ids_are_validated(self):
         with self.assertRaisesRegex(worker.PermanentTaskError, "primary strategy"):
@@ -354,7 +415,7 @@ class WorkerContractTests(unittest.TestCase):
     def test_grounded_prompt_contains_reference_guide_not_legacy_book_context(self):
         story = {
             "world": {"title": "The Lantern Realm", "genre": "Fantasy"},
-            "chunks": [{"chunkId": "chunk_0001", "text": "Mara tends the silver harbor lantern."}],
+            "completeReferenceGuide": complete_guide_text(),
             "guardrails": {"safeToDiscuss": "The harbor", "neverReveal": "Queen Iris is the traitor"},
         }
         with patch.object(worker, "fetch_tier_1_core_library", return_value="CORE"):
@@ -366,7 +427,7 @@ class WorkerContractTests(unittest.TestCase):
         self.assertIn("Queen Iris is the traitor", prompt)
 
     def test_failed_grounding_raises_permanent_error(self):
-        story = {"chunks": [{"text": "Mara tends the silver harbor lantern."}], "guardrails": {"neverReveal": ""}}
+        story = {"completeReferenceGuide": complete_guide_text(), "chunks": [{"text": complete_guide_text()}], "guardrails": {"neverReveal": ""}}
         article = dict(nexus_blueprint())
         mapped = {"seo_title": "Unrelated", "seo_description": "Description", "blog_post_html": "<p>Completely unrelated prose about taxation.</p>", "focus_keyword": "tax", "hero_image_prompt": "tax"}
         with self.assertRaisesRegex(worker.PermanentTaskError, "grounding failed"):
@@ -374,7 +435,8 @@ class WorkerContractTests(unittest.TestCase):
 
     def test_failed_spoiler_validation_raises_permanent_error(self):
         story = {
-            "chunks": [{"text": "Mara tends the silver harbor lantern."}],
+            "completeReferenceGuide": complete_guide_text(),
+            "chunks": [{"text": complete_guide_text()}],
             "guardrails": {"neverReveal": "Queen Iris is the traitor"},
         }
         article = {
@@ -389,7 +451,9 @@ class WorkerContractTests(unittest.TestCase):
         data = nexus_blueprint()
         updates = []
         with patch.object(worker, "acquire_worker_lease", return_value=data), patch.object(
-            worker, "resolve_nexus_generation_context", return_value=(None, {"chunks": [], "guardrails": {}}, [])
+            worker, "resolve_nexus_generation_context", return_value=(None, {"completeReferenceGuide": complete_guide_text(), "guardrails": {}}, [])
+        ), patch.object(
+            worker, "assess_story_world_topic_support", return_value={"status": "supported", "confidence": 0.9, "warnings": []}
         ), patch.object(worker, "validate_generated_article", side_effect=worker.PermanentTaskError("grounding failed")), patch.object(
             worker, "update_attempt", side_effect=lambda _r, _a, value: updates.append(value)
         ), patch.object(worker, "generate_featured_image") as image, patch.object(
@@ -404,20 +468,27 @@ class WorkerContractTests(unittest.TestCase):
         self.assertFalse(any(update.get("executionState") == "artwork" for update in updates))
 
     def test_warning_validation_permits_draft_and_records_warnings(self):
-        data = nexus_blueprint("business_brand")
+        data = nexus_blueprint()
         updates = []
         session = FakeWordPressSession("https://author.example")
-        warning = {"groundingStatus": "grounded", "canonValidationStatus": "warning", "spoilerValidationStatus": "warning", "warnings": ["Editorial review required"]}
+        story = {"completeReferenceGuide": complete_guide_text(), "wordCount": 500, "characterCount": 4000, "guardrails": {"neverReveal": ""}}
+        assessment = {"status": "warning", "confidence": 0.8, "warnings": ["Topic support is indirect."]}
+        basic = {"groundingStatus": "grounded", "canonValidationStatus": "not_applicable", "spoilerValidationStatus": "not_applicable", "warnings": []}
+        full = {"status": "warning", "unsupportedClaims": [], "inventedCanon": [], "contradictions": [], "spoilerLeaks": [], "warnings": ["Editorial review required"]}
         with patch.object(worker, "acquire_worker_lease", return_value=data), patch.object(
-            worker, "resolve_nexus_generation_context", return_value=({"businessName": "KOBA"}, None, [])
-        ), patch.object(worker, "validate_generated_article", return_value=warning), patch.object(
+            worker, "resolve_nexus_generation_context", return_value=(None, story, [])
+        ), patch.object(worker, "assess_story_world_topic_support", return_value=assessment), patch.object(
+            worker, "validate_generated_article", return_value=basic
+        ), patch.object(worker, "validate_article_against_full_context", return_value=full), patch.object(
             worker, "update_attempt", side_effect=lambda _r, _a, value: updates.append(value)
         ), patch.object(worker, "complete_attempt") as complete, patch.object(
             worker, "wordpress_session", return_value=(session, "https://author.example")
         ), patch.object(worker, "generate_featured_image") as image:
             result = worker.execute_generation("blueprint_001", "attempt_001", "KOBA-001", "https://author.example", "secret")
         self.assertEqual("success", result["status"])
-        self.assertTrue(any(update.get("groundingWarnings") == ["Editorial review required"] for update in updates))
+        self.assertTrue(any(update.get("groundingWarnings") == ["Topic support is indirect.", "Editorial review required"] for update in updates))
+        post_calls = [call for call in session.calls if call[0] == "POST" and "/wp-json/wp/v2/posts" in call[1]]
+        self.assertEqual("draft", post_calls[-1][2]["json"]["status"])
         image.assert_not_called()
         complete.assert_called_once()
 
@@ -426,8 +497,12 @@ class WorkerContractTests(unittest.TestCase):
         session = FakeWordPressSession("https://author.example")
         validation = {"groundingStatus": "grounded", "canonValidationStatus": "passed", "spoilerValidationStatus": "passed", "warnings": []}
         with patch.object(worker, "acquire_worker_lease", return_value=data), patch.object(
-            worker, "resolve_nexus_generation_context", return_value=(None, {"chunks": [{"text": "Mara lantern harbor"}], "guardrails": {"neverReveal": ""}}, [])
+            worker, "resolve_nexus_generation_context", return_value=(None, {"completeReferenceGuide": complete_guide_text(), "wordCount": 500, "characterCount": 4000, "guardrails": {"neverReveal": ""}}, [])
+        ), patch.object(
+            worker, "assess_story_world_topic_support", return_value={"status": "supported", "confidence": 0.9, "warnings": []}
         ), patch.object(worker, "validate_generated_article", return_value=validation), patch.object(
+            worker, "validate_article_against_full_context", return_value={"status": "passed", "unsupportedClaims": [], "inventedCanon": [], "contradictions": [], "spoilerLeaks": [], "warnings": []}
+        ), patch.object(
             worker, "update_attempt"
         ), patch.object(worker, "complete_attempt"), patch.object(
             worker, "wordpress_session", return_value=(session, "https://author.example")
@@ -436,6 +511,105 @@ class WorkerContractTests(unittest.TestCase):
         self.assertEqual("https://author.example/wp-admin/post.php?post=41&action=edit", result["liveDraftUrl"])
         post_calls = [call for call in session.calls if call[0] == "POST" and "/wp-json/wp/v2/posts" in call[1]]
         self.assertEqual("draft", post_calls[-1][2]["json"]["status"])
+
+    def test_full_context_assessment_supports_non_lexical_reasoning(self):
+        story = {"completeReferenceGuide": complete_guide_text(), "guardrails": {"safeToDiscuss": "public canon", "neverReveal": "the hidden traitor"}}
+        cases = {
+            "synonym": "Moon beacon is another name for the silver harbor lantern.",
+            "implied relationship": "Mara's duty connects her to every arriving boat.",
+            "thematic similarity": "The light represents communal memory.",
+            "indirect reference": "Winter light refers indirectly to the lantern.",
+        }
+        for label, fact in cases.items():
+            with self.subTest(reasoning=label):
+                worker.article_client.models.generate_content = MagicMock(return_value=FakeModelResult({
+                    "status": "supported", "confidence": 0.91, "supportingFacts": [fact],
+                    "missingInformation": [], "warnings": [], "authorGuidance": "Proceed using the cited public canon."
+                }))
+                result = worker.assess_story_world_topic_support(blueprint=nexus_blueprint(), story_context=story)
+                self.assertEqual("supported", result["status"])
+                self.assertEqual([fact], result["supportingFacts"])
+                prompt = worker.article_client.models.generate_content.call_args.kwargs["contents"]
+                self.assertIn("synonyms, implied relationships, themes, indirect references", prompt)
+                self.assertIn("COMPLETE REFERENCE GUIDE", prompt)
+
+    def test_unsupported_and_low_confidence_topics_fail_with_guidance(self):
+        story = {"completeReferenceGuide": complete_guide_text(), "guardrails": {"safeToDiscuss": "", "neverReveal": ""}}
+        cases = [("insufficient", 0.95), ("warning", 0.40)]
+        for status, confidence in cases:
+            with self.subTest(status=status, confidence=confidence):
+                worker.article_client.models.generate_content = MagicMock(return_value=FakeModelResult({
+                    "status": status, "confidence": confidence, "supportingFacts": [],
+                    "missingInformation": ["Public history of the requested kingdom"], "warnings": [],
+                    "authorGuidance": "Add the kingdom's public history or narrow the topic."
+                }))
+                with self.assertRaises(worker.InsufficientGroundingError) as raised:
+                    worker.assess_story_world_topic_support(blueprint=nexus_blueprint(), story_context=story)
+                self.assertEqual("NEXUS_INSUFFICIENT_GROUNDING", raised.exception.code)
+                self.assertIn("narrow the topic", raised.exception.guidance)
+                self.assertEqual(["Public history of the requested kingdom"], raised.exception.missing_information)
+
+    def test_full_context_validation_blocks_invented_canon_contradiction_and_spoiler(self):
+        story = {"completeReferenceGuide": complete_guide_text(), "guardrails": {"neverReveal": "Queen Iris is the traitor"}}
+        article = {"seo_title": "Lantern", "blog_post_html": "<p>Draft</p>"}
+        cases = {
+            "inventedCanon": ["Mara owns a dragon"],
+            "contradictions": ["The lantern is made of wood"],
+            "spoilerLeaks": ["Queen Iris is the traitor"],
+        }
+        for field, values in cases.items():
+            with self.subTest(field=field):
+                payload = {"status": "failed", "unsupportedClaims": [], "inventedCanon": [], "contradictions": [], "spoilerLeaks": [], "warnings": []}
+                payload[field] = values
+                worker.article_client.models.generate_content = MagicMock(return_value=FakeModelResult(payload))
+                with self.assertRaises(worker.PermanentTaskError):
+                    worker.validate_article_against_full_context(blueprint=nexus_blueprint(), article=article, story_context=story)
+
+    def test_full_context_warning_is_returned_without_blocking(self):
+        story = {"completeReferenceGuide": complete_guide_text(), "guardrails": {"neverReveal": ""}}
+        worker.article_client.models.generate_content = MagicMock(return_value=FakeModelResult({
+            "status": "warning", "unsupportedClaims": [], "inventedCanon": [], "contradictions": [],
+            "spoilerLeaks": [], "warnings": ["A metaphor deserves editorial review."]
+        }))
+        result = worker.validate_article_against_full_context(
+            blueprint=nexus_blueprint(), article={"seo_title": "Lantern", "blog_post_html": "<p>Draft</p>"}, story_context=story
+        )
+        self.assertEqual("warning", result["status"])
+        self.assertEqual(["A metaphor deserves editorial review."], result["warnings"])
+
+    def test_insufficient_assessment_blocks_generation_artwork_secret_and_wordpress(self):
+        data = nexus_blueprint()
+        story = {"completeReferenceGuide": complete_guide_text(), "guardrails": {"neverReveal": ""}}
+        error = worker.InsufficientGroundingError("NEXUS_INSUFFICIENT_GROUNDING", guidance="Add public facts.", missing_information=["Public history"])
+        with patch.object(worker, "acquire_worker_lease", return_value=data), patch.object(
+            worker, "resolve_nexus_generation_context", return_value=(None, story, [])
+        ), patch.object(worker, "assess_story_world_topic_support", side_effect=error), patch.object(
+            worker, "generate_article_from_prompt"
+        ) as generate, patch.object(worker, "generate_featured_image") as artwork, patch.object(
+            worker, "get_secret_by_ref"
+        ) as secret, patch.object(worker, "wordpress_session") as wordpress, patch.object(worker, "update_attempt"):
+            with self.assertRaises(worker.InsufficientGroundingError):
+                worker.execute_generation("blueprint_001", "attempt_001", "KOBA-001", "https://author.example", "secret")
+        generate.assert_not_called()
+        artwork.assert_not_called()
+        secret.assert_not_called()
+        wordpress.assert_not_called()
+
+    def test_failed_full_context_validation_blocks_artwork_and_wordpress(self):
+        data = nexus_blueprint()
+        story = {"completeReferenceGuide": complete_guide_text(), "guardrails": {"neverReveal": ""}}
+        supported = {"status": "supported", "confidence": 0.9, "warnings": []}
+        with patch.object(worker, "acquire_worker_lease", return_value=data), patch.object(
+            worker, "resolve_nexus_generation_context", return_value=(None, story, [])
+        ), patch.object(worker, "assess_story_world_topic_support", return_value=supported), patch.object(
+            worker, "validate_generated_article", return_value={"groundingStatus": "grounded", "canonValidationStatus": "passed", "spoilerValidationStatus": "passed", "warnings": []}
+        ), patch.object(worker, "validate_article_against_full_context", side_effect=worker.PermanentTaskError("invented canon")), patch.object(
+            worker, "generate_featured_image"
+        ) as artwork, patch.object(worker, "wordpress_session") as wordpress, patch.object(worker, "update_attempt"):
+            with self.assertRaises(worker.PermanentTaskError):
+                worker.execute_generation("blueprint_001", "attempt_001", "KOBA-001", "https://author.example", "secret")
+        artwork.assert_not_called()
+        wordpress.assert_not_called()
 
     def test_malformed_new_blueprint_cannot_reach_legacy_book_context(self):
         data = nexus_blueprint()

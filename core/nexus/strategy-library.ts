@@ -1,8 +1,6 @@
-import type { NexusGoal, NexusStrategyFocus, NexusStrategySelection } from "./contracts";
+import type { NexusStrategyCatalogEntry, NexusStrategySelection } from "./contracts";
 
-export const NEXUS_STRATEGY_CATALOG: ReadonlyArray<{
-  id: string; displayName: string; focus: NexusStrategyFocus; description: string; goals: NexusGoal[];
-}> = [
+export const NEXUS_STRATEGY_CATALOG: ReadonlyArray<NexusStrategyCatalogEntry> = [
   { id: "strategy_persuasion", displayName: "Persuasion", focus: "persuasion", description: "Ethical persuasive structure and reader motivation.", goals: ["persuade"] },
   { id: "strategy_brand_positioning", displayName: "Brand Positioning", focus: "brand_positioning", description: "Distinctive positioning and category leadership.", goals: ["build_authority", "challenge_assumptions"] },
   { id: "strategy_audience_building", displayName: "Audience Building", focus: "audience_building", description: "Useful, relevant content that earns attention.", goals: ["educate", "answer_reader_question", "explore_theme"] },

@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { BookOpen, Building2, Compass, Globe2, Upload } from "lucide-react";
 
 type Website = { websiteConnectionId: string; displayName: string; wordpressOrigin: string; contentRole: string; defaultUniverseId?: string | null; status: string };
-type Guide = { id: string; displayName?: string; version?: number };
+type Guide = { id: string; displayName?: string; version?: number; wordCount?: number; extractedCharacterCount?: number; replacementStatus?: string };
 type World = { id: string; title?: string; genre?: string; referenceGuides?: Guide[] };
 type Strategy = { id: string; displayName: string; description: string; goals: string[] };
 type ContextPayload = { websites?: Website[]; storyWorlds?: World[]; strategies?: Strategy[]; businessProfile?: Record<string, unknown> | null };
@@ -66,7 +66,7 @@ export function NexusKnowledgePanel() {
       <div className="mt-3 space-y-3">
         {(context.storyWorlds || []).map((item) => <div key={item.id} className="rounded-lg bg-slate-950/30 p-3 text-xs">
           <p className="font-bold text-white">{item.title}</p><p className="text-muted-foreground">{item.genre} · {item.referenceGuides?.length || 0} ready guide(s)</p>
-          {(item.referenceGuides || []).map((guide) => <div key={guide.id} className="mt-2 flex items-center justify-between gap-2 rounded border border-border p-2"><span className="min-w-0"><strong className="block truncate text-white">{guide.displayName}</strong><span className="text-muted-foreground">Version {guide.version || 1}</span></span><ReferenceUpload universeId={item.id} referenceGuideId={guide.id} label="Replace" onComplete={refresh} /></div>)}
+          {(item.referenceGuides || []).map((guide) => <div key={guide.id} className="mt-2 rounded border border-border p-2"><span className="min-w-0"><strong className="block truncate text-white">{guide.displayName}</strong><span className="text-muted-foreground">Version {guide.version || 1} · {(guide.wordCount || 0).toLocaleString()} words · {(guide.extractedCharacterCount || 0).toLocaleString()} characters{guide.replacementStatus ? ` · ${guide.replacementStatus}` : ""}</span></span><ReferenceUpload universeId={item.id} referenceGuideId={guide.id} label="Replace Reference Guide" onComplete={refresh} /></div>)}
           <ReferenceUpload universeId={item.id} label="Add Reference Guide" onComplete={refresh} />
         </div>)}
         <input className={inputClass} value={world.title} onChange={(e) => setWorld({ ...world, title: e.target.value })} placeholder="Story World title" />
@@ -101,13 +101,25 @@ export function NexusKnowledgePanel() {
 
 function ReferenceUpload({ universeId, referenceGuideId, label, onComplete }: { universeId: string; referenceGuideId?: string; label: string; onComplete: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [safeToDiscuss, setSafeToDiscuss] = useState("");
+  const [neverReveal, setNeverReveal] = useState("");
+  const [message, setMessage] = useState("");
   async function upload(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]; if (!file) return;
-    setBusy(true);
-    const body = new FormData(); body.set("universeId", universeId); body.set("file", file); body.set("spoilerLevel", "public_safe"); if (referenceGuideId) body.set("referenceGuideId", referenceGuideId);
-    try { const response = await fetch("/api/nexus/reference-guides", { method: "POST", credentials: "same-origin", body }); const payload = await response.json().catch(() => null) as { error?: string } | null; if (!response.ok) throw new Error(payload?.error || "Reference Guide upload failed."); await onComplete(); } finally { setBusy(false); event.target.value = ""; }
+    setBusy(true); setMessage("");
+    const body = new FormData(); body.set("universeId", universeId); body.set("file", file); body.set("spoilerLevel", "public_safe"); body.set("publicSafeAcknowledged", String(acknowledged)); body.set("thingsSafeToDiscuss", safeToDiscuss); body.set("thingsNeverToReveal", neverReveal); if (referenceGuideId) body.set("referenceGuideId", referenceGuideId);
+    try { const response = await fetch("/api/nexus/reference-guides", { method: "POST", credentials: "same-origin", body }); const payload = await response.json().catch(() => null) as { error?: string; wordCount?: number; characterCount?: number } | null; if (!response.ok) throw new Error(payload?.error || "Reference Guide upload failed."); setMessage(`Ready: ${(payload?.wordCount || 0).toLocaleString()} words and ${(payload?.characterCount || 0).toLocaleString()} characters.`); setAcknowledged(false); await onComplete(); } catch (error) { setMessage(error instanceof Error ? error.message : "Reference Guide upload failed."); } finally { setBusy(false); event.target.value = ""; }
   }
-  return <label className="mt-2 flex cursor-pointer items-center gap-1 text-indigo-300"><Upload className="h-3 w-3" />{busy ? "Processing guide…" : label}<input className="hidden" type="file" accept=".pdf,.docx,.txt,.md,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={upload} disabled={busy} /></label>;
+  return <div className="mt-3 space-y-2 rounded-md bg-indigo-950/20 p-2 text-[11px] text-muted-foreground">
+    <p>Upload 300–5,000 normalized words, with no more than 30,000 normalized characters. Around 3,000 words is recommended. Oversized files are rejected and never silently shortened.</p>
+    <p>Include only public-safe canon the engine may discuss. Put protected outcomes, twists, identities, or future-book material in <strong className="text-foreground">Things never to reveal</strong> before generating.</p>
+    <textarea className={inputClass} value={safeToDiscuss} onChange={(event) => setSafeToDiscuss(event.target.value)} placeholder="Things safe to discuss (optional)" rows={2} />
+    <textarea className={inputClass} value={neverReveal} onChange={(event) => setNeverReveal(event.target.value)} placeholder="Things never to reveal (spoilers and protected canon)" rows={2} />
+    <label className="flex items-start gap-2"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} className="mt-0.5" /><span>I confirm this Reference Guide contains only public-facing information the Nexus SEO Engine may discuss.</span></label>
+    <label className={`flex items-center gap-1 ${acknowledged && !busy ? "cursor-pointer text-indigo-300" : "cursor-not-allowed opacity-50"}`}><Upload className="h-3 w-3" />{busy ? "Processing guide…" : label}<input className="hidden" type="file" accept=".pdf,.docx,.txt,.md,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={upload} disabled={busy || !acknowledged} /></label>
+    {message && <p role="status" className="text-indigo-200">{message}</p>}
+  </div>;
 }
 
 function WebsiteEditor({ website, worlds, busy, onSave }: { website: Website; worlds: World[]; busy: boolean; onSave: (patch: Record<string, unknown>) => Promise<void> }) {

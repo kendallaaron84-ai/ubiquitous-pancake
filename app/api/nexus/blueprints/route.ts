@@ -42,7 +42,8 @@ export async function POST(request: Request) {
     const strategy = selectNexusStrategy({ goal: resolvedGoal, mode: selectionMode, primaryId: text(body.primaryStrategyGuideId, 100) || null, supportingId: text(body.supportingStrategyGuideId, 100) || null });
     blueprintId = `nexus_${randomUUID().replace(/-/g, "")}`;
     const attemptId = randomUUID();
-    const referenceGuideVersion = contentSource === "story_world" ? await loadGuideVersion(universeId, referenceGuideId, context) : null;
+    const guideMetadata = contentSource === "story_world" ? await loadGuideMetadata(universeId, referenceGuideId, context) : null;
+    const referenceGuideVersion = guideMetadata?.version ?? null;
     const ref = adminDb.collection("content_blueprints").doc(blueprintId);
     await ref.create({
       schemaVersion: 1,
@@ -75,6 +76,11 @@ export async function POST(request: Request) {
       knowledgeChunkIds: knowledge.chunks.map((chunk) => chunk.chunkId),
       knowledgeSourceIds: knowledge.sourceIds,
       knowledgeRetrievalVersion: knowledge.retrievalVersion,
+      knowledgeMode: knowledge.knowledgeMode,
+      referenceGuideWordCount: knowledge.referenceGuideWordCount,
+      referenceGuideCharacterCount: knowledge.referenceGuideCharacterCount,
+      topicGroundingAssessment: null,
+      fullContextValidation: null,
       groundingStatus: "pending",
       groundingWarnings: [],
       canonValidationStatus: contentSource === "story_world" ? "warning" : "not_applicable",
@@ -98,11 +104,11 @@ export async function POST(request: Request) {
   }
 }
 
-async function loadGuideVersion(universeId: string, guideId: string, context: Awaited<ReturnType<typeof requireNexusAuthorContext>>): Promise<number> {
+async function loadGuideMetadata(universeId: string, guideId: string, context: Awaited<ReturnType<typeof requireNexusAuthorContext>>): Promise<{ version: number }> {
   const snapshot = await adminDb.collection("nexus_story_worlds").doc(universeId).collection("reference_guides").doc(guideId).get();
   const data = snapshot.data() || {};
-  if (!snapshot.exists || data.studioKey !== context.studioKey || data.authorId !== context.authorId || data.status !== "ready" || typeof data.version !== "number") throw new NexusRouteError(400, "The selected Reference Guide is not active and ready.");
-  return data.version;
+  if (!snapshot.exists || data.studioKey !== context.studioKey || data.authorId !== context.authorId || data.status !== "ready" || typeof data.version !== "number" || data.publicSafeAcknowledged !== true || data.contentPolicyVersion !== 1) throw new NexusRouteError(400, "The selected Reference Guide is not active, ready, and acknowledged for public-facing use.");
+  return { version: data.version };
 }
 
 function normalizeContentSource(value: unknown): NexusContentSource {

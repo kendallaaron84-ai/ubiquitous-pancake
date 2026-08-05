@@ -27,6 +27,10 @@ TASK_HMAC_SECRET = os.environ.get("KOBA_TASK_HMAC_SECRET", "")
 MAX_TASK_ATTEMPTS = int(os.environ.get("MAX_TASK_ATTEMPTS", "3"))
 LEASE_MINUTES = 10
 NEXUS_BLUEPRINT_SCHEMA_VERSION = 1
+REFERENCE_GUIDE_CONTENT_POLICY_VERSION = 1
+REFERENCE_GUIDE_MINIMUM_WORDS = 300
+REFERENCE_GUIDE_MAXIMUM_WORDS = 5000
+REFERENCE_GUIDE_MAXIMUM_CHARACTERS = 30000
 LEGACY_BLUEPRINT_SCHEMA_VERSION = 0
 LEGACY_BLUEPRINT_KIND = "legacy_content_blueprint"
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,160}$")
@@ -57,6 +61,15 @@ image_client = genai.Client(
 
 class PermanentTaskError(Exception):
     pass
+
+
+class InsufficientGroundingError(PermanentTaskError):
+    code = "NEXUS_INSUFFICIENT_GROUNDING"
+
+    def __init__(self, message: str, *, guidance: str, missing_information: list[str] | None = None):
+        super().__init__(message)
+        self.guidance = guidance
+        self.missing_information = missing_information or []
 
 
 class TerminalAttemptError(PermanentTaskError):
@@ -128,7 +141,7 @@ def fetch_book_context(author_email: str, manuscript_id: str | None) -> str:
     return f"Book title: {data.get('title', '')}\nGenre: {data.get('genre', '')}"
 
 
-STRATEGY_GUIDES: dict[str, dict[str, str]] = {
+NEXUS_STRATEGY_CATALOG: dict[str, dict[str, str]] = {
     "strategy_persuasion": {
         "name": "Persuasion",
         "guidance": "Use ethical persuasive structure, clear reasoning, and reader agency.",
@@ -182,7 +195,7 @@ def fetch_business_profile(
     return profile
 
 
-def retrieve_story_world_knowledge(
+def retrieve_legacy_chunk_traceability(
     *,
     studio_key: str,
     author_id: str,
@@ -276,6 +289,97 @@ def retrieve_story_world_knowledge(
     }
 
 
+def normalize_reference_guide_text(value: str) -> str:
+    return re.sub(r"[ \t]+", " ", value.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")).strip()
+
+
+def reference_guide_counts(value: str) -> tuple[int, int]:
+    normalized = normalize_reference_guide_text(value)
+    return (len(normalized.split()) if normalized else 0, len(normalized))
+
+
+def load_complete_reference_guide(version: dict[str, Any]) -> str:
+    inline_text = str(version.get("normalizedText") or "")
+    if inline_text:
+        return normalize_reference_guide_text(inline_text)
+    storage_path = str(version.get("extractedTextStoragePath") or "").strip().lstrip("/")
+    if not TRANSCRIPT_BUCKET or not storage_path:
+        raise PermanentTaskError("The complete Reference Guide text is unavailable.")
+    try:
+        value = storage_client.bucket(TRANSCRIPT_BUCKET).blob(storage_path).download_as_text(encoding="utf-8")
+        return normalize_reference_guide_text(value)
+    except Exception as error:
+        raise PermanentTaskError("The complete Reference Guide text could not be loaded.") from error
+
+
+def retrieve_story_world_knowledge(
+    *, studio_key: str, author_id: str, universe_id: str,
+    reference_guide_id: str, topic: str = "", target_audience: str = "",
+    seo_keywords: dict[str, str] | None = None, goal: str = "",
+    max_chunks: int = 10, approved_chunk_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    # Topic, audience, SEO, goal, and max_chunks are intentionally not used for
+    # retrieval. ADR-002 generation is grounded in the complete active guide;
+    # chunks remain traceability evidence only.
+    del topic, target_audience, seo_keywords, goal, max_chunks
+    world_ref = db.collection("nexus_story_worlds").document(universe_id)
+    world_snapshot = world_ref.get()
+    world = world_snapshot.to_dict() or {}
+    if not world_snapshot.exists or str(world.get("studioKey") or "") != studio_key or str(world.get("authorId") or "") != author_id or str(world.get("status") or "") != "active":
+        raise PermanentTaskError("The selected Story World is not active for this tenant.")
+
+    guide_ref = world_ref.collection("reference_guides").document(reference_guide_id)
+    guide_snapshot = guide_ref.get()
+    guide = guide_snapshot.to_dict() or {}
+    if not guide_snapshot.exists or str(guide.get("studioKey") or "") != studio_key or str(guide.get("authorId") or "") != author_id or str(guide.get("universeId") or "") != universe_id or str(guide.get("status") or "") != "ready":
+        raise PermanentTaskError("The selected Reference Guide is not active and ready.")
+    if guide.get("publicSafeAcknowledged") is not True or int(guide.get("contentPolicyVersion") or 0) != REFERENCE_GUIDE_CONTENT_POLICY_VERSION:
+        raise PermanentTaskError("The Reference Guide has not been acknowledged for public-facing generation.")
+
+    version = int(guide.get("version") or 0)
+    version_ref = guide_ref.collection("versions").document(str(version))
+    version_snapshot = version_ref.get()
+    version_data = version_snapshot.to_dict() or {}
+    if version <= 0 or not version_snapshot.exists or str(version_data.get("status") or "") != "ready" or version_data.get("publicSafeAcknowledged") is not True or int(version_data.get("contentPolicyVersion") or 0) != REFERENCE_GUIDE_CONTENT_POLICY_VERSION:
+        raise PermanentTaskError("The active Reference Guide version is not ready for public-facing generation.")
+
+    complete_text = load_complete_reference_guide(version_data)
+    word_count, character_count = reference_guide_counts(complete_text)
+    if word_count < REFERENCE_GUIDE_MINIMUM_WORDS:
+        raise PermanentTaskError("The active Reference Guide is below the 300-word minimum.")
+    if word_count > REFERENCE_GUIDE_MAXIMUM_WORDS or character_count > REFERENCE_GUIDE_MAXIMUM_CHARACTERS:
+        raise PermanentTaskError("The active Reference Guide exceeds the full-context safety limit and was not truncated.")
+    if int(version_data.get("wordCount") or 0) not in {0, word_count} or int(version_data.get("extractedCharacterCount") or 0) not in {0, character_count}:
+        raise PermanentTaskError("The active Reference Guide metadata does not match its stored text.")
+
+    approved_ids = [str(value).strip() for value in (approved_chunk_ids or []) if ID_PATTERN.fullmatch(str(value).strip())]
+    if approved_chunk_ids is not None and len(approved_ids) != len(approved_chunk_ids):
+        raise PermanentTaskError("Stored Story World traceability identifiers are invalid.")
+    chunks_ref = version_ref.collection("chunks")
+    snapshots = [chunks_ref.document(chunk_id).get() for chunk_id in approved_ids] if approved_ids else list(chunks_ref.order_by("chunkIndex").stream())
+    traceability_ids: list[str] = []
+    for snapshot in snapshots:
+        if not snapshot.exists:
+            raise PermanentTaskError("Stored Story World traceability data is no longer available.")
+        chunk = snapshot.to_dict() or {}
+        if str(chunk.get("studioKey") or "") != studio_key or str(chunk.get("authorId") or "") != author_id or str(chunk.get("universeId") or "") != universe_id or str(chunk.get("referenceGuideId") or "") != reference_guide_id or int(chunk.get("referenceGuideVersion") or 0) != version:
+            raise PermanentTaskError("Cross-tenant Reference Guide traceability data was rejected.")
+        if str(chunk.get("spoilerLevel") or "") != "restricted":
+            traceability_ids.append(snapshot.id)
+
+    policy = guide.get("spoilerPolicy") if isinstance(guide.get("spoilerPolicy"), dict) else {}
+    return {
+        "world": world, "guide": guide, "version": version,
+        "completeReferenceGuide": complete_text, "wordCount": word_count,
+        "characterCount": character_count, "knowledgeMode": "full_reference_guide",
+        "traceabilityChunkIds": traceability_ids,
+        "guardrails": {
+            "safeToDiscuss": str(policy.get("thingsSafeToDiscuss") or "").strip(),
+            "neverReveal": str(policy.get("thingsNeverToReveal") or "").strip(),
+        },
+    }
+
+
 def select_strategy_guides(
     *,
     content_source: str,
@@ -289,9 +393,9 @@ def select_strategy_guides(
     del content_source, topic, target_audience, seo_keywords
     primary = str(manual_primary_guide_id or "").strip()
     supporting = str(manual_supporting_guide_id or "").strip() or None
-    if primary not in STRATEGY_GUIDES:
+    if primary not in NEXUS_STRATEGY_CATALOG:
         raise PermanentTaskError("The resolved primary strategy guide is invalid.")
-    if supporting is not None and supporting not in STRATEGY_GUIDES:
+    if supporting is not None and supporting not in NEXUS_STRATEGY_CATALOG:
         raise PermanentTaskError("The resolved supporting strategy guide is invalid.")
     if supporting == primary:
         raise PermanentTaskError("Primary and supporting strategy guides must differ.")
@@ -313,12 +417,116 @@ def fetch_strategy_context(
     return [
         {
             "strategyGuideId": guide_id,
-            "displayName": STRATEGY_GUIDES[guide_id]["name"],
-            "guidance": STRATEGY_GUIDES[guide_id]["guidance"],
+            "displayName": NEXUS_STRATEGY_CATALOG[guide_id]["name"],
+            "guidance": NEXUS_STRATEGY_CATALOG[guide_id]["guidance"],
             "goal": goal,
         }
         for guide_id in guide_ids
     ]
+
+
+def parse_structured_model_response(raw: str, label: str) -> dict[str, Any]:
+    value = raw.strip()
+    if value.startswith("```json"):
+        value = value[7:]
+    if value.endswith("```"):
+        value = value[:-3]
+    try:
+        parsed = json.loads(value.strip())
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"The {label} model returned invalid JSON.") from error
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"The {label} model returned an invalid object.")
+    return parsed
+
+
+def assess_story_world_topic_support(
+    *, blueprint: dict[str, Any], story_context: dict[str, Any]
+) -> dict[str, Any]:
+    prompt = f"""
+Assess whether the requested article can be responsibly written using the COMPLETE Reference Guide below.
+Reason across synonyms, implied relationships, themes, indirect references, and paraphrases. Do not require exact lexical overlap.
+Do not invent facts. Treat the spoiler guardrails as absolute.
+
+Topic: {blueprint.get('topicTitle') or blueprint.get('title') or ''}
+Audience: {blueprint.get('targetAudience') or ''}
+Goal: {blueprint.get('resolvedGoal') or ''}
+SEO keywords: {json.dumps(blueprint.get('seoKeywords') or {}, ensure_ascii=False)}
+Safe to discuss: {story_context['guardrails'].get('safeToDiscuss', '')}
+Never reveal: {story_context['guardrails'].get('neverReveal', '')}
+
+COMPLETE REFERENCE GUIDE:
+{story_context['completeReferenceGuide']}
+
+Return JSON with: status (supported, warning, or insufficient), confidence (0 to 1),
+supportingFacts (array), missingInformation (array), warnings (array), and authorGuidance (string).
+"""
+    response = article_client.models.generate_content(
+        model=ARTICLE_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
+    )
+    parsed = parse_structured_model_response(str(response.text or ""), "grounding assessment")
+    status = str(parsed.get("status") or "").strip().lower()
+    try:
+        confidence = float(parsed.get("confidence"))
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("The grounding assessment omitted a valid confidence score.") from error
+    if status not in {"supported", "warning", "insufficient"} or not 0 <= confidence <= 1:
+        raise RuntimeError("The grounding assessment returned an invalid status or confidence.")
+    result = {
+        "status": status,
+        "confidence": confidence,
+        "supportingFacts": [str(value).strip() for value in parsed.get("supportingFacts", []) if str(value).strip()][:20],
+        "missingInformation": [str(value).strip() for value in parsed.get("missingInformation", []) if str(value).strip()][:20],
+        "warnings": [str(value).strip() for value in parsed.get("warnings", []) if str(value).strip()][:20],
+        "authorGuidance": str(parsed.get("authorGuidance") or "Add public-facing facts to the Reference Guide or narrow the requested topic.").strip()[:1000],
+    }
+    if status == "insufficient" or confidence < 0.6:
+        raise InsufficientGroundingError(
+            "NEXUS_INSUFFICIENT_GROUNDING: The active Reference Guide does not support this topic with enough confidence.",
+            guidance=result["authorGuidance"],
+            missing_information=result["missingInformation"],
+        )
+    return result
+
+
+def validate_article_against_full_context(
+    *, blueprint: dict[str, Any], article: dict[str, str], story_context: dict[str, Any]
+) -> dict[str, Any]:
+    prompt = f"""
+Validate the generated draft against the COMPLETE Reference Guide and spoiler guardrails.
+Identify invented canon, factual contradictions, unsupported claims, and spoiler leakage.
+Minor editorial concerns may be warnings, but any invented canon, contradiction, or spoiler leak must fail.
+
+Topic: {blueprint.get('topicTitle') or blueprint.get('title') or ''}
+Never reveal: {story_context['guardrails'].get('neverReveal', '')}
+COMPLETE REFERENCE GUIDE:
+{story_context['completeReferenceGuide']}
+
+DRAFT:
+{article.get('seo_title', '')}
+{article.get('blog_post_html', '')}
+
+Return JSON with: status (passed, warning, or failed), unsupportedClaims (array),
+inventedCanon (array), contradictions (array), spoilerLeaks (array), and warnings (array).
+"""
+    response = article_client.models.generate_content(
+        model=ARTICLE_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
+    )
+    parsed = parse_structured_model_response(str(response.text or ""), "full-context validation")
+    result = {
+        key: [str(value).strip() for value in parsed.get(key, []) if str(value).strip()][:20]
+        for key in ("unsupportedClaims", "inventedCanon", "contradictions", "spoilerLeaks", "warnings")
+    }
+    hard_failures = result["unsupportedClaims"] + result["inventedCanon"] + result["contradictions"] + result["spoilerLeaks"]
+    if hard_failures or str(parsed.get("status") or "").lower() == "failed":
+        reason = "spoiler leakage" if result["spoilerLeaks"] else "invented or contradictory canon"
+        raise PermanentTaskError(f"Story World full-context validation failed: {reason} was detected.")
+    result["status"] = "warning" if result["warnings"] or str(parsed.get("status") or "").lower() == "warning" else "passed"
+    return result
 
 
 def _profile_text(profile: dict[str, Any]) -> str:
@@ -342,6 +550,7 @@ def build_grounded_article_prompt(
     business_context: dict[str, Any] | None,
     story_context: dict[str, Any] | None,
     strategy_context: list[dict[str, Any]],
+    grounding_assessment: dict[str, Any] | None = None,
 ) -> str:
     topic = str(blueprint.get("topicTitle") or blueprint.get("title") or "").strip()
     audience = str(blueprint.get("targetAudience") or "").strip()
@@ -353,17 +562,15 @@ def build_grounded_article_prompt(
     if business_context is not None:
         source_context = "BUSINESS PROFILE (authoritative):\n" + _profile_text(business_context)
     elif story_context is not None:
-        chunks = "\n\n".join(
-            f"APPROVED KNOWLEDGE {index + 1}:\n{chunk['text']}"
-            for index, chunk in enumerate(story_context["chunks"])
-        )
         source_context = (
-            "REFERENCE GUIDE KNOWLEDGE (authoritative; do not add canon beyond it):\n"
+            "COMPLETE REFERENCE GUIDE (authoritative; do not add canon beyond it):\n"
             f"Story World: {story_context['world'].get('title', '')}\n"
             f"Genre: {story_context['world'].get('genre', '')}\n"
             f"Safe to discuss: {story_context['guardrails'].get('safeToDiscuss', '')}\n"
             f"Never reveal: {story_context['guardrails'].get('neverReveal', '')}\n\n"
-            f"{chunks}"
+            f"{story_context['completeReferenceGuide']}\n\n"
+            "TOPIC-SUPPORT ASSESSMENT:\n"
+            f"{json.dumps(grounding_assessment or {}, ensure_ascii=False)}"
         )
     else:
         raise PermanentTaskError("Nexus generation context is missing.")
@@ -642,6 +849,10 @@ def record_worker_error(
             updates["executionState"] = "failed"
             updates["errorLog"] = str(error)[:500]
             updates["failedAt"] = firestore.SERVER_TIMESTAMP
+        if isinstance(error, InsufficientGroundingError):
+            updates["errorCode"] = error.code
+            updates["authorRemediationGuidance"] = error.guidance[:1000]
+            updates["missingGroundingInformation"] = error.missing_information[:20]
         transaction.update(reference, updates)
 
     record(transaction)
@@ -807,16 +1018,13 @@ def resolve_nexus_generation_context(
         or not approved_chunk_ids
     ):
         raise PermanentTaskError("Story World grounding metadata is incomplete.")
+    if str(data.get("knowledgeMode") or "") != "full_reference_guide":
+        raise PermanentTaskError("ADR-002 Story World blueprints require full Reference Guide grounding.")
     story_context = retrieve_story_world_knowledge(
         studio_key=studio_key,
         author_id=author_id,
         universe_id=universe_id,
         reference_guide_id=reference_guide_id,
-        topic=str(data.get("topicTitle") or data.get("title") or ""),
-        target_audience=str(data.get("targetAudience") or ""),
-        seo_keywords=data.get("seoKeywords") if isinstance(data.get("seoKeywords"), dict) else {},
-        goal=str(data.get("resolvedGoal") or ""),
-        max_chunks=10,
         approved_chunk_ids=approved_chunk_ids,
     )
     if story_context["version"] != reference_version:
@@ -1108,6 +1316,41 @@ def execute_generation(
         business_context, story_context, strategy_context = (
             resolve_nexus_generation_context(data, studio_key)
         )
+    grounding_assessment: dict[str, Any] | None = None
+    if is_nexus_blueprint and content_source == "story_world" and story_context is not None:
+        try:
+            grounding_assessment = assess_story_world_topic_support(
+                blueprint=data, story_context=story_context
+            )
+        except InsufficientGroundingError as error:
+            update_attempt(
+                reference,
+                attempt_id,
+                {
+                    "groundingStatus": "failed",
+                    "topicGroundingAssessment": {
+                        "status": "insufficient",
+                        "confidence": 0,
+                        "supportingFacts": [],
+                        "missingInformation": error.missing_information,
+                        "warnings": [],
+                        "authorGuidance": error.guidance,
+                    },
+                    "groundingWarnings": [error.guidance],
+                    "validationFailedAt": firestore.SERVER_TIMESTAMP,
+                },
+            )
+            raise
+        update_attempt(
+            reference,
+            attempt_id,
+            {
+                "topicGroundingAssessment": grounding_assessment,
+                "groundingStatus": "grounded" if grounding_assessment["status"] == "supported" else "warning",
+                "groundingWarnings": grounding_assessment["warnings"],
+                "groundingAssessedAt": firestore.SERVER_TIMESTAMP,
+            },
+        )
 
     article = {
         "seo_title": str(data.get("seoTitle") or ""),
@@ -1126,6 +1369,7 @@ def execute_generation(
                     business_context=business_context,
                     story_context=story_context,
                     strategy_context=strategy_context,
+                    grounding_assessment=grounding_assessment,
                 )
             )
         elif generation_mode == "legacy":
@@ -1147,11 +1391,26 @@ def execute_generation(
 
     if is_nexus_blueprint:
         try:
-            validation = validate_generated_article(
-                blueprint=data,
-                article=article,
-                story_context=story_context,
+            basic_validation = validate_generated_article(
+                blueprint=data, article=article,
+                story_context=None if content_source == "story_world" else story_context,
             )
+            if content_source == "story_world" and story_context is not None:
+                full_validation = validate_article_against_full_context(
+                    blueprint=data, article=article, story_context=story_context
+                )
+                combined_warnings = list(dict.fromkeys(
+                    basic_validation["warnings"] + (grounding_assessment or {}).get("warnings", []) + full_validation["warnings"]
+                ))
+                validation = {
+                    "groundingStatus": "warning" if combined_warnings else "grounded",
+                    "canonValidationStatus": full_validation["status"],
+                    "spoilerValidationStatus": full_validation["status"],
+                    "warnings": combined_warnings,
+                    "fullContextValidation": full_validation,
+                }
+            else:
+                validation = {**basic_validation, "fullContextValidation": None}
         except PermanentTaskError as validation_error:
             failure_message = str(validation_error)[:500]
             update_attempt(
@@ -1182,6 +1441,7 @@ def execute_generation(
                 "groundingWarnings": validation["warnings"],
                 "canonValidationStatus": validation["canonValidationStatus"],
                 "spoilerValidationStatus": validation["spoilerValidationStatus"],
+                "fullContextValidation": validation["fullContextValidation"],
                 "generationStrategy": {
                     "primaryStrategyGuideId": data.get("primaryStrategyGuideId"),
                     "supportingStrategyGuideId": data.get("supportingStrategyGuideId"),
@@ -1195,6 +1455,9 @@ def execute_generation(
                     "referenceGuideVersion": data.get("referenceGuideVersion"),
                     "knowledgeChunkIds": data.get("knowledgeChunkIds") or [],
                     "retrievalVersion": data.get("knowledgeRetrievalVersion"),
+                    "knowledgeMode": data.get("knowledgeMode"),
+                    "referenceGuideWordCount": story_context.get("wordCount") if story_context else None,
+                    "referenceGuideCharacterCount": story_context.get("characterCount") if story_context else None,
                 },
                 "validatedAt": firestore.SERVER_TIMESTAMP,
             },
@@ -1600,7 +1863,10 @@ def process_blog_topics(request):
         elif blueprint_id and attempt_id:
             reference = db.collection("content_blueprints").document(blueprint_id)
             record_worker_error(reference, attempt_id, error, 0, True)
-        return (json.dumps({"error": str(error)}), 400, {"Content-Type": "application/json"})
+        payload: dict[str, Any] = {"error": str(error)}
+        if isinstance(error, InsufficientGroundingError):
+            payload.update({"code": error.code, "guidance": error.guidance, "missingInformation": error.missing_information})
+        return (json.dumps(payload), 400, {"Content-Type": "application/json"})
     except Exception as error:
         retry_count = int(request.headers.get("X-CloudTasks-TaskRetryCount") or "0")
         terminal = retry_count >= max(0, MAX_TASK_ATTEMPTS - 1)

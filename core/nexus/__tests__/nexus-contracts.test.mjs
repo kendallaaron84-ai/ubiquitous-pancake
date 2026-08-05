@@ -11,10 +11,12 @@ import {
 import { getNexusFeatureFlags } from "../feature-flags.ts";
 import {
   NEXUS_REFERENCE_GUIDE_LIMITS,
-  createSemanticChunks,
+  createTraceabilityChunks,
   estimateTokens,
+  validateReferenceGuideText,
   validateReferenceGuideFile,
 } from "../reference-guide.ts";
+import { validateFirebasePublicConfig } from "../../firebase-config.ts";
 import {
   NEXUS_STRATEGY_CATALOG,
   selectNexusStrategy,
@@ -78,11 +80,43 @@ test("reference guide validation accepts approved formats and rejects unsafe inp
   assert.throws(() => validateReferenceGuideFile({ name: "guide.txt", type: "text/plain", size: NEXUS_REFERENCE_GUIDE_LIMITS.maxFileSizeBytes + 1 }), /REFERENCE_GUIDE_TOO_LARGE/);
 });
 
-test("reference guide chunking is bounded and token estimation is stable", () => {
-  const chunks = createSemanticChunks("Character facts.\n\nLocation facts.\n\nTheme facts.", 30);
+test("reference guide traceability chunking is bounded and token estimation is stable", () => {
+  const chunks = createTraceabilityChunks("Character facts.\n\nLocation facts.\n\nTheme facts.", 30);
   assert.deepEqual(chunks, ["Character facts.", "Location facts.\n\nTheme facts."]);
   assert.ok(chunks.every((chunk) => chunk.length <= 30));
   assert.equal(estimateTokens("12345678"), 2);
+});
+
+test("full-context limits reject instead of silently truncating", () => {
+  const minimum = Array.from({ length: 300 }, () => "canon").join(" ");
+  assert.deepEqual(validateReferenceGuideText(minimum), {
+    normalizedText: minimum,
+    wordCount: 300,
+    characterCount: minimum.length,
+  });
+  assert.throws(() => validateReferenceGuideText(Array.from({ length: 299 }, () => "canon").join(" ")), /REFERENCE_GUIDE_TOO_SHORT/);
+  const maxWords = Array.from({ length: 5000 }, () => "a").join(" ");
+  assert.equal(validateReferenceGuideText(maxWords).wordCount, 5000);
+  assert.throws(() => validateReferenceGuideText(`${maxWords} a`), /REFERENCE_GUIDE_WORD_LIMIT_EXCEEDED/);
+
+  const exactlyThirtyThousand = `${Array.from({ length: 299 }, () => "a").join(" ")} ${"b".repeat(29402)}`;
+  assert.equal(exactlyThirtyThousand.length, 30000);
+  assert.equal(validateReferenceGuideText(exactlyThirtyThousand).characterCount, 30000);
+  assert.throws(() => validateReferenceGuideText(`${exactlyThirtyThousand}b`), /REFERENCE_GUIDE_CHARACTER_LIMIT_EXCEEDED/);
+});
+
+test("Firebase client configuration fails early with actionable environment errors", () => {
+  const valid = {
+    apiKey: `AIza${"a".repeat(32)}`,
+    authDomain: "example.firebaseapp.com",
+    projectId: "example",
+    storageBucket: "example.firebasestorage.app",
+    messagingSenderId: "123",
+    appId: "1:123:web:abc",
+  };
+  assert.doesNotThrow(() => validateFirebasePublicConfig(valid));
+  assert.throws(() => validateFirebasePublicConfig({ ...valid, apiKey: "not-a-key" }), /invalid NEXT_PUBLIC_FIREBASE_API_KEY/);
+  assert.throws(() => validateFirebasePublicConfig({ ...valid, authDomain: "" }), /NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN/);
 });
 
 test("feature flags default closed except the backward-compatible strategy selector", () => {
@@ -128,6 +162,15 @@ test("worker and gateway retain critical baseline controls", async () => {
   assert.match(worker, /facebook_post/);
   assert.match(worker, /instagram_caption/);
   assert.match(worker, /generate_featured_image/);
+  assert.match(worker, /COMPLETE Reference Guide/);
+  assert.match(worker, /NEXUS_INSUFFICIENT_GROUNDING/);
+  assert.match(worker, /knowledgeMode.*full_reference_guide/s);
+  const fullContextRetrieval = worker.slice(
+    worker.indexOf("def retrieve_story_world_knowledge"),
+    worker.indexOf("def select_strategy_guides")
+  );
+  assert.match(fullContextRetrieval, /completeReferenceGuide/);
+  assert.doesNotMatch(fullContextRetrieval, /lexical/i);
   assert.match(worker, /"status": "draft"/);
   assert.match(gateway, /app\.post\("\/verify-wordpress"/);
   assert.match(gateway, /app\.post\("\/publish-vault"/);
