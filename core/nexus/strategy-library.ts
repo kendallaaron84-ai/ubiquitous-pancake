@@ -1,4 +1,8 @@
-import type { NexusStrategyCatalogEntry, NexusStrategySelection } from "./contracts";
+import type {
+  NexusGoal,
+  NexusStrategyCatalogEntry,
+  NexusStrategySelection,
+} from "./contracts";
 
 export const NEXUS_STRATEGY_CATALOG: ReadonlyArray<NexusStrategyCatalogEntry> = [
   { id: "strategy_persuasion", displayName: "Persuasion", focus: "persuasion", description: "Ethical persuasive structure and reader motivation.", goals: ["persuade"] },

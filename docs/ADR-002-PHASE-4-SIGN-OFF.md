@@ -23,6 +23,7 @@ The implementation is additive to commit `9767d0ea9083b1b2243458dfa5e4cd61dca820
   - 5,000 normalized words; or
   - 30,000 normalized characters.
 - Content is never silently truncated.
+- The 5 MB upload ceiling is intentional: PDF and DOCX containers may be larger than their extracted prose. The route bounds the raw upload before parsing, independently validates normalized extracted text against both hard limits, rejects oversized output, and performs no truncation.
 - Active guide/version records retain normalized word and character counts, the content-policy version, acknowledgement evidence, source digest, and Storage reference.
 - Chunks remain as bounded traceability records. They are not used as the authoritative generation context and are not described as vector retrieval.
 
