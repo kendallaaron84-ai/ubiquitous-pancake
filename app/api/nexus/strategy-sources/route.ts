@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { FieldValue } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
-import { adminDb, adminStorage } from "@/core/firebase-admin";
+import { adminDb, adminStorage, resolveFirebaseStorageBucketName } from "@/core/firebase-admin";
 import { BUSINESS_BRAND_GOALS, STORY_WORLD_GOALS, type NexusGoal } from "@/core/nexus/contracts";
 import { nexusErrorResponse, NexusRouteError, text } from "@/core/nexus/http";
 import { requireNexusOwnerContext } from "@/core/nexus/owner-context";
@@ -46,7 +46,7 @@ export async function POST(request: Request) {
     const basePath = `nexus/platform/strategy-sources/${strategyGuideId}/v${version}`;
     const sourcePath = `${basePath}/source/${safeFileName(file.name)}`;
     const textPath = `${basePath}/extracted.txt`;
-    const bucket = adminStorage.bucket();
+    const bucket = adminStorage.bucket(resolveFirebaseStorageBucketName());
     await Promise.all([
       bucket.file(sourcePath).save(bytes, { resumable: false, contentType: file.type || "application/octet-stream", metadata: { cacheControl: "private, no-store" } }),
       bucket.file(textPath).save(Buffer.from(normalized), { resumable: false, contentType: "text/plain; charset=utf-8", metadata: { cacheControl: "private, no-store" } }),

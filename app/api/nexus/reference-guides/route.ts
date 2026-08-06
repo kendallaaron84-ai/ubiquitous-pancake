@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { FieldValue } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
 
-import { adminDb, adminStorage } from "@/core/firebase-admin";
+import { adminDb, adminStorage, resolveFirebaseStorageBucketName } from "@/core/firebase-admin";
 import { requireNexusAuthorContext } from "@/core/nexus/author-context";
 import { getNexusFeatureFlags } from "@/core/nexus/feature-flags";
 import { nexusErrorResponse, NexusRouteError, text } from "@/core/nexus/http";
@@ -38,7 +38,18 @@ export async function POST(request: Request) {
     if (!(file instanceof File) || !universeId) throw new NexusRouteError(400, "A Story World and Reference Guide file are required.");
     if (!clientRequestId || !/^[A-Za-z0-9_-]{8,120}$/.test(clientRequestId)) throw new NexusRouteError(400, "A valid upload request ID is required.");
     if (form.get("publicSafeAcknowledged") !== "true") throw new NexusRouteError(400, "Confirm that this Reference Guide contains only public-facing information the engine may discuss.");
-    validateReferenceGuideFile(file);
+    try {
+      validateReferenceGuideFile(file);
+    } catch (error) {
+      const fileErrors: Record<string, [number, string]> = {
+        REFERENCE_GUIDE_EMPTY: [400, "The selected Reference Guide file is empty."],
+        REFERENCE_GUIDE_TOO_LARGE: [413, `Reference Guide files may be no larger than ${(NEXUS_REFERENCE_GUIDE_LIMITS.maxFileSizeBytes / 1024 / 1024).toLocaleString()} MB.`],
+        REFERENCE_GUIDE_TYPE_UNSUPPORTED: [415, "Upload a PDF, DOCX, TXT, or Markdown Reference Guide."],
+      };
+      const mapped = error instanceof Error ? fileErrors[error.message] : undefined;
+      if (mapped) throw new NexusRouteError(mapped[0], mapped[1]);
+      throw error;
+    }
     const worldRef = adminDb.collection("nexus_story_worlds").doc(universeId);
     const world = await worldRef.get();
     const worldData = world.data() || {};
@@ -118,11 +129,20 @@ export async function POST(request: Request) {
     if (!chunks.length || chunks.length > NEXUS_REFERENCE_GUIDE_LIMITS.maxChunksPerGuide) throw new NexusRouteError(422, "The Reference Guide could not be divided into supported knowledge chunks.");
 
     const basePath = `nexus/${context.studioKey}/story-worlds/${universeId}/reference-guides/${referenceGuideId}/v${version}`;
-    const bucket = adminStorage.bucket();
-    await Promise.all([
-      bucket.file(`${basePath}/source/${safeFileName(file.name)}`).save(bytes, { resumable: false, contentType: file.type || "application/octet-stream", metadata: { cacheControl: "private, no-store" } }),
-      bucket.file(`${basePath}/extracted.txt`).save(Buffer.from(extracted, "utf8"), { resumable: false, contentType: "text/plain; charset=utf-8", metadata: { cacheControl: "private, no-store" } }),
-    ]);
+    let bucket: ReturnType<NonNullable<typeof adminStorage>["bucket"]>;
+    try {
+      bucket = adminStorage.bucket(resolveFirebaseStorageBucketName());
+      await Promise.all([
+        bucket.file(`${basePath}/source/${safeFileName(file.name)}`).save(bytes, { resumable: false, contentType: file.type || "application/octet-stream", metadata: { cacheControl: "private, no-store" } }),
+        bucket.file(`${basePath}/extracted.txt`).save(Buffer.from(extracted, "utf8"), { resumable: false, contentType: "text/plain; charset=utf-8", metadata: { cacheControl: "private, no-store" } }),
+      ]);
+    } catch (error) {
+      console.error("[Nexus Reference Guide] Storage write failed.", {
+        name: error instanceof Error ? error.name : "UnknownError",
+        code: storageErrorCode(error),
+      });
+      throw new NexusRouteError(503, "Reference Guide storage is not configured or could not save this upload. Confirm FIREBASE_STORAGE_BUCKET and the Firebase service account's Storage permissions.");
+    }
 
     await createdGuideRef.set(replacingExisting ? { replacementStatus: "indexing", updatedAt: FieldValue.serverTimestamp() } : { status: "indexing", updatedAt: FieldValue.serverTimestamp() }, { merge: true });
     const versionRef = createdGuideRef.collection("versions").doc(String(version));
@@ -191,7 +211,8 @@ export async function PATCH(request: Request) {
         const safePrefix = `nexus/${context.studioKey}/story-worlds/${universeId}/reference-guides/${referenceGuideId}/`;
         const paths = [guideData.sourceStoragePath, guideData.extractedTextStoragePath]
           .filter((value): value is string => typeof value === "string" && value.startsWith(safePrefix));
-        await Promise.all(paths.map((path) => adminStorage.bucket().file(path).delete({ ignoreNotFound: true })));
+        const bucket = adminStorage.bucket(resolveFirebaseStorageBucketName());
+        await Promise.all(paths.map((path) => bucket.file(path).delete({ ignoreNotFound: true })));
       }
       await writeReferenceGuideAudit(worldRef, context, "incomplete_deleted", referenceGuideId);
       await adminDb.recursiveDelete(guideRef);
@@ -242,3 +263,8 @@ async function extractText(bytes: Buffer, name: string, mimeType: string): Promi
 
 function normalizeSpoilerLevel(value: FormDataEntryValue | null): "public_safe" | "limited_spoilers" | "author_directed" { return value === "limited_spoilers" || value === "author_directed" ? value : "public_safe"; }
 function safeFileName(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 180) || "guide"; }
+function storageErrorCode(error: unknown): string | number | null {
+  if (!error || typeof error !== "object" || !("code" in error)) return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" || typeof code === "number" ? code : null;
+}

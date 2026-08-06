@@ -25,9 +25,12 @@ export class FirebaseAdminConfigurationError extends Error {
 }
 
 export interface FirebaseAdminEnvironment {
+  [key: string]: string | undefined;
   FIREBASE_PROJECT_ID?: string;
   FIREBASE_CLIENT_EMAIL?: string;
   FIREBASE_PRIVATE_KEY?: string;
+  FIREBASE_STORAGE_BUCKET?: string;
+  NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET?: string;
 }
 
 export interface FirebaseAdminServices {
@@ -96,7 +99,28 @@ export function loadFirebaseAdminConfiguration(
     );
   }
 
-  return { projectId, clientEmail, privateKey };
+  const storageBucket = normalizeEnvironmentValue(
+    environment.FIREBASE_STORAGE_BUCKET ??
+      environment.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+  );
+
+  return { projectId, clientEmail, privateKey, storageBucket };
+}
+
+export function resolveFirebaseStorageBucketName(
+  environment: FirebaseAdminEnvironment = process.env
+): string {
+  const bucketName = normalizeEnvironmentValue(
+    environment.FIREBASE_STORAGE_BUCKET ??
+      environment.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+  );
+  if (!bucketName) {
+    throw new FirebaseAdminConfigurationError(
+      "Firebase Storage requires FIREBASE_STORAGE_BUCKET.",
+      ["FIREBASE_STORAGE_BUCKET"]
+    );
+  }
+  return bucketName;
 }
 
 export function createFirebaseAdminServices(
@@ -111,6 +135,9 @@ export function createFirebaseAdminServices(
         const configuration = loadFirebaseAdminConfiguration(environment);
         return dependencies.initializeApp({
           credential: dependencies.cert(configuration),
+          ...(configuration.storageBucket
+            ? { storageBucket: configuration.storageBucket }
+            : {}),
         });
       })();
     const auth = dependencies.getAuth(app);

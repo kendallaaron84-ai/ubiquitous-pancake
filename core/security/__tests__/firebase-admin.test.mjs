@@ -5,6 +5,7 @@ import {
   FirebaseAdminConfigurationError,
   createFirebaseAdminServices,
   loadFirebaseAdminConfiguration,
+  resolveFirebaseStorageBucketName,
 } from "../../firebase-admin.ts";
 
 function createEnvironment(overrides = {}) {
@@ -13,6 +14,7 @@ function createEnvironment(overrides = {}) {
     FIREBASE_CLIENT_EMAIL: "firebase-admin@example.iam.gserviceaccount.com",
     FIREBASE_PRIVATE_KEY:
       '"-----BEGIN PRIVATE KEY-----\\nprivate-material\\n-----END PRIVATE KEY-----\\n"',
+    FIREBASE_STORAGE_BUCKET: "production-project.firebasestorage.app",
     ...overrides,
   };
 }
@@ -76,6 +78,19 @@ test("valid Firebase Admin configuration initializes Auth and restores escaped n
   assert.equal(
     calls.cert[0].privateKey,
     "-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----"
+  );
+});
+
+test("Firebase Storage resolves the server bucket and rejects missing configuration", () => {
+  assert.equal(
+    resolveFirebaseStorageBucketName(createEnvironment()),
+    "production-project.firebasestorage.app"
+  );
+  assert.throws(
+    () => resolveFirebaseStorageBucketName({}),
+    (error) =>
+      error instanceof FirebaseAdminConfigurationError &&
+      error.missingVariables.includes("FIREBASE_STORAGE_BUCKET")
   );
 });
 
