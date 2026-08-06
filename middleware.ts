@@ -8,6 +8,13 @@ import {
 } from "@/core/security/dashboard-session";
 
 const PUBLIC_PAGE_PREFIXES = ["/signin", "/signup", "/setup-password"];
+const PUBLIC_READER_PAGES = new Set([
+  "/reader",
+  "/reader/signin",
+  "/reader/signup",
+  "/reader/recover",
+  "/reader/account",
+]);
 const PUBLIC_API_EXACT_PATHS = new Set([
   "/api/login",
   "/api/logout",
@@ -25,6 +32,8 @@ const PUBLIC_API_EXACT_PATHS = new Set([
   "/api/verify-entitlement",
   "/api/verify-license",
   "/api/library-manifest",
+  "/api/reader/session",
+  "/api/reader/logout",
 ]);
 const PUBLIC_API_PREFIXES = ["/api/webhook"];
 const MVP_PAGE_PREFIXES = [
@@ -95,6 +104,9 @@ export async function middleware(request: NextRequest) {
 }
 
 function isPublicRoute(pathname: string): boolean {
+  if (PUBLIC_READER_PAGES.has(pathname)) {
+    return true;
+  }
   if (PUBLIC_PAGE_PREFIXES.some((prefix) => pathMatchesPrefix(pathname, prefix))) {
     return true;
   }
