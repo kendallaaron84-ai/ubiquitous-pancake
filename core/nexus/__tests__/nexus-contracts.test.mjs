@@ -153,6 +153,47 @@ test("feature flags default closed except the backward-compatible strategy selec
   }
 });
 
+test("Setup and Nexus UI use the canonical multi-site website workflow", async () => {
+  const setup = await readFile(
+    new URL("components/section/billing/index.tsx", ROOT),
+    "utf8"
+  );
+  const connectionRoute = await readFile(
+    new URL("app/api/connections/verify/route.ts", ROOT),
+    "utf8"
+  );
+  const intake = await readFile(
+    new URL("components/author-intake-form.tsx", ROOT),
+    "utf8"
+  );
+  const websiteService = await readFile(
+    new URL("core/nexus/website-connections.ts", ROOT),
+    "utf8"
+  );
+
+  assert.match(setup, /Connected Websites/);
+  assert.match(setup, /Add Website/);
+  assert.match(setup, /Business Brand/);
+  assert.match(setup, /Story World/);
+  assert.match(setup, /Disable Website/);
+  assert.match(setup, /websiteConnectionId/);
+  assert.match(setup, /\/api\/nexus\/websites/);
+  assert.doesNotMatch(setup, /Change WordPress Site/);
+  assert.doesNotMatch(setup, /Your publishing site/);
+
+  assert.match(connectionRoute, /listNexusWebsiteConnections/);
+  assert.match(connectionRoute, /searchParams\.get\("websiteConnectionId"\)/);
+  assert.match(connectionRoute, /selectedConnection\.secretCredentialRef/);
+
+  assert.match(intake, /Destination Website/);
+  assert.match(intake, /context\.websites/);
+  assert.match(intake, /site\.status === "active"/);
+  assert.match(intake, /different content role/);
+
+  assert.match(websiteService, /storedStatus === "disabled"/);
+  assert.match(websiteService, /normalizeLegacyWebsite/);
+});
+
 test("worker and gateway retain critical baseline controls", async () => {
   const worker = await readFile(new URL("services/content-engine-worker/main.py", ROOT), "utf8");
   const gateway = await readFile(new URL("services/wordpress-egress-gateway/index.js", ROOT), "utf8");

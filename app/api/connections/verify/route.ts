@@ -16,6 +16,7 @@ import {
 import { resolveContentEngineAccess } from "@/core/security/content-engine-access";
 import {
   assertWebsiteCapacityAndUniqueness,
+  listNexusWebsiteConnections,
   websiteConnectionIdForOrigin,
 } from "@/core/nexus/website-connections";
 import {
@@ -245,35 +246,50 @@ interface AuthorContext {
 export async function GET(request: Request) {
   try {
     const context = await loadAuthorContext();
-    const snapshot = await adminDb.collection("connections").doc(context.studioKey).get();
-    const connection = snapshot.data() || {};
-    const isConnected =
-      snapshot.exists &&
-      connection.status === "active" &&
-      connection.verificationStatus === "verified";
-    const shouldTest = new URL(request.url).searchParams.get("test") === "1";
+    const authorId =
+      clean(context.licenseData.authorId) || context.session.email.toLowerCase();
+    const websites = await listNexusWebsiteConnections(
+      adminDb,
+      context.studioKey,
+      authorId
+    );
+    const primaryConnection = websites.find(
+      (website) => website.websiteConnectionId === "primary"
+    );
+    const requestUrl = new URL(request.url);
+    const shouldTest = requestUrl.searchParams.get("test") === "1";
+    const requestedConnectionId = clean(
+      requestUrl.searchParams.get("websiteConnectionId")
+    );
     if (shouldTest) {
-      if (!isConnected) {
-        throw new ConnectionRouteError(409, "Connect your WordPress site before testing it.");
+      const selectedConnection = websites.find(
+        (website) =>
+          website.websiteConnectionId === (requestedConnectionId || "primary")
+      );
+      if (!selectedConnection || selectedConnection.status !== "active") {
+        throw new ConnectionRouteError(
+          409,
+          "Select an active WordPress website before testing it."
+        );
       }
       try {
         await verifyStoredWordPressConnection(getSecretManagerClient(), {
-          targetWpOrigin: connection.targetWpOrigin,
-          wpUsername: connection.wpUsername,
-          secretCredentialRef: connection.secretCredentialRef,
+          targetWpOrigin: selectedConnection.wordpressOrigin,
+          wpUsername: selectedConnection.wordpressUsername,
+          secretCredentialRef: selectedConnection.secretCredentialRef,
         });
       } catch (error: unknown) {
         if (error instanceof WordPressConnectionDiagnosticError) {
           throw await diagnosticRouteError(
             error,
             context,
-            clean(connection.targetWpOrigin)
+            selectedConnection.wordpressOrigin
           );
         }
         console.error("Saved WordPress connection test failed.");
         throw new ConnectionRouteError(
           400,
-          "We could not verify your saved WordPress connection. Check WordPress or choose Change WordPress Site to reconnect."
+          "We could not verify this saved WordPress connection. Check its WordPress credentials and try again."
         );
       }
     }
@@ -281,8 +297,6 @@ export async function GET(request: Request) {
       typeof context.userData.wpConnection === "object" && context.userData.wpConnection
         ? (context.userData.wpConnection as AuthorRecord)
         : {};
-
-    // ... rest of your route logic ...
 
     return NextResponse.json(
       {
@@ -293,14 +307,25 @@ export async function GET(request: Request) {
           ? { message: "Your WordPress connection is working." }
           : {}),
         connection: {
-          status: isConnected ? "connected" : "not_connected",
-          targetWpOrigin: isConnected
-            ? clean(connection.targetWpOrigin)
+          status: primaryConnection?.status === "active" ? "connected" : "not_connected",
+          targetWpOrigin: primaryConnection
+            ? primaryConnection.wordpressOrigin
             : clean(savedUserConnection.targetUrl),
-          wpUsername: isConnected
-            ? clean(connection.wpUsername)
+          wpUsername: primaryConnection
+            ? primaryConnection.wordpressUsername
             : clean(savedUserConnection.wpUsername),
         },
+        websites: websites.map((website) => ({
+          websiteConnectionId: website.websiteConnectionId,
+          displayName: website.displayName,
+          wordpressOrigin: website.wordpressOrigin,
+          wordpressUsername: website.wordpressUsername,
+          contentRole: website.contentRole,
+          defaultUniverseId: website.defaultUniverseId,
+          status: website.status,
+          verifiedAt: website.verifiedAt,
+          lastValidatedAt: website.lastValidatedAt,
+        })),
       },
       { headers: { "Cache-Control": "private, no-store" } }
     );
@@ -340,7 +365,7 @@ export async function POST(request: Request) {
     const rootSnapshot = await rootConnectionRef.get();
     const requestedConnectionId = clean(body.websiteConnectionId);
     const websiteConnectionId = requestedConnectionId ||
-      (rootSnapshot.exists && rootSnapshot.data()?.status === "active"
+      (rootSnapshot.exists
         ? websiteConnectionIdForOrigin(requestedOrigin)
         : "primary");
     if (websiteConnectionId !== "primary" && !/^site_[a-f0-9]{16}$/.test(websiteConnectionId)) {

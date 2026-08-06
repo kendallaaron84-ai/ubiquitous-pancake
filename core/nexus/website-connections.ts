@@ -36,27 +36,38 @@ export async function listNexusWebsiteConnections(
 
   if (legacy.exists) {
     const data = legacy.data() || {};
-    try {
-      const verified = resolveVerifiedBlogConnection(data, studioKey);
-      results.push({
-        schemaVersion: 1,
-        websiteConnectionId: PRIMARY_CONNECTION_ID,
+    const storedStatus = clean(data.status);
+    if (storedStatus === "disabled" || storedStatus === "verification_failed") {
+      const connection = normalizeLegacyWebsite(
+        data,
         studioKey,
         authorId,
-        displayName: clean(data.displayName) || new URL(verified.targetWpOrigin).hostname,
-        wordpressOrigin: verified.targetWpOrigin,
-        wordpressUsername: clean(data.wpUsername),
-        secretCredentialRef: verified.secretCredentialRef,
-        contentRole: normalizeRole(data.contentRole),
-        defaultUniverseId: clean(data.defaultUniverseId) || null,
-        status: "active",
-        verifiedAt: data.verifiedAt || null,
-        lastValidatedAt: data.lastValidatedAt || data.updatedAt || null,
-        createdAt: data.createdAt || null,
-        updatedAt: data.updatedAt || null,
-      });
-    } catch (error) {
-      if (!(error instanceof BlogConnectionError)) throw error;
+        storedStatus
+      );
+      if (connection) results.push(connection);
+    } else {
+      try {
+        const verified = resolveVerifiedBlogConnection(data, studioKey);
+        results.push({
+          schemaVersion: 1,
+          websiteConnectionId: PRIMARY_CONNECTION_ID,
+          studioKey,
+          authorId,
+          displayName: clean(data.displayName) || new URL(verified.targetWpOrigin).hostname,
+          wordpressOrigin: verified.targetWpOrigin,
+          wordpressUsername: clean(data.wpUsername),
+          secretCredentialRef: verified.secretCredentialRef,
+          contentRole: normalizeRole(data.contentRole),
+          defaultUniverseId: clean(data.defaultUniverseId) || null,
+          status: "active",
+          verifiedAt: data.verifiedAt || null,
+          lastValidatedAt: data.lastValidatedAt || data.updatedAt || null,
+          createdAt: data.createdAt || null,
+          updatedAt: data.updatedAt || null,
+        });
+      } catch (error) {
+        if (!(error instanceof BlogConnectionError)) throw error;
+      }
     }
   }
 
@@ -126,6 +137,38 @@ function normalizeStoredWebsite(id: string, data: Record<string, unknown>, studi
       status,
       verifiedAt: data.verifiedAt || null,
       lastValidatedAt: data.lastValidatedAt || null,
+      createdAt: data.createdAt || null,
+      updatedAt: data.updatedAt || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeLegacyWebsite(
+  data: Record<string, unknown>,
+  studioKey: string,
+  authorId: string,
+  status: "disabled" | "verification_failed"
+): NexusWebsiteConnection | null {
+  try {
+    const wordpressOrigin = normalizeHttpsOrigin(
+      data.wordpressOrigin || data.targetWpOrigin
+    );
+    return {
+      schemaVersion: 1,
+      websiteConnectionId: PRIMARY_CONNECTION_ID,
+      studioKey,
+      authorId,
+      displayName: clean(data.displayName) || new URL(wordpressOrigin).hostname,
+      wordpressOrigin,
+      wordpressUsername: clean(data.wordpressUsername || data.wpUsername),
+      secretCredentialRef: clean(data.secretCredentialRef),
+      contentRole: normalizeRole(data.contentRole),
+      defaultUniverseId: clean(data.defaultUniverseId) || null,
+      status,
+      verifiedAt: data.verifiedAt || null,
+      lastValidatedAt: data.lastValidatedAt || data.updatedAt || null,
       createdAt: data.createdAt || null,
       updatedAt: data.updatedAt || null,
     };

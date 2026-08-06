@@ -11,6 +11,7 @@ import {
   Link2,
   Loader2,
   LockKeyhole,
+  Plus,
   ShieldCheck,
 } from "lucide-react";
 import { AuthorIdentityCard } from "./AuthorIdentityCard";
@@ -34,7 +35,28 @@ interface ConnectionProfile {
     targetWpOrigin: string;
     wpUsername: string;
   };
+  websites: WebsiteConnection[];
 }
+
+type WebsiteContentRole = "business_brand" | "story_world" | "both";
+
+interface WebsiteConnection {
+  websiteConnectionId: string;
+  displayName: string;
+  wordpressOrigin: string;
+  wordpressUsername: string;
+  contentRole: WebsiteContentRole;
+  defaultUniverseId: string | null;
+  status: "active" | "disabled" | "verification_failed";
+}
+
+const EMPTY_WEBSITE_FORM = {
+  displayName: "",
+  targetWpOrigin: "",
+  wpUsername: "",
+  wpAppPassword: "",
+  contentRole: "both" as WebsiteContentRole,
+};
 
 interface StatusMessage {
   type: "success" | "error" | "neutral";
@@ -46,14 +68,12 @@ export default function Billing() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hasContentEngineAccess, setHasContentEngineAccess] = useState(false);
-  const [connectionStatus, setConnectionStatus] =
-    useState<ConnectionStatus>("not_connected");
-  const [targetWpOrigin, setTargetWpOrigin] = useState("");
-  const [wpUsername, setWpUsername] = useState("");
-  const [wpAppPassword, setWpAppPassword] = useState("");
+  const [websites, setWebsites] = useState<WebsiteConnection[]>([]);
+  const [websiteForm, setWebsiteForm] = useState(EMPTY_WEBSITE_FORM);
+  const [isAddingWebsite, setIsAddingWebsite] = useState(false);
   const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(null);
-  const [isEditingConnection, setIsEditingConnection] = useState(false);
-  const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [testingConnectionId, setTestingConnectionId] = useState<string | null>(null);
+  const [savingConnectionId, setSavingConnectionId] = useState<string | null>(null);
   const [initialLoadIssue, setInitialLoadIssue] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [paymentProfile, setPaymentProfile] = useState<PaymentProfile>({
@@ -63,6 +83,8 @@ export default function Billing() {
   const [paymentLoading, setPaymentLoading] = useState(true);
   const [paymentSubmitting, setPaymentSubmitting] = useState<PaymentModel | null>(null);
   const [stripeDashboardLoading, setStripeDashboardLoading] = useState(false);
+  const activeWebsiteCount = websites.filter((website) => website.status === "active").length;
+  const connectionStatus: ConnectionStatus = activeWebsiteCount > 0 ? "connected" : "not_connected";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -79,10 +101,8 @@ export default function Billing() {
           throw new Error(payload?.error || "Your connection settings could not be loaded.");
         }
         setHasContentEngineAccess(payload.hasContentEngineAccess);
-        setConnectionStatus(payload.connection.status);
-        setTargetWpOrigin(payload.connection.targetWpOrigin || "");
-        setWpUsername(payload.connection.wpUsername || "");
-        setIsEditingConnection(payload.connection.status !== "connected");
+        setWebsites(payload.websites || []);
+        setIsAddingWebsite((current) => current || (payload.websites || []).length === 0);
       })
       .catch(() => {
         if (controller.signal.aborted) return;
@@ -189,12 +209,13 @@ export default function Billing() {
     }
   }
 
-  async function testConnection() {
-    if (isTestingConnection) return;
-    setIsTestingConnection(true);
+  async function testConnection(websiteConnectionId: string) {
+    if (testingConnectionId) return;
+    setTestingConnectionId(websiteConnectionId);
     setStatusMessage(null);
     try {
-      const response = await fetch("/api/connections/verify?test=1", {
+      const params = new URLSearchParams({ test: "1", websiteConnectionId });
+      const response = await fetch(`/api/connections/verify?${params.toString()}`, {
         credentials: "same-origin",
         cache: "no-store",
       });
@@ -215,7 +236,7 @@ export default function Billing() {
             : "Your WordPress connection could not be verified.",
       });
     } finally {
-      setIsTestingConnection(false);
+      setTestingConnectionId(null);
     }
   }
 
@@ -230,7 +251,7 @@ export default function Billing() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ targetWpOrigin, wpUsername, wpAppPassword }),
+        body: JSON.stringify(websiteForm),
       });
       const payload = (await response.json().catch(() => null)) as
         | {
@@ -248,11 +269,9 @@ export default function Billing() {
         throw new Error(payload?.error || "Your WordPress site could not be connected.");
       }
 
-      setConnectionStatus("connected");
-      setTargetWpOrigin(payload.connection?.targetWpOrigin || targetWpOrigin);
-      setWpUsername(payload.connection?.wpUsername || wpUsername);
-      setWpAppPassword("");
-      setIsEditingConnection(false);
+      setWebsiteForm(EMPTY_WEBSITE_FORM);
+      setIsAddingWebsite(false);
+      setReloadKey((current) => current + 1);
       setStatusMessage({
         type: "success",
         text:
@@ -260,7 +279,7 @@ export default function Billing() {
           "Your WordPress site is connected and ready for blog drafts.",
       });
     } catch (error: unknown) {
-      setWpAppPassword("");
+      setWebsiteForm((current) => ({ ...current, wpAppPassword: "" }));
       setStatusMessage({
         type: "error",
         text:
@@ -270,6 +289,42 @@ export default function Billing() {
       });
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function updateWebsite(
+    websiteConnectionId: string,
+    patch: { contentRole?: WebsiteContentRole; status?: "active" | "disabled" }
+  ) {
+    if (savingConnectionId) return;
+    setSavingConnectionId(websiteConnectionId);
+    setStatusMessage(null);
+    try {
+      const response = await fetch("/api/nexus/websites", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ websiteConnectionId, ...patch }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error || "Website settings could not be saved.");
+      }
+      setWebsites((current) =>
+        current.map((website) =>
+          website.websiteConnectionId === websiteConnectionId
+            ? { ...website, ...patch }
+            : website
+        )
+      );
+      setStatusMessage({ type: "success", text: "Website settings saved." });
+    } catch (error: unknown) {
+      setStatusMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Website settings could not be saved.",
+      });
+    } finally {
+      setSavingConnectionId(null);
     }
   }
 
@@ -293,11 +348,11 @@ export default function Billing() {
             </span>
           </div>
           <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
-            Connect your WordPress site
+            Connected Websites
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
-            Once connected, KOBA-I can place completed blog drafts and featured artwork
-            directly in your private WordPress drafts. Nothing is published without your review.
+            Connect and manage up to two WordPress websites. Each site is verified
+            independently, and completed work remains a private WordPress draft until you review it.
           </p>
         </header>
 
@@ -316,62 +371,122 @@ export default function Billing() {
 
         {activeSection === "wordpress" ? (
           <>
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
-            {connectionStatus === "connected" && !isEditingConnection ? (
-              <ConnectedWordPressSummary
-                targetWpOrigin={targetWpOrigin}
-                wpUsername={wpUsername}
-                testing={isTestingConnection}
-                onTest={testConnection}
-                onChange={() => {
-                  setStatusMessage(null);
-                  setWpAppPassword("");
-                  setIsEditingConnection(true);
-                }}
-              />
-            ) : (
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold">Your WordPress websites</h2>
+                <p className="mt-1 text-xs leading-5 text-slate-400">
+                  {activeWebsiteCount} of 2 active website connections
+                </p>
+              </div>
+              {activeWebsiteCount < 2 && !isAddingWebsite ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusMessage(null);
+                    setWebsiteForm(EMPTY_WEBSITE_FORM);
+                    setIsAddingWebsite(true);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-[#f97316] px-4 py-2.5 text-sm font-bold text-black transition hover:bg-[#ff8a35]"
+                >
+                  <Plus className="h-4 w-4" aria-hidden="true" /> Add Website
+                </button>
+              ) : null}
+            </div>
+
+            {websites.length ? (
+              <div className="grid gap-4 lg:grid-cols-2">
+                {websites.map((website) => (
+                  <ConnectedWebsiteCard
+                    key={website.websiteConnectionId}
+                    website={website}
+                    testing={testingConnectionId === website.websiteConnectionId}
+                    saving={savingConnectionId === website.websiteConnectionId}
+                    onTest={() => testConnection(website.websiteConnectionId)}
+                    onRoleChange={(contentRole) =>
+                      updateWebsite(website.websiteConnectionId, { contentRole })
+                    }
+                    onDisable={() =>
+                      updateWebsite(website.websiteConnectionId, { status: "disabled" })
+                    }
+                  />
+                ))}
+              </div>
+            ) : null}
+
+            {isAddingWebsite ? (
             <form
               onSubmit={verifyAndSave}
               className="rounded-2xl border border-white/10 bg-[#222b45] p-5 shadow-[0_16px_40px_rgba(0,0,0,0.35)] sm:p-7"
             >
               <div className="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-5">
                 <div>
-                  <h2 className="text-lg font-bold">Your publishing site</h2>
+                  <h2 className="text-lg font-bold">Add a WordPress website</h2>
                   <p className="mt-1 text-xs leading-5 text-slate-400">
-                    Your StudioKey is selected automatically from your account.
+                    This creates a separate verified connection. Existing websites are preserved.
                   </p>
                 </div>
-                <ConnectionBadge status={connectionStatus} />
+                <span className="rounded-full border border-slate-500/40 bg-slate-900/30 px-3 py-1.5 text-xs font-bold text-slate-300">
+                  {activeWebsiteCount}/2 active
+                </span>
               </div>
 
               <div className="grid gap-5">
                 <ConnectionField
+                  id="websiteDisplayName"
+                  label="Website label"
+                  value={websiteForm.displayName}
+                  placeholder="Business website or Story World"
+                  onChange={(displayName) =>
+                    setWebsiteForm((current) => ({ ...current, displayName }))
+                  }
+                />
+                <ConnectionField
                   id="targetWpOrigin"
                   label="WordPress website address"
                   type="url"
-                  value={targetWpOrigin}
+                  value={websiteForm.targetWpOrigin}
                   placeholder="https://your-author-site.com"
-                  onChange={setTargetWpOrigin}
+                  onChange={(targetWpOrigin) =>
+                    setWebsiteForm((current) => ({ ...current, targetWpOrigin }))
+                  }
                 />
                 <ConnectionField
                   id="wpUsername"
                   label="WordPress username"
-                  value={wpUsername}
+                  value={websiteForm.wpUsername}
                   placeholder="The username you use in WordPress"
-                  onChange={setWpUsername}
+                  onChange={(wpUsername) =>
+                    setWebsiteForm((current) => ({ ...current, wpUsername }))
+                  }
                 />
                 <ConnectionField
                   id="wpAppPassword"
                   label="WordPress Application Password"
                   type="password"
-                  value={wpAppPassword}
-                  placeholder={
-                    connectionStatus === "connected"
-                      ? "A new password is required to change this connection"
-                      : "Paste the password generated by WordPress"
+                  value={websiteForm.wpAppPassword}
+                  placeholder="Paste the password generated by WordPress"
+                  onChange={(wpAppPassword) =>
+                    setWebsiteForm((current) => ({ ...current, wpAppPassword }))
                   }
-                  onChange={setWpAppPassword}
                 />
+                <label className="grid gap-2 text-sm font-semibold text-slate-200">
+                  Content role
+                  <select
+                    value={websiteForm.contentRole}
+                    onChange={(event) =>
+                      setWebsiteForm((current) => ({
+                        ...current,
+                        contentRole: event.target.value as WebsiteContentRole,
+                      }))
+                    }
+                    className="rounded-lg border border-white/15 bg-[#131826] px-3 py-3 text-sm text-white outline-none focus:border-[#f6b63c]"
+                  >
+                    <option value="business_brand">Business Brand</option>
+                    <option value="story_world">Story World</option>
+                    <option value="both">Both</option>
+                  </select>
+                </label>
               </div>
 
               <div className="mt-5 flex items-start gap-3 rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-xs leading-5 text-emerald-100">
@@ -384,7 +499,7 @@ export default function Billing() {
 
               <button
                 type="submit"
-                disabled={isSubmitting || !wpAppPassword.trim()}
+                disabled={isSubmitting || !websiteForm.wpAppPassword.trim()}
                 className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-[#f97316] px-4 py-3 text-sm font-bold text-black shadow-md transition hover:bg-[#ff8a35] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f6b63c] focus-visible:ring-offset-2 focus-visible:ring-offset-[#222b45] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isSubmitting ? (
@@ -394,16 +509,14 @@ export default function Billing() {
                 )}
                 {isSubmitting
                   ? "Checking your WordPress site…"
-                  : connectionStatus === "connected"
-                    ? "Verify and update connection"
-                    : "Verify and connect my site"}
+                  : "Verify and add website"}
               </button>
-              {connectionStatus === "connected" ? (
+              {websites.length ? (
                 <button
                   type="button"
                   onClick={() => {
-                    setWpAppPassword("");
-                    setIsEditingConnection(false);
+                    setWebsiteForm(EMPTY_WEBSITE_FORM);
+                    setIsAddingWebsite(false);
                   }}
                   className="mt-3 w-full rounded-lg px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-white/5 hover:text-white"
                 >
@@ -411,13 +524,11 @@ export default function Billing() {
                 </button>
               ) : null}
             </form>
-            )}
+            ) : null}
 
-            {connectionStatus === "connected" && !isEditingConnection ? (
-              <ConnectedSiteHelp />
-            ) : (
-              <GettingReadyCard targetWpOrigin={targetWpOrigin} />
-            )}
+            {!websites.length && !isAddingWebsite ? (
+              <GettingReadyCard targetWpOrigin="" />
+            ) : null}
           </div>
 
           {!hasContentEngineAccess ? (
@@ -461,55 +572,57 @@ function NeutralLoadBanner({ onRetry }: { onRetry(): void }) {
   );
 }
 
-function ConnectedWordPressSummary({
-  targetWpOrigin,
-  wpUsername,
+function ConnectedWebsiteCard({
+  website,
   testing,
+  saving,
   onTest,
-  onChange,
+  onRoleChange,
+  onDisable,
 }: {
-  targetWpOrigin: string;
-  wpUsername: string;
+  website: WebsiteConnection;
   testing: boolean;
+  saving: boolean;
   onTest(): void;
-  onChange(): void;
+  onRoleChange(role: WebsiteContentRole): void;
+  onDisable(): void;
 }) {
+  const isActive = website.status === "active";
   return (
-    <section className="rounded-2xl border border-emerald-400/20 bg-[#222b45] p-5 shadow-[0_16px_40px_rgba(0,0,0,0.35)] sm:p-7">
+    <section className={`rounded-2xl border bg-[#222b45] p-5 shadow-[0_16px_40px_rgba(0,0,0,0.35)] ${isActive ? "border-emerald-400/20" : "border-white/10 opacity-80"}`}>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-5">
         <div>
-          <h2 className="text-lg font-bold">Your publishing site</h2>
-          <p className="mt-1 text-xs leading-5 text-slate-400">
-            Your saved credentials remain protected in Google Secret Manager.
-          </p>
+          <h3 className="text-base font-bold">{website.displayName}</h3>
+          <p className="mt-1 break-all text-xs text-slate-400">{website.wordpressOrigin}</p>
         </div>
-        <ConnectionBadge status="connected" />
+        {isActive ? <ConnectionBadge status="connected" /> : (
+          <span className="rounded-full border border-slate-500/40 px-3 py-1.5 text-xs font-bold text-slate-300">Disabled</span>
+        )}
       </div>
 
-      <dl className="mt-6 grid gap-4 sm:grid-cols-2">
-        <div className="rounded-xl border border-white/10 bg-[#131826] p-4">
-          <dt className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">
-            WordPress site
-          </dt>
-          <dd className="mt-2 break-all text-sm font-semibold text-white">
-            {targetWpOrigin}
-          </dd>
-        </div>
-        <div className="rounded-xl border border-white/10 bg-[#131826] p-4">
-          <dt className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">
-            WordPress username
-          </dt>
-          <dd className="mt-2 break-all text-sm font-semibold text-white">
-            {wpUsername}
-          </dd>
-        </div>
-      </dl>
+      <label className="mt-5 grid gap-2 text-xs font-bold uppercase tracking-[0.08em] text-slate-400">
+        Content role
+        <select
+          value={website.contentRole}
+          disabled={saving || !isActive}
+          onChange={(event) => onRoleChange(event.target.value as WebsiteContentRole)}
+          className="rounded-lg border border-white/15 bg-[#131826] px-3 py-3 text-sm font-semibold normal-case tracking-normal text-white outline-none focus:border-[#f6b63c] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <option value="business_brand">Business Brand</option>
+          <option value="story_world">Story World</option>
+          <option value="both">Both</option>
+        </select>
+      </label>
 
-      <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+      <p className="mt-4 text-xs leading-5 text-slate-400">
+        WordPress user: <span className="font-semibold text-slate-200">{website.wordpressUsername}</span>
+      </p>
+
+      <div className="mt-5 flex flex-col gap-3 sm:flex-row">
         <button
           type="button"
           onClick={onTest}
-          disabled={testing}
+          disabled={testing || saving || !isActive}
           className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-[#f97316] px-4 py-3 text-sm font-bold text-black transition hover:bg-[#ff8a35] disabled:cursor-not-allowed disabled:opacity-60"
         >
           {testing ? (
@@ -521,28 +634,14 @@ function ConnectedWordPressSummary({
         </button>
         <button
           type="button"
-          onClick={onChange}
-          className="flex-1 rounded-lg border border-white/15 bg-white/5 px-4 py-3 text-sm font-bold text-white transition hover:border-[#f6b63c]/50 hover:bg-white/10"
+          onClick={onDisable}
+          disabled={saving || !isActive}
+          className="flex-1 rounded-lg border border-white/15 bg-white/5 px-4 py-3 text-sm font-bold text-white transition hover:border-[#f6b63c]/50 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Change WordPress Site
+          {saving ? "Saving…" : "Disable Website"}
         </button>
       </div>
     </section>
-  );
-}
-
-function ConnectedSiteHelp() {
-  return (
-    <aside className="h-fit rounded-2xl border border-white/10 bg-[#2d3b5e] p-5 shadow-lg sm:p-6">
-      <div className="flex items-center gap-2 text-emerald-300">
-        <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
-        <h2 className="font-bold">Connection protected</h2>
-      </div>
-      <p className="mt-4 text-sm leading-6 text-slate-200">
-        Test the saved connection anytime. Choose Change WordPress Site only when
-        moving to another site or replacing your WordPress Application Password.
-      </p>
-    </aside>
   );
 }
 

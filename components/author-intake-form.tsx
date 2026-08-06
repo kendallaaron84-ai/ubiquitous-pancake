@@ -47,8 +47,6 @@ export function AuthorIntakeForm() {
         const payload = await response.json() as ContextPayload;
         if (!response.ok) throw new Error(payload.error || "Nexus context is unavailable.");
         setContext(payload);
-        const firstWebsite = payload.websites?.find((site) => site.status === "active");
-        if (firstWebsite) setForm((current) => ({ ...current, websiteConnectionId: firstWebsite.websiteConnectionId }));
       })
       .catch((error) => { if (!controller.signal.aborted) setSubmissionError(errorMessage(error)); })
       .finally(() => { if (!controller.signal.aborted) setLoadingContext(false); });
@@ -58,13 +56,37 @@ export function AuthorIntakeForm() {
   const worlds = context.storyWorlds || [];
   const selectedWorld = worlds.find((world) => world.id === form.universeId);
   const guides = selectedWorld?.referenceGuides || [];
-  const websites = (context.websites || []).filter((site) => site.status === "active" && (site.contentRole === "both" || site.contentRole === form.contentSource));
+  const websites = (context.websites || []).filter((site) => site.status === "active");
+  const selectedWebsite = websites.find(
+    (site) => site.websiteConnectionId === form.websiteConnectionId
+  );
+  const selectedWebsiteAcceptsSource = Boolean(
+    selectedWebsite &&
+      (selectedWebsite.contentRole === "both" || selectedWebsite.contentRole === form.contentSource)
+  );
   const goals = form.contentSource === "business_brand" ? BUSINESS_GOALS : STORY_GOALS;
   const strategies = context.strategies || [];
   const canSubmit = useMemo(() => Boolean(
-    form.topicTitle.trim() && form.targetAudience.trim() && form.websiteConnectionId &&
+    form.topicTitle.trim() && form.targetAudience.trim() && selectedWebsiteAcceptsSource &&
     (form.contentSource === "business_brand" || (form.universeId && form.referenceGuideId))
-  ), [form]);
+  ), [form, selectedWebsiteAcceptsSource]);
+
+  useEffect(() => {
+    setForm((current) => {
+      const eligibleWebsites = (context.websites || []).filter(
+        (site) =>
+          site.status === "active" &&
+          (site.contentRole === "both" || site.contentRole === current.contentSource)
+      );
+      if (eligibleWebsites.some((site) => site.websiteConnectionId === current.websiteConnectionId)) {
+        return current;
+      }
+      return {
+        ...current,
+        websiteConnectionId: eligibleWebsites[0]?.websiteConnectionId || "",
+      };
+    });
+  }, [context.websites, form.contentSource]);
 
   function update<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -124,7 +146,7 @@ export function AuthorIntakeForm() {
         </div>}
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Destination Website"><select className={inputClass} required value={form.websiteConnectionId} onChange={(e) => update("websiteConnectionId", e.target.value)}><option value="">Select a verified site</option>{websites.map((site) => <option key={site.websiteConnectionId} value={site.websiteConnectionId}>{site.displayName} — {site.wordpressOrigin}</option>)}</select></Field>
+          <Field label="Destination Website"><select className={inputClass} required value={form.websiteConnectionId} onChange={(e) => update("websiteConnectionId", e.target.value)}><option value="">Select a verified site</option>{websites.map((site) => { const acceptsSource = site.contentRole === "both" || site.contentRole === form.contentSource; return <option key={site.websiteConnectionId} value={site.websiteConnectionId} disabled={!acceptsSource}>{site.displayName} — {site.wordpressOrigin}{acceptsSource ? "" : " (different content role)"}</option>; })}</select></Field>
           <Field label="Strategy Selection"><select className={inputClass} value={form.strategyGuideSelectionMode} onChange={(e) => update("strategyGuideSelectionMode", e.target.value)}><option value="automatic">Automatic</option><option value="manual">Manual</option></select></Field>
         </div>
 
