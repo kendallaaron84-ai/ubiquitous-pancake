@@ -120,7 +120,10 @@ export async function updateNexusWebsiteMetadata(
 
 function normalizeStoredWebsite(id: string, data: Record<string, unknown>, studioKey: string, authorId: string): NexusWebsiteConnection | null {
   if (clean(data.studioKey) !== studioKey || clean(data.authorId) !== authorId) return null;
-  const status = clean(data.status);
+  const storedStatus = clean(data.status);
+  const status = storedStatus === "active" && clean(data.verificationStatus) !== "verified"
+    ? "verification_failed"
+    : storedStatus;
   if (status !== "active" && status !== "disabled" && status !== "verification_failed") return null;
   try {
     return {

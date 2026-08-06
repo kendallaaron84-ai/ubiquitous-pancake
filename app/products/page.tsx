@@ -17,6 +17,19 @@ interface AuthorIdentityOption {
   type: "primary" | "pen_name";
 }
 
+interface ProductWebsiteConnection {
+  websiteConnectionId: string;
+  displayName: string;
+  wordpressOrigin: string;
+  contentRole: "business_brand" | "story_world" | "both";
+  status: "active" | "disabled" | "verification_failed";
+}
+
+interface ProductStoryWorld {
+  id: string;
+  defaultWebsiteConnectionId?: string | null;
+}
+
 export const dynamic = 'force-dynamic';
 
 export default function ProductsPage() {
@@ -25,7 +38,9 @@ export default function ProductsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
   const [userProfile, setUserProfile] = useState<any | null>(null);
-  const [connectedWpOrigin, setConnectedWpOrigin] = useState("");
+  const [websiteConnections, setWebsiteConnections] = useState<ProductWebsiteConnection[]>([]);
+  const [storyWorlds, setStoryWorlds] = useState<ProductStoryWorld[]>([]);
+  const [destinationsLoading, setDestinationsLoading] = useState(false);
   const [authorIdentities, setAuthorIdentities] = useState<AuthorIdentityOption[]>([]);
   const [uploadProgress, setUploadProgress] = useState<{ cover: number; bg: number }>({ cover: 0, bg: 0 });
   const [isUploading, setIsUploading] = useState<{ cover: boolean; bg: boolean }>({ cover: false, bg: false });
@@ -50,44 +65,76 @@ export default function ProductsPage() {
 
   useEffect(() => {
     if (!currentUserEmail) {
-      setConnectedWpOrigin("");
+      setWebsiteConnections([]);
+      setStoryWorlds([]);
       return;
     }
 
     const controller = new AbortController();
-    fetch("/api/session", {
-      credentials: "same-origin",
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
+    setDestinationsLoading(true);
+    Promise.all([
+      fetch("/api/connections/verify", {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
+      }).then(async (response) => {
         const payload = await response.json().catch(() => null);
-        if (!response.ok || !payload?.authenticated) {
-          throw new Error("Your verified publishing site could not be loaded.");
+        if (!response.ok || !payload?.success || !Array.isArray(payload.websites)) {
+          throw new Error(payload?.error || "Your verified publishing sites could not be loaded.");
         }
-        const targetWpOrigin =
-          typeof payload.targetWpOrigin === "string"
-            ? payload.targetWpOrigin.trim()
-            : "";
-        setConnectedWpOrigin(targetWpOrigin);
+        return payload.websites as ProductWebsiteConnection[];
+      }),
+      fetch("/api/nexus/context", {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
+      }).then(async (response) => {
+        if (response.status === 403) return [];
+        const payload = await response.json().catch(() => null);
+        return response.ok && payload?.success && Array.isArray(payload.storyWorlds)
+          ? payload.storyWorlds as ProductStoryWorld[]
+          : [];
+      }),
+    ])
+      .then(([websites, worlds]) => {
+        setWebsiteConnections(websites);
+        setStoryWorlds(worlds);
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
-        console.error("Publishing site lookup failed:", error);
-        setConnectedWpOrigin("");
+        console.error("Publishing destination lookup failed:", error);
+        setWebsiteConnections([]);
+        setStoryWorlds([]);
+        toast({
+          title: "Publishing destinations unavailable",
+          description: error instanceof Error ? error.message : "Your verified publishing sites could not be loaded.",
+          variant: "destructive",
+        });
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setDestinationsLoading(false);
       });
 
     return () => controller.abort();
-  }, [currentUserEmail]);
+  }, [currentUserEmail, toast]);
 
   useEffect(() => {
-    if (!connectedWpOrigin) return;
-    setEditingProduct((current: any | null) =>
-      current && !current.associatedWebsite
-        ? { ...current, associatedWebsite: connectedWpOrigin }
-        : current
+    if (!editingProduct || editingProduct.websiteConnectionId || destinationsLoading) return;
+    const websiteConnectionId = chooseProductWebsiteConnectionId(
+      editingProduct,
+      websiteConnections,
+      storyWorlds
     );
-  }, [connectedWpOrigin]);
+    if (!websiteConnectionId) return;
+    const selected = websiteConnections.find((website) =>
+      website.websiteConnectionId === websiteConnectionId
+    );
+    setEditingProduct((current: any | null) => current ? {
+      ...current,
+      websiteConnectionId,
+      associatedWebsite: selected?.wordpressOrigin || current.associatedWebsite || "",
+    } : current);
+  }, [destinationsLoading, editingProduct, storyWorlds, websiteConnections]);
 
   useEffect(() => {
     if (!currentUserEmail) {
@@ -145,6 +192,14 @@ export default function ProductsPage() {
 
   const handleCreateDraft = () => {
     const generatedId = `abk_${Math.random().toString(36).substring(2, 9)}`;
+    const websiteConnectionId = chooseProductWebsiteConnectionId(
+      {},
+      websiteConnections,
+      storyWorlds
+    );
+    const selectedWebsite = websiteConnections.find((website) =>
+      website.websiteConnectionId === websiteConnectionId
+    );
     setEditingProduct({
       id: generatedId,
       title: "New Audiobook Draft",
@@ -158,21 +213,34 @@ export default function ProductsPage() {
       authorIdentityId: authorIdentities[0]?.id || "primary",
       studioKey: userProfile?.studioKey || "",
       wpStudioKey: userProfile?.studioKey || "",
-      associatedWebsite: connectedWpOrigin || userProfile?.associatedWebsite || ""
+      websiteConnectionId,
+      associatedWebsite: selectedWebsite?.wordpressOrigin || "",
+      _originalWebsiteConnectionId: "",
+      _originalAssociatedWebsite: "",
     });
   };
 
   const handleEditProduct = (product: any) => {
+    const websiteConnectionId = chooseProductWebsiteConnectionId(
+      product,
+      websiteConnections,
+      storyWorlds
+    );
+    const selectedWebsite = websiteConnections.find((website) =>
+      website.websiteConnectionId === websiteConnectionId
+    );
     setEditingProduct({
       ...product,
       price: product.price ?? product.unitPrice ?? 0,
       studioKey: product.studioKey || userProfile?.studioKey || "",
       wpStudioKey: product.wpStudioKey || product.studioKey || userProfile?.studioKey || "",
-      associatedWebsite:
-        connectedWpOrigin ||
-        product.associatedWebsite ||
-        userProfile?.associatedWebsite ||
-        "",
+      websiteConnectionId,
+      associatedWebsite: selectedWebsite?.wordpressOrigin || product.associatedWebsite || "",
+      _originalWebsiteConnectionId:
+        product.websiteConnectionId ||
+        product.wordpressDeployment?.websiteConnectionId ||
+        websiteConnectionId,
+      _originalAssociatedWebsite: product.associatedWebsite || "",
       authorIdentityId: product.authorIdentityId || authorIdentities[0]?.id || "primary",
       category:
         product.category ||
@@ -222,6 +290,48 @@ export default function ProductsPage() {
 const handleSaveAndDeploy = async (e: React.FormEvent) => {
   e.preventDefault();
   if (!editingProduct) return;
+
+  const selectedWebsite = websiteConnections.find((website) =>
+    website.websiteConnectionId === editingProduct.websiteConnectionId &&
+    website.status === "active"
+  );
+  if (!selectedWebsite) {
+    toast({
+      title: "Destination Website required",
+      description: "Select an active, verified Destination Website before Save & Sync.",
+      variant: "destructive",
+    });
+    return;
+  }
+
+  const hasConfirmedDeployment =
+    editingProduct.wordpressDeployment?.status === "deployed" &&
+    Number(editingProduct.wordpressDeployment?.publicationId) > 0 &&
+    Number(editingProduct.wordpressDeployment?.pageId) > 0;
+  const originalWebsiteConnectionId = String(
+    editingProduct._originalWebsiteConnectionId ||
+    editingProduct.wordpressDeployment?.websiteConnectionId ||
+    ""
+  );
+  const destinationChanged = Boolean(
+    hasConfirmedDeployment &&
+    (
+      (originalWebsiteConnectionId &&
+        originalWebsiteConnectionId !== selectedWebsite.websiteConnectionId) ||
+      (!originalWebsiteConnectionId &&
+        normalizeProductOrigin(editingProduct._originalAssociatedWebsite) !==
+          normalizeProductOrigin(selectedWebsite.wordpressOrigin))
+    )
+  );
+  if (
+    destinationChanged &&
+    !window.confirm(
+      `This publication is already deployed. Move future Save & Sync updates to ${selectedWebsite.displayName} (${selectedWebsite.wordpressOrigin})? The existing WordPress pages will not be deleted automatically.`
+    )
+  ) {
+    return;
+  }
+
   setIsSaving(true);
 
   try {
@@ -243,6 +353,9 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
       price: numericPrice,
       status: editingProduct.status || "published", 
       authorIdentityId: editingProduct.authorIdentityId || authorIdentities[0]?.id || "primary",
+      websiteConnectionId: selectedWebsite.websiteConnectionId,
+      universeId: editingProduct.universeId || editingProduct.storyWorldId || null,
+      confirmDestinationChange: destinationChanged,
       // 🚀 PRESERVE ASSETS: Include track arrays so downstream endpoints never overwrite them with empty values
       chapters: editingProduct.chapters || [],
       studioTracks: editingProduct.studioTracks || editingProduct.chapters || [],
@@ -285,7 +398,11 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
       );
       return [...remaining, updatedProduct];
     });
-    setEditingProduct(updatedProduct);
+    setEditingProduct({
+      ...updatedProduct,
+      _originalWebsiteConnectionId: updatedProduct.websiteConnectionId,
+      _originalAssociatedWebsite: updatedProduct.associatedWebsite,
+    });
 
     toast({
       title: "Publication Saved",
@@ -338,7 +455,10 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
           <div className="bg-[#222b45]/40 border border-[#40527c]/40 rounded-xl p-4 flex flex-wrap gap-6 text-xs text-slate-300">
             <div><span className="font-semibold text-slate-400">Profile:</span> {currentUserEmail}</div>
             <div><span className="font-semibold text-slate-400">Studio Key:</span> {userProfile.studioKey || "Pending Assignment"}</div>
-            <div><span className="font-semibold text-slate-400">Website:</span> {userProfile.associatedWebsite || "Not Connected"}</div>
+            <div>
+              <span className="font-semibold text-slate-400">Publishing websites:</span>{" "}
+              {websiteConnections.filter((website) => website.status === "active").length || "None connected"}
+            </div>
             <div><span className="font-semibold text-slate-400">Reader payments:</span> {userProfile.connectionStatus === "active" ? "Ready" : "Setup required"}</div>
           </div>
         )}
@@ -372,6 +492,13 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
                       <Globe className="w-3.5 h-3.5" />
                       <span className="line-clamp-1">{product.associatedWebsite}</span>
                     </div>
+                  )}
+                  {product.websiteConnectionId && (
+                    <p className="mb-2 text-[11px] text-slate-400">
+                      Destination: {websiteConnections.find((website) =>
+                        website.websiteConnectionId === product.websiteConnectionId
+                      )?.displayName || product.websiteConnectionId}
+                    </p>
                   )}
 
                   <div className="flex justify-between items-center mt-4">
@@ -525,22 +652,50 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
                   </div>
 
                   <div className="flex flex-col space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-300">Associated WordPress Website URL</label>
-                    <input 
-                      type="url" 
-                      readOnly
-                      aria-readonly="true"
-                      placeholder="Connect your site in Setup & Connections"
-                      value={
-                        connectedWpOrigin ||
-                        editingProduct.associatedWebsite ||
-                        ""
-                      }
-                      className="cursor-default rounded-lg border border-[#40527c]/40 bg-[#1a2138] p-2.5 text-sm text-slate-300 focus:outline-none"
-                    />
-                    <p className="text-[11px] text-slate-400">
-                      Selected automatically from your verified Setup & Connections profile.
+                    <label className="text-xs font-semibold text-slate-300">Destination Website</label>
+                    <select
+                      required
+                      disabled={destinationsLoading}
+                      value={editingProduct.websiteConnectionId || ""}
+                      onChange={(event) => {
+                        const websiteConnectionId = event.target.value;
+                        const selected = websiteConnections.find((website) =>
+                          website.websiteConnectionId === websiteConnectionId
+                        );
+                        setEditingProduct({
+                          ...editingProduct,
+                          websiteConnectionId,
+                          associatedWebsite: selected?.wordpressOrigin || "",
+                        });
+                      }}
+                      className="rounded-lg border border-[#40527c] bg-[#222b45] p-2.5 text-sm text-white focus:border-[#8b4528] focus:outline-none disabled:opacity-50"
+                    >
+                      <option value="">
+                        {destinationsLoading ? "Loading verified websites..." : "Select a verified website"}
+                      </option>
+                      {websiteConnections
+                        .filter((website) => website.status === "active")
+                        .map((website) => (
+                          <option key={website.websiteConnectionId} value={website.websiteConnectionId}>
+                            {website.displayName} — {website.wordpressOrigin} ({websiteRoleLabel(website.contentRole)})
+                          </option>
+                        ))}
+                    </select>
+                    {editingProduct.websiteConnectionId && (
+                      <p className="text-[11px] leading-4 text-slate-400">
+                        {websiteConnections.find((website) =>
+                          website.websiteConnectionId === editingProduct.websiteConnectionId
+                        )?.wordpressOrigin || editingProduct.associatedWebsite}
+                      </p>
+                    )}
+                    <p className="text-[11px] leading-4 text-slate-400">
+                      Choose where KOBA-I should create this book. Content role is guidance only; Save & Sync always deploys to the website selected here.
                     </p>
+                    {websiteConnections.filter((website) => website.status === "active").length === 0 && !destinationsLoading && (
+                      <p className="text-[11px] font-semibold text-amber-300">
+                        Connect and verify a WordPress website in Setup & Connections before publishing.
+                      </p>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
@@ -633,10 +788,17 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
                   <button 
                     type="submit" 
                     form="edit-form" 
-                    disabled={isSaving} 
+                    disabled={
+                      isSaving ||
+                      destinationsLoading ||
+                      !websiteConnections.some((website) =>
+                        website.status === "active" &&
+                        website.websiteConnectionId === editingProduct.websiteConnectionId
+                      )
+                    }
                     className="flex items-center gap-1.5 bg-[#8b4528] hover:bg-[#723820] text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-all disabled:opacity-40"
                   >
-                    <Save className="w-4 h-4" /> {isSaving ? "Synchronizing..." : "Save & Deploy"}
+                    <Save className="w-4 h-4" /> {isSaving ? "Synchronizing..." : "Save & Sync"}
                   </button>
                 </div>
               </div>
@@ -647,4 +809,65 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
       </div>
     </Layout>
   );
+}
+
+function chooseProductWebsiteConnectionId(
+  product: Record<string, any>,
+  websites: ProductWebsiteConnection[],
+  worlds: ProductStoryWorld[]
+): string {
+  const active = websites.filter((website) => website.status === "active");
+  const existingId = String(
+    product.websiteConnectionId ||
+    product.wordpressDeployment?.websiteConnectionId ||
+    ""
+  ).trim();
+  if (existingId && active.some((website) => website.websiteConnectionId === existingId)) {
+    return existingId;
+  }
+
+  const historicalOrigin = normalizeProductOrigin(
+    product.wordpressDeployment?.targetWpOrigin || product.associatedWebsite
+  );
+  if (historicalOrigin) {
+    const matches = active.filter((website) =>
+      normalizeProductOrigin(website.wordpressOrigin) === historicalOrigin
+    );
+    if (matches.length === 1) return matches[0].websiteConnectionId;
+    if (matches.length > 1) return "";
+  }
+
+  const universeId = String(product.universeId || product.storyWorldId || "").trim();
+  const defaultWebsiteConnectionId = String(
+    worlds.find((world) => world.id === universeId)?.defaultWebsiteConnectionId || ""
+  ).trim();
+  if (
+    defaultWebsiteConnectionId &&
+    active.some((website) =>
+      website.websiteConnectionId === defaultWebsiteConnectionId &&
+      (website.contentRole === "story_world" || website.contentRole === "both")
+    )
+  ) {
+    return defaultWebsiteConnectionId;
+  }
+
+  return active.length === 1 ? active[0].websiteConnectionId : "";
+}
+
+function normalizeProductOrigin(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === "https:" || parsed.protocol === "http:"
+      ? parsed.origin
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+function websiteRoleLabel(role: ProductWebsiteConnection["contentRole"]): string {
+  if (role === "business_brand") return "Business Brand";
+  if (role === "story_world") return "Story World";
+  return "Both";
 }

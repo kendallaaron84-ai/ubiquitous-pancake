@@ -5,6 +5,13 @@ import { NextResponse } from "next/server";
 
 import { adminDb } from "@/core/firebase-admin";
 import {
+  PublicationDestinationError,
+  assertConfirmedPublicationOrigin,
+  resolvePublicationDestination,
+  type ResolvedPublicationDestination,
+} from "@/core/nexus/publication-destination";
+import { listNexusWebsiteConnections } from "@/core/nexus/website-connections";
+import {
   AuthorIdentityError,
   requireAuthorizedAuthorIdentity,
 } from "@/core/security/author-identity";
@@ -105,6 +112,9 @@ interface ProductBody {
   ebookPayload?: unknown;
   authorIdentityId?: unknown;
   category?: unknown;
+  websiteConnectionId?: unknown;
+  universeId?: unknown;
+  confirmDestinationChange?: unknown;
 }
 
 export async function POST(request: Request) {
@@ -128,17 +138,14 @@ export async function POST(request: Request) {
     if (!ALLOWED_STATUSES.has(status)) return failure(400, "Choose a valid publishing status.");
 
     const licenseRef = adminDb.collection("plugin_licenses").doc(session.studioKey);
-    const [licenseSnapshot, userSnapshot, connectionSnapshot] = await Promise.all([
-      licenseRef.get(),
-      adminDb.collection("users").doc(session.email.toLowerCase()).get(),
-      adminDb.collection("connections").doc(session.studioKey).get(),
-    ]);
+    const licenseSnapshot = await licenseRef.get();
     if (!licenseSnapshot.exists) return failure(403, "Your active author license was not found.");
     const license = licenseSnapshot.data() || {};
     const licenseEmail = clean(license.authorEmail || license.authorId).toLowerCase();
     if (licenseEmail !== session.email.toLowerCase()) {
       return failure(403, "This StudioKey belongs to another author account.");
     }
+    const authorId = clean(license.authorId) || session.email.toLowerCase();
 
     const identity = await requireAuthorizedAuthorIdentity(
       adminDb,
@@ -159,14 +166,58 @@ export async function POST(request: Request) {
       clean(existingWordPressDeployment.status) === "deployed" &&
       positiveInteger(existingWordPressDeployment.publicationId) > 0 &&
       positiveInteger(existingWordPressDeployment.pageId) > 0;
-    const user = userSnapshot.data() || {};
-    const connection = connectionSnapshot.data() || {};
-    const associatedWebsite = normalizeOrigin(
-      connection.targetWpOrigin ||
-        license.associatedWebsite ||
-        user.associatedWebsite ||
-        existing.associatedWebsite
-    );
+    const existingStudioKey = clean(existing.studioKey || existing.wpStudioKey);
+    const existingAuthor = clean(existing.authorEmail || existing.authorId).toLowerCase();
+    if (
+      existingSnapshot.exists &&
+      ((existingStudioKey && existingStudioKey !== session.studioKey) ||
+        (existingAuthor && existingAuthor !== session.email.toLowerCase()))
+    ) {
+      return failure(
+        403,
+        "This product belongs to another author workspace.",
+        "PUBLICATION_DESTINATION_FORBIDDEN"
+      );
+    }
+    const universeId = clean(body?.universeId || existing.universeId || existing.storyWorldId);
+    const [connections, storyWorldDefaultWebsiteConnectionId] = await Promise.all([
+      listNexusWebsiteConnections(adminDb, session.studioKey, authorId),
+      loadStoryWorldDefaultWebsiteConnectionId(
+        universeId,
+        session.studioKey,
+        authorId
+      ),
+    ]);
+    let destination: ResolvedPublicationDestination;
+    try {
+      destination = resolvePublicationDestination({
+        studioKey: session.studioKey,
+        authorId,
+        connections,
+        requestedWebsiteConnectionId: body?.websiteConnectionId,
+        storyWorldDefaultWebsiteConnectionId,
+        confirmDestinationChange: body?.confirmDestinationChange === true,
+        existingProduct: {
+          websiteConnectionId: existing.websiteConnectionId,
+          associatedWebsite: existing.associatedWebsite,
+          wordpressDeployment: existingWordPressDeployment,
+          hasConfirmedDeployment: hasConfirmedWordPressDeployment,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof PublicationDestinationError &&
+        error.destinationStatus === "needs_review" &&
+        existingSnapshot.exists
+      ) {
+        await productRef.set({
+          destinationStatus: "needs_review",
+          updatedAt: FieldValue.serverTimestamp(),
+        }, { merge: true });
+      }
+      throw error;
+    }
+    const associatedWebsite = destination.targetWpOrigin;
     const chapters = Array.isArray(body?.chapters)
       ? body.chapters
       : Array.isArray(body?.studioTracks)
@@ -208,13 +259,16 @@ export async function POST(request: Request) {
       authorName: identity.displayName,
       studioKey: session.studioKey,
       wpStudioKey: session.studioKey,
+      websiteConnectionId: destination.websiteConnectionId,
       associatedWebsite,
+      destinationStatus: "bound",
       // Payment destinations belong to the tenant payment profile, never a product or browser payload.
       stripeConnectId: FieldValue.delete(),
       stripeAccountId: FieldValue.delete(),
       wordpressDeployment: {
         ...existingWordPressDeployment,
         status: "deploying",
+        websiteConnectionId: destination.websiteConnectionId,
         targetWpOrigin: associatedWebsite,
         startedAt: timestamp,
       },
@@ -226,6 +280,7 @@ export async function POST(request: Request) {
     try {
       wordpress = await deployPublicationToWordPress({
         studioKey: session.studioKey,
+        destination,
         assetKey,
         title,
         authorName: identity.displayName,
@@ -250,6 +305,7 @@ export async function POST(request: Request) {
         wordpressDeployment: {
           ...existingWordPressDeployment,
           status: "failed",
+          websiteConnectionId: destination.websiteConnectionId,
           targetWpOrigin: associatedWebsite,
           failedAt: timestamp,
         },
@@ -262,8 +318,12 @@ export async function POST(request: Request) {
       status,
       isPublished: status === "published",
       requestedPublishingStatus: FieldValue.delete(),
+      websiteConnectionId: destination.websiteConnectionId,
+      associatedWebsite: wordpress.targetWpOrigin,
+      destinationStatus: "bound",
       wordpressDeployment: {
         status: "deployed",
+        websiteConnectionId: destination.websiteConnectionId,
         targetWpOrigin: wordpress.targetWpOrigin,
         publicationId: wordpress.publicationId,
         pageId: wordpress.pageId,
@@ -280,6 +340,8 @@ export async function POST(request: Request) {
       message: "Your publication and bookstore pages were deployed to WordPress.",
       assetKey,
       seoSlug: assetKey,
+      websiteConnectionId: destination.websiteConnectionId,
+      targetWpOrigin: wordpress.targetWpOrigin,
       wordpress: {
         publicationId: wordpress.publicationId,
         pageId: wordpress.pageId,
@@ -292,6 +354,9 @@ export async function POST(request: Request) {
     if (error instanceof AuthorIdentityError) {
       return failure(error.status, error.publicMessage, error.code);
     }
+    if (error instanceof PublicationDestinationError) {
+      return failure(error.status, error.publicMessage, error.code);
+    }
     if (error instanceof WordPressDeploymentError) {
       return failure(error.status, error.message, "WORDPRESS_DEPLOYMENT_FAILED");
     }
@@ -302,6 +367,7 @@ export async function POST(request: Request) {
 
 interface WordPressDeploymentInput {
   studioKey: string;
+  destination: ResolvedPublicationDestination;
   assetKey: string;
   title: string;
   authorName: string;
@@ -317,6 +383,7 @@ interface WordPressDeploymentInput {
 }
 
 interface WordPressDeploymentResult {
+  websiteConnectionId: string;
   targetWpOrigin: string;
   publicationId: number;
   pageId: number;
@@ -328,29 +395,8 @@ interface WordPressDeploymentResult {
 async function deployPublicationToWordPress(
   input: WordPressDeploymentInput
 ): Promise<WordPressDeploymentResult> {
-  const connectionSnapshot = await adminDb
-    .collection("connections")
-    .doc(input.studioKey)
-    .get();
-  const connection = connectionSnapshot.data() || {};
-  const targetWpOrigin = normalizeOrigin(connection.targetWpOrigin);
-  const wpUsername = clean(connection.wpUsername);
-  const secretCredentialRef = clean(connection.secretCredentialRef);
-  if (
-    !connectionSnapshot.exists ||
-    connection.status !== "active" ||
-    connection.verificationStatus !== "verified" ||
-    !targetWpOrigin ||
-    !wpUsername ||
-    !/^projects\/[0-9]+\/secrets\/WP_CREDS_[A-Za-z0-9_-]+\/versions\/latest$/.test(
-      secretCredentialRef
-    )
-  ) {
-    throw new WordPressDeploymentError(
-      409,
-      "Connect and verify your WordPress site before deploying this publication."
-    );
-  }
+  const targetWpOrigin = input.destination.targetWpOrigin;
+  const wpUsername = input.destination.wpUsername;
 
   const gatewayUrl = resolveWordPressGatewayUrl();
   let gatewayResponse: {
@@ -365,7 +411,7 @@ async function deployPublicationToWordPress(
         url: `${gatewayUrl}/publish-vault`,
         method: "POST",
         data: {
-          studioKey: input.studioKey,
+          studioKey: input.destination.gatewayStudioKey,
           targetWpOrigin,
           wpUsername,
           publication: {
@@ -418,14 +464,16 @@ async function deployPublicationToWordPress(
     );
   }
 
-  const confirmedOrigin = normalizeOrigin(payload.targetWpOrigin);
+  const confirmedOrigin = assertConfirmedPublicationOrigin(
+    targetWpOrigin,
+    payload.targetWpOrigin
+  );
   const publicationId = positiveInteger(payload.publication_id);
   const pageId = positiveInteger(payload.page_id);
   const bookshelfPageId = positiveInteger(payload.bookshelf_page_id);
   const publicationUrl = clean(payload.url);
   const bookshelfUrl = clean(payload.bookshelf_url);
   if (
-    confirmedOrigin !== targetWpOrigin ||
     !publicationId ||
     !pageId ||
     !bookshelfPageId ||
@@ -439,7 +487,8 @@ async function deployPublicationToWordPress(
   }
 
   return {
-    targetWpOrigin,
+    websiteConnectionId: input.destination.websiteConnectionId,
+    targetWpOrigin: confirmedOrigin,
     publicationId,
     pageId,
     bookshelfPageId,
@@ -467,6 +516,31 @@ function failure(status: number, error: string, code?: string) {
   return NextResponse.json({ success: false, ...(code ? { code } : {}), error }, { status });
 }
 
+async function loadStoryWorldDefaultWebsiteConnectionId(
+  universeId: string,
+  studioKey: string,
+  authorId: string
+): Promise<string> {
+  if (!universeId) return "";
+
+  const snapshot = await adminDb
+    .collection("nexus_story_worlds")
+    .doc(universeId)
+    .get();
+  if (!snapshot.exists) return "";
+
+  const storyWorld = snapshot.data() || {};
+  if (
+    clean(storyWorld.studioKey) !== studioKey ||
+    clean(storyWorld.authorId).toLowerCase() !== authorId.toLowerCase() ||
+    clean(storyWorld.status) !== "active"
+  ) {
+    return "";
+  }
+
+  return clean(storyWorld.defaultWebsiteConnectionId);
+}
+
 function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -477,17 +551,4 @@ function slug(value: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 140) || "untitled-publication";
-}
-
-function normalizeOrigin(value: unknown): string {
-  const candidate = clean(value);
-  if (!candidate) return "";
-  try {
-    const url = new URL(candidate);
-    if (url.protocol !== "https:" && process.env.NODE_ENV === "production") return "";
-    if (url.protocol !== "https:" && url.protocol !== "http:") return "";
-    return url.origin;
-  } catch {
-    return "";
-  }
 }
