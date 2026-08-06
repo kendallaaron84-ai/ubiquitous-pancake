@@ -20,7 +20,6 @@ export interface ResolvedPublicationDestination {
   targetWpOrigin: string;
   wpUsername: string;
   secretCredentialRef: string;
-  gatewayStudioKey: string;
   contentRole: NexusWebsiteConnection["contentRole"];
   displayName: string;
 }
@@ -161,21 +160,21 @@ export function productHistoricalOrigin(
   return normalizeOrigin(deployment.targetWpOrigin || product.associatedWebsite);
 }
 
-export function gatewayStudioKeyForConnection(
+export function assertCredentialReferenceForConnection(
   studioKey: string,
   websiteConnectionId: string,
   secretCredentialRef: string
 ): string {
-  const expected = websiteConnectionId === "primary"
+  const expectedCredentialScope = websiteConnectionId === "primary"
     ? studioKey
     : `${studioKey}-${websiteConnectionId}`;
   const match = clean(secretCredentialRef).match(
     /^projects\/[0-9]+\/secrets\/WP_CREDS_([A-Za-z0-9_-]+)\/versions\/latest$/
   );
-  if (!match || match[1] !== expected) {
+  if (!match || match[1] !== expectedCredentialScope) {
     throw unavailable("The selected website's protected credentials are incomplete. Reconnect that website and retry.");
   }
-  return expected;
+  return clean(secretCredentialRef);
 }
 
 export function assertConfirmedPublicationOrigin(
@@ -249,8 +248,7 @@ function toResolvedDestination(
     websiteConnectionId: connection.websiteConnectionId,
     targetWpOrigin: normalizeOrigin(connection.wordpressOrigin),
     wpUsername: clean(connection.wordpressUsername),
-    secretCredentialRef: clean(connection.secretCredentialRef),
-    gatewayStudioKey: gatewayStudioKeyForConnection(
+    secretCredentialRef: assertCredentialReferenceForConnection(
       studioKey,
       connection.websiteConnectionId,
       connection.secretCredentialRef

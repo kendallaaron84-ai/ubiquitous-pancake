@@ -5,8 +5,8 @@ import test from "node:test";
 import {
   PUBLICATION_DESTINATION_CODES,
   PublicationDestinationError,
+  assertCredentialReferenceForConnection,
   assertConfirmedPublicationOrigin,
-  gatewayStudioKeyForConnection,
   resolvePublicationDestination,
 } from "../publication-destination.ts";
 
@@ -98,7 +98,10 @@ test("two products can resolve to two different verified websites", () => {
 
   assert.equal(businessProduct.targetWpOrigin, "https://business.example.com");
   assert.equal(storyProduct.targetWpOrigin, "https://site_story.example.com");
-  assert.notEqual(businessProduct.gatewayStudioKey, storyProduct.gatewayStudioKey);
+  assert.notEqual(
+    businessProduct.secretCredentialRef,
+    storyProduct.secretCredentialRef
+  );
 });
 
 test("explicit Business Brand and Both destinations are accepted", () => {
@@ -220,7 +223,9 @@ test("deployment route uses the resolved destination and preserves publication p
   assert.match(route, /websiteConnectionId\?: unknown/);
   assert.match(route, /resolvePublicationDestination/);
   assert.match(route, /destination: ResolvedPublicationDestination/);
-  assert.match(route, /studioKey: input\.destination\.gatewayStudioKey/);
+  assert.match(route, /studioKey: input\.studioKey/);
+  assert.match(route, /websiteConnectionId: input\.destination\.websiteConnectionId/);
+  assert.match(route, /secretCredentialRef: input\.destination\.secretCredentialRef/);
   assert.match(route, /const targetWpOrigin = input\.destination\.targetWpOrigin/);
   assert.match(route, /const wpUsername = input\.destination\.wpUsername/);
   assert.match(route, /websiteConnectionId: destination\.websiteConnectionId/);
@@ -255,18 +260,18 @@ test("missing destination returns the stable 400 code when two sites exist", () 
   );
 });
 
-test("secondary website credentials use the existing gateway-scoped StudioKey", () => {
+test("secondary website credentials use their exact connection-scoped secret", () => {
   const connection = website("site_story");
   assert.equal(
-    gatewayStudioKeyForConnection(
+    assertCredentialReferenceForConnection(
       STUDIO_KEY,
       connection.websiteConnectionId,
       connection.secretCredentialRef
     ),
-    `${STUDIO_KEY}-site_story`
+    connection.secretCredentialRef
   );
   expectDestinationError(
-    () => gatewayStudioKeyForConnection(
+    () => assertCredentialReferenceForConnection(
       STUDIO_KEY,
       "site_story",
       website("primary").secretCredentialRef
@@ -287,16 +292,19 @@ test("publication page and bookshelf confirmations are required before success",
 
 test("product stores the selected connection and gateway-confirmed origin", async () => {
   const route = await readFile(new URL("app/api/agent/deploy/route.ts", ROOT), "utf8");
-  assert.match(route, /websiteConnectionId: destination\.websiteConnectionId/);
-  assert.match(route, /associatedWebsite: wordpress\.targetWpOrigin/);
-  assert.match(route, /targetWpOrigin: wordpress\.targetWpOrigin/);
+  const migration = await readFile(new URL("core/nexus/publication-migration.ts", ROOT), "utf8");
+  assert.match(route, /buildAuthoritativeDeploymentFields\(wordpress, timestamp\)/);
+  assert.match(migration, /websiteConnectionId: confirmation\.websiteConnectionId/);
+  assert.match(migration, /associatedWebsite: normalizeOrigin\(confirmation\.targetWpOrigin\)/);
+  assert.match(migration, /targetWpOrigin: normalizeOrigin\(confirmation\.targetWpOrigin\)/);
 });
 
 test("deployment failure recovery preserves the last confirmed publication state", async () => {
   const route = await readFile(new URL("app/api/agent/deploy/route.ts", ROOT), "utf8");
   assert.match(route, /status: hasConfirmedWordPressDeployment[\s\S]*?clean\(existing\.status\)/);
-  assert.match(route, /wordpressDeployment: \{[\s\S]*?status: "failed"/);
-  assert.match(route, /targetWpOrigin: associatedWebsite/);
+  assert.match(route, /buildFailedDeploymentPatch/);
+  assert.match(route, /DESTINATION_CHANGE_FAILED_MESSAGE/);
+  assert.doesNotMatch(route, /originalAssets.*delete/i);
 });
 
 test("missing deployment configuration retains 503 behavior", async () => {

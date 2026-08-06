@@ -7,9 +7,18 @@ import { adminDb } from "@/core/firebase-admin";
 import {
   PublicationDestinationError,
   assertConfirmedPublicationOrigin,
+  productHistoricalOrigin,
   resolvePublicationDestination,
   type ResolvedPublicationDestination,
 } from "@/core/nexus/publication-destination";
+import {
+  DESTINATION_CHANGE_FAILED_MESSAGE,
+  buildAuthoritativeDeploymentFields,
+  buildFailedDeploymentPatch,
+  buildDeploymentHistoryEntry,
+  buildPendingDeploymentPatch,
+  isConfirmedDestinationChange,
+} from "@/core/nexus/publication-migration";
 import { listNexusWebsiteConnections } from "@/core/nexus/website-connections";
 import {
   AuthorIdentityError,
@@ -52,7 +61,9 @@ function getGatewayAuthClient(): GoogleAuth {
   if (!projectId || !clientEmail || !privateKey) {
     throw new WordPressDeploymentError(
       503,
-      "The secure WordPress deployment service is not configured."
+      "WORDPRESS_GATEWAY_NOT_CONFIGURED",
+      "The secure WordPress deployment service is not configured.",
+      "dashboard_configuration"
     );
   }
 
@@ -75,7 +86,9 @@ function resolveWordPressGatewayUrl(): string {
   if (!configured) {
     throw new WordPressDeploymentError(
       503,
-      "The secure WordPress deployment service is unavailable."
+      "WORDPRESS_GATEWAY_NOT_CONFIGURED",
+      "The secure WordPress deployment service is unavailable.",
+      "dashboard_configuration"
     );
   }
 
@@ -94,7 +107,9 @@ function resolveWordPressGatewayUrl(): string {
   } catch {
     throw new WordPressDeploymentError(
       503,
-      "The secure WordPress deployment service is misconfigured."
+      "WORDPRESS_GATEWAY_MISCONFIGURED",
+      "The secure WordPress deployment service is misconfigured.",
+      "dashboard_configuration"
     );
   }
 }
@@ -218,6 +233,27 @@ export async function POST(request: Request) {
       throw error;
     }
     const associatedWebsite = destination.targetWpOrigin;
+    const previousWebsiteConnectionId = clean(
+      existingWordPressDeployment.websiteConnectionId ||
+      existing.websiteConnectionId
+    );
+    const previousTargetOrigin = productHistoricalOrigin({
+      associatedWebsite: existing.associatedWebsite,
+      wordpressDeployment: existingWordPressDeployment,
+    });
+    const destinationChanged = isConfirmedDestinationChange({
+      hasConfirmedDeployment: hasConfirmedWordPressDeployment,
+      previousWebsiteConnectionId,
+      previousTargetOrigin,
+      nextWebsiteConnectionId: destination.websiteConnectionId,
+      nextTargetOrigin: destination.targetWpOrigin,
+    });
+    console.info("[Publication Deployment] Destination resolved.", {
+      assetKey,
+      selectedWebsiteConnectionId: destination.websiteConnectionId,
+      resolvedTargetOrigin: destination.targetWpOrigin,
+      destinationChanged,
+    });
     const chapters = Array.isArray(body?.chapters)
       ? body.chapters
       : Array.isArray(body?.studioTracks)
@@ -259,19 +295,16 @@ export async function POST(request: Request) {
       authorName: identity.displayName,
       studioKey: session.studioKey,
       wpStudioKey: session.studioKey,
-      websiteConnectionId: destination.websiteConnectionId,
-      associatedWebsite,
-      destinationStatus: "bound",
       // Payment destinations belong to the tenant payment profile, never a product or browser payload.
       stripeConnectId: FieldValue.delete(),
       stripeAccountId: FieldValue.delete(),
-      wordpressDeployment: {
-        ...existingWordPressDeployment,
-        status: "deploying",
-        websiteConnectionId: destination.websiteConnectionId,
-        targetWpOrigin: associatedWebsite,
-        startedAt: timestamp,
-      },
+      ...buildPendingDeploymentPatch(
+        {
+          websiteConnectionId: destination.websiteConnectionId,
+          targetWpOrigin: associatedWebsite,
+        },
+        timestamp
+      ),
       createdAt: existing.createdAt || timestamp,
       updatedAt: timestamp,
     }, { merge: true });
@@ -295,6 +328,16 @@ export async function POST(request: Request) {
         ebookPayload: body?.ebookPayload ?? existing.ebookPayload ?? null,
       });
     } catch (error) {
+      const classified = classifyDeploymentError(error);
+      console.error("[Publication Deployment] Deployment failed.", {
+        assetKey,
+        selectedWebsiteConnectionId: destination.websiteConnectionId,
+        resolvedTargetOrigin: destination.targetWpOrigin,
+        boundary: classified.boundary,
+        code: classified.code,
+        httpStatus: classified.status,
+        destinationChanged,
+      });
       await productRef.set({
         status: hasConfirmedWordPressDeployment
           ? clean(existing.status) || "published"
@@ -302,38 +345,53 @@ export async function POST(request: Request) {
         isPublished: hasConfirmedWordPressDeployment
           ? existing.isPublished === true || existing.status === "published"
           : false,
-        wordpressDeployment: {
-          ...existingWordPressDeployment,
-          status: "failed",
-          websiteConnectionId: destination.websiteConnectionId,
-          targetWpOrigin: associatedWebsite,
+        ...buildFailedDeploymentPatch({
+          destination: {
+            websiteConnectionId: destination.websiteConnectionId,
+            targetWpOrigin: associatedWebsite,
+          },
           failedAt: timestamp,
-        },
-        updatedAt: timestamp,
+          code: classified.code,
+          boundary: classified.boundary,
+        }),
       }, { merge: true });
-      throw error;
+      if (destinationChanged) {
+        throw new WordPressDeploymentError(
+          classified.status,
+          classified.code,
+          DESTINATION_CHANGE_FAILED_MESSAGE,
+          classified.boundary
+        );
+      }
+      throw classified;
     }
 
-    await productRef.set({
+    const successPatch: Record<string, unknown> = {
       status,
       isPublished: status === "published",
       requestedPublishingStatus: FieldValue.delete(),
-      websiteConnectionId: destination.websiteConnectionId,
-      associatedWebsite: wordpress.targetWpOrigin,
-      destinationStatus: "bound",
-      wordpressDeployment: {
+      ...buildAuthoritativeDeploymentFields(wordpress, timestamp),
+      pendingWordpressDeployment: FieldValue.delete(),
+      lastDeploymentAttempt: {
         status: "deployed",
         websiteConnectionId: destination.websiteConnectionId,
         targetWpOrigin: wordpress.targetWpOrigin,
-        publicationId: wordpress.publicationId,
-        pageId: wordpress.pageId,
-        bookshelfPageId: wordpress.bookshelfPageId,
-        publicationUrl: wordpress.publicationUrl,
-        bookshelfUrl: wordpress.bookshelfUrl,
-        deployedAt: timestamp,
+        completedAt: timestamp,
       },
       updatedAt: timestamp,
-    }, { merge: true });
+    };
+    if (destinationChanged) {
+      successPatch.deploymentHistory = FieldValue.arrayUnion(
+        buildDeploymentHistoryEntry({
+          previousWebsiteConnectionId,
+          previousTargetOrigin,
+          next: wordpress,
+          migrationTimestamp: new Date().toISOString(),
+          authenticatedAuthor: session.email,
+        })
+      );
+    }
+    await productRef.set(successPatch, { merge: true });
 
     return NextResponse.json({
       success: true,
@@ -358,7 +416,7 @@ export async function POST(request: Request) {
       return failure(error.status, error.publicMessage, error.code);
     }
     if (error instanceof WordPressDeploymentError) {
-      return failure(error.status, error.message, "WORDPRESS_DEPLOYMENT_FAILED");
+      return failure(error.status, error.message, error.code);
     }
     console.error("Publication save failed:", error);
     return failure(500, "Your publication could not be saved.");
@@ -411,7 +469,9 @@ async function deployPublicationToWordPress(
         url: `${gatewayUrl}/publish-vault`,
         method: "POST",
         data: {
-          studioKey: input.destination.gatewayStudioKey,
+          studioKey: input.studioKey,
+          websiteConnectionId: input.destination.websiteConnectionId,
+          secretCredentialRef: input.destination.secretCredentialRef,
           targetWpOrigin,
           wpUsername,
           publication: {
@@ -446,8 +506,10 @@ async function deployPublicationToWordPress(
       reason: error instanceof Error ? error.message : "Unknown network failure",
     });
     throw new WordPressDeploymentError(
-      502,
-      "KOBA-I could not reach the secure WordPress deployment service. Retry Save & Sync."
+      503,
+      "WORDPRESS_GATEWAY_UNAVAILABLE",
+      "KOBA-I could not reach the secure WordPress deployment service. Retry Save & Sync.",
+      "gateway_transport"
     );
   }
 
@@ -457,10 +519,18 @@ async function deployPublicationToWordPress(
     gatewayResponse.status >= 300 ||
     payload.success !== true
   ) {
+    const gatewayCode = clean(payload.code) || "WORDPRESS_GATEWAY_REJECTED";
+    const responseStatus = gatewayResponse.status === 409
+      ? 409
+      : gatewayResponse.status === 503
+        ? 503
+        : 502;
     throw new WordPressDeploymentError(
-      gatewayResponse.status === 409 ? 409 : 502,
+      responseStatus,
+      gatewayCode,
       clean(payload.error) ||
-        `The secure WordPress service rejected the deployment (HTTP ${gatewayResponse.status}).`
+        `The secure WordPress service rejected the deployment (HTTP ${gatewayResponse.status}).`,
+      "gateway_response"
     );
   }
 
@@ -482,7 +552,9 @@ async function deployPublicationToWordPress(
   ) {
     throw new WordPressDeploymentError(
       502,
-      "The secure WordPress service responded, but did not confirm every required publication page."
+      "WORDPRESS_DEPLOYMENT_INCOMPLETE",
+      "The secure WordPress service responded, but did not confirm every required publication page.",
+      "gateway_response_validation"
     );
   }
 
@@ -500,11 +572,23 @@ async function deployPublicationToWordPress(
 class WordPressDeploymentError extends Error {
   constructor(
     readonly status: number,
-    message: string
+    readonly code: string,
+    message: string,
+    readonly boundary: string
   ) {
     super(message);
     this.name = "WordPressDeploymentError";
   }
+}
+
+function classifyDeploymentError(error: unknown): WordPressDeploymentError {
+  if (error instanceof WordPressDeploymentError) return error;
+  return new WordPressDeploymentError(
+    500,
+    "PUBLICATION_DEPLOYMENT_INTERNAL_ERROR",
+    "Your publication could not be deployed.",
+    "dashboard_internal"
+  );
 }
 
 function positiveInteger(value: unknown): number {

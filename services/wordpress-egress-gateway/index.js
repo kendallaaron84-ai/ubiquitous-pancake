@@ -9,6 +9,14 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import express from "express";
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
+import {
+  CredentialReferenceError,
+  assertCredentialReference,
+  credentialSecretId,
+  credentialSecretReference,
+  normalizeGatewayStudioKey,
+  normalizeWebsiteConnectionId,
+} from "./credential-reference.js";
 
 const PORT = Number(process.env.PORT || 8080);
 const MAX_RESPONSE_BYTES = 2048;
@@ -44,11 +52,25 @@ function clean(value) {
 }
 
 function normalizeStudioKey(value) {
-  const studioKey = clean(value).toUpperCase();
-  if (!/^KOBA-(?:AUDIO|OWNER)-[A-Z0-9-]{6,64}$/.test(studioKey)) {
-    throw new GatewayError("INVALID_STUDIO_KEY", "A valid StudioKey is required.");
+  try {
+    return normalizeGatewayStudioKey(value);
+  } catch (error) {
+    if (error instanceof CredentialReferenceError) {
+      throw new GatewayError(error.code, error.message, error.status);
+    }
+    throw error;
   }
-  return studioKey;
+}
+
+function normalizeConnectionId(value, options = {}) {
+  try {
+    return normalizeWebsiteConnectionId(value, options);
+  } catch (error) {
+    if (error instanceof CredentialReferenceError) {
+      throw new GatewayError(error.code, error.message, error.status);
+    }
+    throw error;
+  }
 }
 
 function normalizeWordPressOrigin(value) {
@@ -304,13 +326,14 @@ async function addSecretAccessor(secretName) {
 
 async function provisionWordPressSecret({
   studioKey,
+  websiteConnectionId,
   targetWpOrigin,
   wpUsername,
   wpAppPassword,
 }) {
   requireSecretConfiguration();
 
-  const secretId = `WP_CREDS_${studioKey}`;
+  const secretId = credentialSecretId(studioKey, websiteConnectionId);
   const parent = `projects/${secretProjectId}`;
   const secretName = `${parent}/secrets/${secretId}`;
 
@@ -340,18 +363,36 @@ async function provisionWordPressSecret({
 
   await addSecretAccessor(secretName);
 
-  return `projects/${secretProjectNumber}/secrets/${secretId}/versions/latest`;
+  return credentialSecretReference(
+    secretProjectNumber,
+    studioKey,
+    websiteConnectionId
+  );
 }
 
 async function loadStoredWordPressCredentials({
   studioKey,
+  websiteConnectionId,
+  secretCredentialRef,
   targetWpOrigin,
   wpUsername,
 }) {
   requireSecretConfiguration();
 
-  const secretName =
-    `projects/${secretProjectNumber}/secrets/WP_CREDS_${studioKey}/versions/latest`;
+  let secretName;
+  try {
+    secretName = assertCredentialReference({
+      projectNumber: secretProjectNumber,
+      studioKey,
+      websiteConnectionId,
+      secretCredentialRef,
+    });
+  } catch (error) {
+    if (error instanceof CredentialReferenceError) {
+      throw new GatewayError(error.code, error.message, error.status);
+    }
+    throw error;
+  }
   let secretBuffer = null;
 
   try {
@@ -590,6 +631,10 @@ app.post("/verify-wordpress", async (request, response) => {
 
   try {
     const studioKey = normalizeStudioKey(request.body?.studioKey);
+    const websiteConnectionId = normalizeConnectionId(
+      request.body?.websiteConnectionId,
+      { allowPrimaryDefault: true }
+    );
     const targetWpOrigin = normalizeWordPressOrigin(
       request.body?.targetWpOrigin || request.body?.siteUrl
     );
@@ -615,6 +660,7 @@ app.post("/verify-wordpress", async (request, response) => {
     );
     const secretCredentialRef = await provisionWordPressSecret({
       studioKey,
+      websiteConnectionId,
       targetWpOrigin,
       wpUsername,
       wpAppPassword,
@@ -622,6 +668,7 @@ app.post("/verify-wordpress", async (request, response) => {
 
     console.info("WordPress connection verified and vaulted.", {
       studioKey,
+      websiteConnectionId,
       targetWpOrigin,
       wpUserId: wpUser.id,
       durationMs: Date.now() - startedAt,
@@ -661,11 +708,15 @@ app.post("/verify-wordpress", async (request, response) => {
 app.post("/publish-vault", async (request, response) => {
   const startedAt = Date.now();
   let studioKey = "";
+  let websiteConnectionId = "";
   let targetWpOrigin = "";
   let assetKey = "";
 
   try {
     studioKey = normalizeStudioKey(request.body?.studioKey);
+    websiteConnectionId = normalizeConnectionId(
+      request.body?.websiteConnectionId
+    );
     targetWpOrigin = normalizeWordPressOrigin(request.body?.targetWpOrigin);
     const wpUsername = clean(request.body?.wpUsername);
     if (!wpUsername) {
@@ -680,6 +731,8 @@ app.post("/publish-vault", async (request, response) => {
     assetKey = publication.assetKey;
     const credentials = await loadStoredWordPressCredentials({
       studioKey,
+      websiteConnectionId,
+      secretCredentialRef: request.body?.secretCredentialRef,
       targetWpOrigin,
       wpUsername,
     });
@@ -692,6 +745,7 @@ app.post("/publish-vault", async (request, response) => {
 
     console.info("WordPress publication deployed through static egress.", {
       studioKey,
+      websiteConnectionId,
       targetWpOrigin,
       assetKey,
       publicationId: result.publicationId,
@@ -723,6 +777,7 @@ app.post("/publish-vault", async (request, response) => {
       code: known.code,
       message: known.message,
       studioKey,
+      websiteConnectionId,
       targetWpOrigin,
       assetKey,
       durationMs: Date.now() - startedAt,

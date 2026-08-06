@@ -137,6 +137,7 @@ async function verifyAndProvisionThroughGateway(
   gatewayUrl: string,
   input: {
     studioKey: string;
+    websiteConnectionId: string;
     targetWpOrigin: unknown;
     wpUsername: unknown;
     wpAppPassword: unknown;
@@ -420,9 +421,8 @@ export async function POST(request: Request) {
       const secretManager = getSecretManagerClient();
       const gatewayUrl = resolveWordPressGatewayUrl();
       const connectionInput = {
-        studioKey: websiteConnectionId === "primary"
-          ? context.studioKey
-          : `${context.studioKey}-${websiteConnectionId}`,
+        studioKey: context.studioKey,
+        websiteConnectionId,
         targetWpOrigin: body.targetWpOrigin ?? body.targetUrl,
         wpUsername: body.wpUsername,
         wpAppPassword: body.wpAppPassword,
@@ -435,7 +435,12 @@ export async function POST(request: Request) {
         : await verifyAndProvisionWordPressConnection(
             secretManager,
             configuration,
-            connectionInput
+            {
+              ...connectionInput,
+              studioKey: websiteConnectionId === "primary"
+                ? context.studioKey
+                : `${context.studioKey}-${websiteConnectionId}`,
+            }
           );
     } catch (error: unknown) {
       if (error instanceof WordPressConnectionDiagnosticError) {
