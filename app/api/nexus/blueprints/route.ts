@@ -12,6 +12,7 @@ import { nexusErrorResponse, NexusRouteError, text } from "@/core/nexus/http";
 import { retrieveNexusKnowledge } from "@/core/nexus/knowledge-service";
 import { selectNexusStrategy } from "@/core/nexus/strategy-library";
 import { resolveNexusWebsiteConnection } from "@/core/nexus/website-connections";
+import { resolveStrategySourceVersions } from "@/core/nexus/strategy-source-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +41,9 @@ export async function POST(request: Request) {
     const knowledge = await retrieveNexusKnowledge(adminDb, { studioKey: context.studioKey, authorId: context.authorId, authorEmail: context.authorEmail, contentSource, universeId: universeId || null, referenceGuideId: referenceGuideId || null, topic: topicTitle, targetAudience, seoKeywords: seo, goal: resolvedGoal, maxChunks: 10 });
     const selectionMode = body.strategyGuideSelectionMode === "manual" ? "manual" : "automatic";
     const strategy = selectNexusStrategy({ goal: resolvedGoal, mode: selectionMode, primaryId: text(body.primaryStrategyGuideId, 100) || null, supportingId: text(body.supportingStrategyGuideId, 100) || null });
+    const strategyVersions = await resolveStrategySourceVersions(adminDb, [strategy.primaryStrategyGuideId, strategy.supportingStrategyGuideId]);
+    const primaryStrategyGuideVersion = strategyVersions[strategy.primaryStrategyGuideId] || 0;
+    const supportingStrategyGuideVersion = strategy.supportingStrategyGuideId ? strategyVersions[strategy.supportingStrategyGuideId] || 0 : null;
     blueprintId = `nexus_${randomUUID().replace(/-/g, "")}`;
     const attemptId = randomUUID();
     const guideMetadata = contentSource === "story_world" ? await loadGuideMetadata(universeId, referenceGuideId, context) : null;
@@ -70,7 +74,9 @@ export async function POST(request: Request) {
       resolvedGoal,
       strategySelectionMode: strategy.selectionMode,
       primaryStrategyGuideId: strategy.primaryStrategyGuideId,
+      primaryStrategyGuideVersion,
       supportingStrategyGuideId: strategy.supportingStrategyGuideId,
+      supportingStrategyGuideVersion,
       strategySelectionReason: strategy.selectionReason,
       strategySelectorVersion: strategy.selectorVersion,
       knowledgeChunkIds: knowledge.chunks.map((chunk) => chunk.chunkId),
@@ -95,7 +101,7 @@ export async function POST(request: Request) {
       updatedAt: FieldValue.serverTimestamp(),
     });
     const allKeywords = [seo.primary, seo.secondary, seo.longTail].filter(Boolean);
-    const dispatch = await dispatchBlogGenerationTask({ blueprintId, generationAttemptId: attemptId, studioKey: context.studioKey, targetWpOrigin: website.wordpressOrigin, secretCredentialRef: website.secretCredentialRef, seo: { ...seo, allKeywords, framework: "rank_math", readabilityTarget: "grade_5_6" }, schemaVersion: 1, authorId: context.authorId, authorEmail: context.authorEmail, requestedByUid: context.session.uid, websiteConnectionId: website.websiteConnectionId, contentSource, universeId: universeId || null, referenceGuideId: referenceGuideId || null, requestedGoal, strategyGuideSelectionMode: selectionMode, primaryStrategyGuideId: strategy.primaryStrategyGuideId, supportingStrategyGuideId: strategy.supportingStrategyGuideId, customDirectives: text(body.customDirectives, 5_000) });
+    const dispatch = await dispatchBlogGenerationTask({ blueprintId, generationAttemptId: attemptId, studioKey: context.studioKey, targetWpOrigin: website.wordpressOrigin, secretCredentialRef: website.secretCredentialRef, seo: { ...seo, allKeywords, framework: "rank_math", readabilityTarget: "grade_5_6" }, schemaVersion: 1, authorId: context.authorId, authorEmail: context.authorEmail, requestedByUid: context.session.uid, websiteConnectionId: website.websiteConnectionId, contentSource, universeId: universeId || null, referenceGuideId: referenceGuideId || null, requestedGoal, strategyGuideSelectionMode: selectionMode, primaryStrategyGuideId: strategy.primaryStrategyGuideId, primaryStrategyGuideVersion, supportingStrategyGuideId: strategy.supportingStrategyGuideId, supportingStrategyGuideVersion, customDirectives: text(body.customDirectives, 5_000) });
     await ref.update({ cloudTaskName: dispatch.taskName, queuedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
     return NextResponse.json({ success: true, status: "accepted", blueprintId }, { status: 202 });
   } catch (error) {

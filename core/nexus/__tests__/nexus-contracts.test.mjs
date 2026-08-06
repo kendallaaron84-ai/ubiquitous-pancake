@@ -18,6 +18,12 @@ import {
 } from "../reference-guide.ts";
 import { validateFirebasePublicConfig } from "../../firebase-config.ts";
 import {
+  assertGuideCanBeArchived,
+  assertGuideCanBeDeleted,
+  assertGuideCanBecomeActive,
+  normalizeReferenceGuideStatus,
+} from "../reference-guide-lifecycle.ts";
+import {
   NEXUS_STRATEGY_CATALOG,
   selectNexusStrategy,
 } from "../strategy-library.ts";
@@ -225,4 +231,93 @@ test("worker and gateway retain critical baseline controls", async () => {
   assert.match(gateway, /app\.post\("\/publish-vault"/);
   assert.match(gateway, /secretCredentialRef/);
   assert.doesNotMatch(gateway, /status\s*:\s*["']publish["']/);
+});
+
+test("Reference Guide management exposes lifecycle summaries and focused management", async () => {
+  const contextRoute = await readFile(new URL("app/api/nexus/context/route.ts", ROOT), "utf8");
+  const guideRoute = await readFile(new URL("app/api/nexus/reference-guides/route.ts", ROOT), "utf8");
+  const lifecycle = await readFile(new URL("core/nexus/reference-guide-lifecycle.ts", ROOT), "utf8");
+  const panel = await readFile(new URL("components/nexus-knowledge-panel.tsx", ROOT), "utf8");
+
+  assert.match(contextRoute, /normalizeReferenceGuideStatus/);
+  assert.doesNotMatch(contextRoute, /reference_guides"\)\.where\("status", "==", "ready"\)/);
+  assert.match(panel, /Active Guide/);
+  assert.match(panel, /Ready Guides/);
+  assert.match(panel, /Processing/);
+  assert.match(panel, /Failed/);
+  assert.match(panel, /Manage Reference Guides/);
+  assert.match(panel, /role="dialog"/);
+  assert.match(panel, /clientRequestId/);
+  assert.match(guideRoute, /REFERENCE_GUIDE_DUPLICATE_REQUEST/);
+  assert.match(guideRoute, /action === "set_active"/);
+  assert.match(guideRoute, /action === "archive"/);
+  assert.match(guideRoute, /action === "delete_incomplete"/);
+  assert.match(guideRoute, /content_blueprints/);
+  assert.match(guideRoute, /recursiveDelete/);
+  assert.match(panel, /Delete Incomplete/);
+  assert.match(guideRoute, /reference_guide_audit_events/);
+  assert.match(lifecycle, /REFERENCE_GUIDE_NOT_READY/);
+  assert.match(lifecycle, /REFERENCE_GUIDE_ACTIVE/);
+});
+
+test("Reference Guide lifecycle rejects invalid activation, archive, and deletion transitions", () => {
+  assert.equal(normalizeReferenceGuideStatus({ status: "extracting" }), "processing");
+  assert.equal(normalizeReferenceGuideStatus({ status: "ready", version: 1, publicSafeAcknowledged: true }), "ready");
+  assert.throws(() => assertGuideCanBecomeActive("failed"), /Only a ready/);
+  assert.throws(() => assertGuideCanBeArchived({ isActive: true }), /active guide/);
+  assert.throws(() => assertGuideCanBeDeleted({ status: "ready", isActive: false, historicallyReferenced: false }), /Only failed or incomplete/);
+  assert.throws(() => assertGuideCanBeDeleted({ status: "failed", isActive: false, historicallyReferenced: true }), /retained because a draft references/);
+  assert.doesNotThrow(() => assertGuideCanBeDeleted({ status: "incomplete", isActive: false, historicallyReferenced: false }));
+});
+
+test("Nexus intake refreshes context and selects only ready active guides", async () => {
+  const intake = await readFile(new URL("components/author-intake-form.tsx", ROOT), "utf8");
+  const panel = await readFile(new URL("components/nexus-knowledge-panel.tsx", ROOT), "utf8");
+  const page = await readFile(new URL("app/nexus-engine/page.tsx", ROOT), "utf8");
+
+  assert.match(intake, /koba:nexus-context-updated/);
+  assert.match(panel, /koba:nexus-context-updated/);
+  assert.match(intake, /guide\.status === "ready"/);
+  assert.match(intake, /defaultReferenceGuideId/);
+  assert.match(intake, /!loadingContext && context\.flags\?\.storyWorld !== true/);
+  assert.match(intake, /No ready guides/);
+  assert.match(page, /Knowledge &amp; Strategy/);
+  assert.doesNotMatch(page, /Blog Settings/);
+  assert.match(panel, /Available Strategies/);
+});
+
+test("strategy source management is owner-only, private, versioned, and worker-enforced", async () => {
+  const ownerContext = await readFile(new URL("core/nexus/owner-context.ts", ROOT), "utf8");
+  const sourceRoute = await readFile(new URL("app/api/nexus/strategy-sources/route.ts", ROOT), "utf8");
+  const ownerPage = await readFile(new URL("app/admin/nexus-strategy-sources/page.tsx", ROOT), "utf8");
+  const sourceService = await readFile(new URL("core/nexus/strategy-source-service.ts", ROOT), "utf8");
+  const blueprintRoute = await readFile(new URL("app/api/nexus/blueprints/route.ts", ROOT), "utf8");
+  const worker = await readFile(new URL("services/content-engine-worker/main.py", ROOT), "utf8");
+
+  assert.match(ownerContext, /KOBA_OWNER_EMAILS/);
+  assert.match(ownerContext, /throw new NexusRouteError\(403/);
+  assert.match(sourceRoute, /requireNexusOwnerContext\(\)/);
+  assert.match(sourceRoute, /collection\("versions"\)/);
+  assert.match(sourceRoute, /status: "approved"/);
+  assert.match(sourceRoute, /cacheControl: "private, no-store"/);
+  assert.match(ownerPage, /fetch\("\/api\/session"/);
+  assert.match(ownerPage, /payload\.isOwner !== true/);
+  assert.match(ownerPage, /router\.replace\("\/products"\)/);
+  const authorResponse = sourceRoute.slice(sourceRoute.indexOf("export async function GET"), sourceRoute.indexOf("export async function POST"));
+  assert.doesNotMatch(authorResponse, /sourceStoragePath|extractedTextStoragePath|normalizedText/);
+  assert.match(sourceService, /status === "active"/);
+  assert.match(blueprintRoute, /primaryStrategyGuideVersion/);
+  assert.match(blueprintRoute, /supportingStrategyGuideVersion/);
+  assert.match(worker, /sourceMode": "catalog_summary"/);
+  assert.match(worker, /sourceMode": "approved_version"/);
+  assert.match(worker, /selected strategy source is no longer active/);
+  assert.match(worker, /selected strategy source version is not approved/);
+});
+
+test("Reference Guide upload deduplication records terminal request state", async () => {
+  const guideRoute = await readFile(new URL("app/api/nexus/reference-guides/route.ts", ROOT), "utf8");
+  assert.match(guideRoute, /reference_guide_upload_requests/);
+  assert.match(guideRoute, /status: "completed"[\s\S]*deduplicated: true/);
+  assert.match(guideRoute, /sourceSha256/);
+  assert.match(guideRoute, /already processing/);
 });

@@ -408,9 +408,32 @@ class WorkerContractTests(unittest.TestCase):
             manual_supporting_guide_id="strategy_trust_authority"
         )
         context = worker.fetch_strategy_context(
-            selected["primaryGuideId"], selected["supportingGuideId"], "Topic", selected["resolvedGoal"]
+            selected["primaryGuideId"], 0, selected["supportingGuideId"], 0, "Topic", selected["resolvedGoal"]
         )
         self.assertEqual(["strategy_intrigue", "strategy_trust_authority"], [item["strategyGuideId"] for item in context])
+
+    def test_approved_strategy_version_must_be_active_and_is_loaded_from_storage(self):
+        worker.db = FakeFirestore({
+            ("nexus_strategy_guides", "strategy_intrigue"): {
+                "status": "active", "activeVersion": 2, "displayName": "Approved Intrigue"
+            },
+            ("nexus_strategy_guides", "strategy_intrigue", "versions", "2"): {
+                "status": "approved", "normalizedText": "Approved private strategy guidance."
+            },
+        })
+        context = worker.fetch_strategy_context("strategy_intrigue", 2, None, 0, "Topic", "create_intrigue")
+        self.assertEqual("approved_version", context[0]["sourceMode"])
+        self.assertEqual(2, context[0]["strategyGuideVersion"])
+        self.assertIn("Approved private strategy guidance", context[0]["guidance"])
+
+    def test_inactive_strategy_version_fails_closed(self):
+        worker.db = FakeFirestore({
+            ("nexus_strategy_guides", "strategy_intrigue"): {
+                "status": "inactive", "activeVersion": 2
+            },
+        })
+        with self.assertRaisesRegex(worker.PermanentTaskError, "no longer active"):
+            worker.fetch_strategy_context("strategy_intrigue", 2, None, 0, "Topic", "create_intrigue")
 
     def test_grounded_prompt_contains_reference_guide_not_legacy_book_context(self):
         story = {
@@ -421,7 +444,7 @@ class WorkerContractTests(unittest.TestCase):
         with patch.object(worker, "fetch_tier_1_core_library", return_value="CORE"):
             prompt = worker.build_grounded_article_prompt(
                 blueprint=nexus_blueprint(), business_context=None, story_context=story,
-                strategy_context=worker.fetch_strategy_context("strategy_intrigue", None, "", "create_intrigue")
+                strategy_context=worker.fetch_strategy_context("strategy_intrigue", 0, None, 0, "", "create_intrigue")
             )
         self.assertIn("Mara tends the silver harbor lantern", prompt)
         self.assertIn("Queen Iris is the traitor", prompt)

@@ -8,8 +8,8 @@ import { useToast } from "@/hooks/use-toast";
 type ContentSource = "business_brand" | "story_world";
 type Goal = { value: string; label: string };
 type Website = { websiteConnectionId: string; displayName: string; wordpressOrigin: string; contentRole: ContentSource | "both"; status: string };
-type Guide = { id: string; displayName?: string; status?: string };
-type World = { id: string; title?: string; referenceGuides?: Guide[] };
+type Guide = { id: string; displayName?: string; status?: string; active?: boolean };
+type World = { id: string; title?: string; defaultReferenceGuideId?: string | null; referenceGuides?: Guide[] };
 type Strategy = { id: string; displayName: string; description: string };
 type ContextPayload = {
   websites?: Website[];
@@ -48,7 +48,7 @@ export function AuthorIntakeForm() {
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/nexus/context", { credentials: "same-origin", cache: "no-store", signal: controller.signal })
+    const load = () => fetch("/api/nexus/context", { credentials: "same-origin", cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const payload = await response.json() as ContextPayload;
         if (!response.ok) throw new Error(payload.error || "Nexus context is unavailable.");
@@ -56,12 +56,19 @@ export function AuthorIntakeForm() {
       })
       .catch((error) => { if (!controller.signal.aborted) setSubmissionError(errorMessage(error)); })
       .finally(() => { if (!controller.signal.aborted) setLoadingContext(false); });
-    return () => controller.abort();
+    const synchronize = (event: Event) => {
+      const payload = (event as CustomEvent<ContextPayload>).detail;
+      if (payload) setContext(payload);
+      else void load();
+    };
+    void load();
+    window.addEventListener("koba:nexus-context-updated", synchronize);
+    return () => { controller.abort(); window.removeEventListener("koba:nexus-context-updated", synchronize); };
   }, []);
 
   const worlds = context.storyWorlds || [];
   const selectedWorld = worlds.find((world) => world.id === form.universeId);
-  const guides = selectedWorld?.referenceGuides || [];
+  const guides = (selectedWorld?.referenceGuides || []).filter((guide) => guide.status === "ready");
   const websites = (context.websites || []).filter((site) => site.status === "active");
   const selectedWebsite = websites.find(
     (site) => site.websiteConnectionId === form.websiteConnectionId
@@ -93,6 +100,14 @@ export function AuthorIntakeForm() {
       };
     });
   }, [context.websites, form.contentSource]);
+
+  useEffect(() => {
+    if (form.contentSource !== "story_world" || !selectedWorld) return;
+    const ready = (selectedWorld.referenceGuides || []).filter((guide) => guide.status === "ready");
+    const preferred = ready.find((guide) => guide.id === selectedWorld.defaultReferenceGuideId) || ready.find((guide) => guide.active) || (ready.length === 1 ? ready[0] : undefined);
+    if (ready.some((guide) => guide.id === form.referenceGuideId)) return;
+    setForm((current) => ({ ...current, referenceGuideId: preferred?.id || "" }));
+  }, [form.contentSource, form.referenceGuideId, selectedWorld]);
 
   function update<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -139,7 +154,7 @@ export function AuthorIntakeForm() {
             <select className={inputClass} value={form.contentSource} onChange={(e) => {
               const contentSource = e.target.value as ContentSource;
               setForm((current) => ({ ...current, contentSource, universeId: "", referenceGuideId: "", requestedGoal: "automatic", websiteConnectionId: "" }));
-            }}><option value="business_brand">Business Brand</option><option value="story_world" disabled={context.flags?.storyWorld !== true}>Story World</option></select>
+            }}><option value="business_brand">Business Brand</option><option value="story_world" disabled={!loadingContext && context.flags?.storyWorld !== true}>Story World</option></select>
           </Field>
           <Field label="Blog Goal" icon={<Sparkles className="h-3 w-3" />}>
             <select className={inputClass} value={form.requestedGoal} onChange={(e) => update("requestedGoal", e.target.value)}>{goals.map((goal) => <option key={goal.value} value={goal.value}>{goal.label}</option>)}</select>
@@ -148,7 +163,7 @@ export function AuthorIntakeForm() {
 
         {form.contentSource === "story_world" && <div className="grid gap-4 sm:grid-cols-2 rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4">
           <Field label="Story World"><select className={inputClass} required value={form.universeId} onChange={(e) => setForm((current) => ({ ...current, universeId: e.target.value, referenceGuideId: "" }))}><option value="">Select a Story World</option>{worlds.map((world) => <option key={world.id} value={world.id}>{world.title || world.id}</option>)}</select></Field>
-          <Field label="Reference Guide"><select className={inputClass} required value={form.referenceGuideId} onChange={(e) => update("referenceGuideId", e.target.value)} disabled={!form.universeId}><option value="">Select a ready guide</option>{guides.map((guide) => <option key={guide.id} value={guide.id}>{guide.displayName || guide.id}</option>)}</select></Field>
+          <Field label="Reference Guide"><select className={inputClass} required value={form.referenceGuideId} onChange={(e) => update("referenceGuideId", e.target.value)} disabled={!form.universeId || guides.length === 0}><option value="">{!form.universeId ? "Select a Story World first" : guides.length === 0 ? "No ready guides — manage this Story World" : "Select a ready guide"}</option>{guides.map((guide) => <option key={guide.id} value={guide.id}>{guide.displayName || guide.id}</option>)}</select>{form.universeId && guides.length === 0 && <p className="mt-1 text-[11px] text-amber-300">Upload or finish processing a Reference Guide under Knowledge & Strategy before creating this draft.</p>}</Field>
         </div>}
 
         <div className="grid gap-4 sm:grid-cols-2">

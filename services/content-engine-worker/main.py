@@ -408,21 +408,60 @@ def select_strategy_guides(
 
 def fetch_strategy_context(
     primary_guide_id: str,
+    primary_guide_version: int,
     supporting_guide_id: str | None,
+    supporting_guide_version: int,
     topic: str,
     goal: str,
 ) -> list[dict[str, Any]]:
     del topic
-    guide_ids = [primary_guide_id] + ([supporting_guide_id] if supporting_guide_id else [])
-    return [
-        {
+    requested = [(primary_guide_id, primary_guide_version)]
+    if supporting_guide_id:
+        requested.append((supporting_guide_id, supporting_guide_version))
+
+    resolved: list[dict[str, Any]] = []
+    for guide_id, expected_version in requested:
+        if expected_version <= 0:
+            resolved.append({
+                "strategyGuideId": guide_id,
+                "strategyGuideVersion": 0,
+                "displayName": NEXUS_STRATEGY_CATALOG[guide_id]["name"],
+                "guidance": NEXUS_STRATEGY_CATALOG[guide_id]["guidance"],
+                "sourceMode": "catalog_summary",
+                "goal": goal,
+            })
+            continue
+
+        guide_snapshot = db.collection("nexus_strategy_guides").document(guide_id).get()
+        guide = guide_snapshot.to_dict() or {}
+        if (
+            not guide_snapshot.exists
+            or str(guide.get("status") or "") != "active"
+            or int(guide.get("activeVersion") or 0) != expected_version
+        ):
+            raise PermanentTaskError("The selected strategy source is no longer active at the queued version.")
+        version_snapshot = (
+            db.collection("nexus_strategy_guides")
+            .document(guide_id)
+            .collection("versions")
+            .document(str(expected_version))
+            .get()
+        )
+        version = version_snapshot.to_dict() or {}
+        if not version_snapshot.exists or str(version.get("status") or "") != "approved":
+            raise PermanentTaskError("The selected strategy source version is not approved.")
+        guidance = load_complete_reference_guide(version)
+        if not guidance:
+            raise PermanentTaskError("The approved strategy source text is unavailable.")
+        resolved.append({
             "strategyGuideId": guide_id,
-            "displayName": NEXUS_STRATEGY_CATALOG[guide_id]["name"],
-            "guidance": NEXUS_STRATEGY_CATALOG[guide_id]["guidance"],
+            "strategyGuideVersion": expected_version,
+            "displayName": str(guide.get("displayName") or NEXUS_STRATEGY_CATALOG[guide_id]["name"]),
+            "guidance": guidance,
+            "sourceMode": "approved_version",
             "goal": goal,
-        }
-        for guide_id in guide_ids
-    ]
+        })
+    return resolved
 
 
 def parse_structured_model_response(raw: str, label: str) -> dict[str, Any]:
@@ -994,7 +1033,9 @@ def resolve_nexus_generation_context(
     )
     strategy_context = fetch_strategy_context(
         strategy["primaryGuideId"],
+        int(data.get("primaryStrategyGuideVersion") or 0),
         strategy["supportingGuideId"],
+        int(data.get("supportingStrategyGuideVersion") or 0),
         str(data.get("topicTitle") or data.get("title") or ""),
         strategy["resolvedGoal"],
     )
@@ -1444,7 +1485,9 @@ def execute_generation(
                 "fullContextValidation": validation["fullContextValidation"],
                 "generationStrategy": {
                     "primaryStrategyGuideId": data.get("primaryStrategyGuideId"),
+                    "primaryStrategyGuideVersion": data.get("primaryStrategyGuideVersion"),
                     "supportingStrategyGuideId": data.get("supportingStrategyGuideId"),
+                    "supportingStrategyGuideVersion": data.get("supportingStrategyGuideVersion"),
                     "selectionMode": data.get("strategySelectionMode"),
                     "selectorVersion": data.get("strategySelectorVersion"),
                 },

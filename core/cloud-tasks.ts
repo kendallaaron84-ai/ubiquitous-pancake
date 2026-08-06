@@ -32,7 +32,9 @@ export interface BlogGenerationTaskPayload {
   requestedGoal?: NexusGoal | "automatic";
   strategyGuideSelectionMode?: NexusStrategySelectionMode;
   primaryStrategyGuideId?: string | null;
+  primaryStrategyGuideVersion?: number;
   supportingStrategyGuideId?: string | null;
+  supportingStrategyGuideVersion?: number | null;
   customDirectives?: string;
 }
 

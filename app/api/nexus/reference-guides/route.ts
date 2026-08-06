@@ -9,6 +9,13 @@ import { requireNexusAuthorContext } from "@/core/nexus/author-context";
 import { getNexusFeatureFlags } from "@/core/nexus/feature-flags";
 import { nexusErrorResponse, NexusRouteError, text } from "@/core/nexus/http";
 import { createTraceabilityChunks, estimateTokens, NEXUS_REFERENCE_GUIDE_LIMITS, validateReferenceGuideFile, validateReferenceGuideText } from "@/core/nexus/reference-guide";
+import {
+  assertGuideCanBeArchived,
+  assertGuideCanBecomeActive,
+  assertGuideCanBeDeleted,
+  normalizeReferenceGuideStatus,
+  ReferenceGuideLifecycleError,
+} from "@/core/nexus/reference-guide-lifecycle";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -17,6 +24,7 @@ const nodeRequire = createRequire(import.meta.url);
 
 export async function POST(request: Request) {
   let guideRef: FirebaseFirestore.DocumentReference | null = null;
+  let uploadRequestRef: FirebaseFirestore.DocumentReference | null = null;
   let replacingExisting = false;
   try {
     const context = await requireNexusAuthorContext();
@@ -26,13 +34,25 @@ export async function POST(request: Request) {
     const file = form.get("file");
     const universeId = text(form.get("universeId"), 80);
     const requestedGuideId = text(form.get("referenceGuideId"), 80);
+    const clientRequestId = text(form.get("clientRequestId"), 120);
     if (!(file instanceof File) || !universeId) throw new NexusRouteError(400, "A Story World and Reference Guide file are required.");
+    if (!clientRequestId || !/^[A-Za-z0-9_-]{8,120}$/.test(clientRequestId)) throw new NexusRouteError(400, "A valid upload request ID is required.");
     if (form.get("publicSafeAcknowledged") !== "true") throw new NexusRouteError(400, "Confirm that this Reference Guide contains only public-facing information the engine may discuss.");
     validateReferenceGuideFile(file);
     const worldRef = adminDb.collection("nexus_story_worlds").doc(universeId);
     const world = await worldRef.get();
     const worldData = world.data() || {};
     if (!world.exists || worldData.studioKey !== context.studioKey || worldData.authorId !== context.authorId || worldData.status !== "active") throw new NexusRouteError(404, "The selected Story World was not found.");
+
+    uploadRequestRef = worldRef.collection("reference_guide_upload_requests").doc(clientRequestId);
+    try {
+      await uploadRequestRef.create({ status: "processing", requestedGuideId: requestedGuideId || null, requestedByUid: context.session.uid, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    } catch {
+      const existingRequest = await uploadRequestRef.get();
+      const existingData = existingRequest.data() || {};
+      if (existingData.status === "completed") return NextResponse.json({ success: true, referenceGuideId: existingData.referenceGuideId, version: existingData.version, deduplicated: true });
+      throw new ReferenceGuideLifecycleError("REFERENCE_GUIDE_DUPLICATE_REQUEST", 409, "This Reference Guide upload is already processing. Wait for its status to update before trying again.");
+    }
 
     const bytes = Buffer.from(await file.arrayBuffer());
     const digest = createHash("sha256").update(bytes).digest("hex");
@@ -48,12 +68,19 @@ export async function POST(request: Request) {
       replacingExisting = true;
       existingGuide = data;
       version = Number(data.version || 0) + 1;
-      if (data.sourceSha256 === digest && data.publicSafeAcknowledged === true && data.contentPolicyVersion === 1) return NextResponse.json({ success: true, referenceGuideId: requestedGuideId, version: data.version, deduplicated: true });
+      if (data.sourceSha256 === digest && data.publicSafeAcknowledged === true && data.contentPolicyVersion === 1) {
+        await uploadRequestRef.set({ status: "completed", referenceGuideId: requestedGuideId, version: data.version, deduplicated: true, updatedAt: FieldValue.serverTimestamp(), completedAt: FieldValue.serverTimestamp() }, { merge: true });
+        return NextResponse.json({ success: true, referenceGuideId: requestedGuideId, version: data.version, deduplicated: true });
+      }
     }
-    const duplicate = await worldRef.collection("reference_guides").where("sourceSha256", "==", digest).where("status", "==", "ready").limit(1).get();
+    const duplicate = await worldRef.collection("reference_guides").where("sourceSha256", "==", digest).limit(1).get();
     const duplicateData = duplicate.empty ? null : duplicate.docs[0].data();
+    if (duplicateData && normalizeReferenceGuideStatus(duplicateData) === "processing") {
+      throw new ReferenceGuideLifecycleError("REFERENCE_GUIDE_DUPLICATE_REQUEST", 409, "This Reference Guide file is already processing. Wait for its status to update before trying again.");
+    }
     if (duplicateData?.publicSafeAcknowledged === true && duplicateData.contentPolicyVersion === 1) {
       if (replacingExisting) throw new NexusRouteError(409, "This file is already active as another Reference Guide in this Story World.");
+      await uploadRequestRef.set({ status: "completed", referenceGuideId: duplicate.docs[0].id, version: duplicate.docs[0].data().version, deduplicated: true, updatedAt: FieldValue.serverTimestamp(), completedAt: FieldValue.serverTimestamp() }, { merge: true });
       return NextResponse.json({ success: true, referenceGuideId: duplicate.docs[0].id, version: duplicate.docs[0].data().version, deduplicated: true });
     }
 
@@ -112,11 +139,91 @@ export async function POST(request: Request) {
     }
     await createdGuideRef.set({ displayName: text(form.get("displayName"), 200) || (typeof existingGuide?.displayName === "string" ? existingGuide.displayName : file.name), originalFileName: file.name.slice(0, 240), mimeType: file.type, fileSizeBytes: file.size, sourceSha256: digest, version, status: "ready", spoilerPolicy, sourceStoragePath: `${basePath}/source/${safeFileName(file.name)}`, extractedTextStoragePath: `${basePath}/extracted.txt`, extractedCharacterCount: characterCount, wordCount, estimatedTokenCount: estimateTokens(extracted), chunkCount: chunks.length, ...acknowledgement, replacementStatus: FieldValue.delete(), pendingVersion: FieldValue.delete(), replacementErrorMessage: FieldValue.delete(), readyAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
     await worldRef.set({ defaultReferenceGuideId: referenceGuideId, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await uploadRequestRef.set({ status: "completed", referenceGuideId, version, updatedAt: FieldValue.serverTimestamp(), completedAt: FieldValue.serverTimestamp() }, { merge: true });
     return NextResponse.json({ success: true, referenceGuideId, version, wordCount, characterCount, chunkCount: chunks.length, replaced: replacingExisting }, { status: replacingExisting ? 200 : 201 });
   } catch (error) {
+    if (uploadRequestRef) await uploadRequestRef.set({ status: "failed", updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
     if (guideRef) await guideRef.set(replacingExisting ? { replacementStatus: "failed", pendingVersion: FieldValue.delete(), replacementErrorMessage: error instanceof Error ? error.message.slice(0, 500) : "Reference Guide replacement failed.", updatedAt: FieldValue.serverTimestamp() } : { status: "failed", errorMessage: error instanceof Error ? error.message.slice(0, 500) : "Reference Guide ingestion failed.", updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
-    return nexusErrorResponse(error);
+    return lifecycleErrorResponse(error);
   }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const context = await requireNexusAuthorContext();
+    const body = await request.json() as Record<string, unknown>;
+    const universeId = text(body.universeId, 80);
+    const referenceGuideId = text(body.referenceGuideId, 80);
+    const action = text(body.action, 40);
+    const worldRef = adminDb.collection("nexus_story_worlds").doc(universeId);
+    const world = await worldRef.get();
+    const worldData = world.data() || {};
+    if (!world.exists || worldData.studioKey !== context.studioKey || worldData.authorId !== context.authorId) throw new NexusRouteError(404, "The selected Story World was not found.");
+    if (action === "clear_active") {
+      await worldRef.set({ defaultReferenceGuideId: null, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      await writeReferenceGuideAudit(worldRef, context, "active_cleared", referenceGuideId || null);
+      return NextResponse.json({ success: true, activeReferenceGuideId: null });
+    }
+    const guideRef = worldRef.collection("reference_guides").doc(referenceGuideId);
+    const guide = await guideRef.get();
+    const guideData = guide.data() || {};
+    if (!guide.exists || guideData.studioKey !== context.studioKey || guideData.authorId !== context.authorId) throw new NexusRouteError(404, "The selected Reference Guide was not found.");
+    if (action === "set_active") {
+      assertGuideCanBecomeActive(normalizeReferenceGuideStatus(guideData));
+      await worldRef.set({ defaultReferenceGuideId: referenceGuideId, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      await writeReferenceGuideAudit(worldRef, context, "active_set", referenceGuideId);
+      return NextResponse.json({ success: true, activeReferenceGuideId: referenceGuideId });
+    }
+    if (action === "archive") {
+      assertGuideCanBeArchived({ isActive: worldData.defaultReferenceGuideId === referenceGuideId });
+      await guideRef.set({ status: "archived", archivedAt: FieldValue.serverTimestamp(), archivedByUid: context.session.uid, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      await writeReferenceGuideAudit(worldRef, context, "archived", referenceGuideId);
+      return NextResponse.json({ success: true, status: "archived" });
+    }
+    if (action === "delete_incomplete") {
+      const reference = await adminDb.collection("content_blueprints").where("referenceGuideId", "==", referenceGuideId).limit(1).get();
+      assertGuideCanBeDeleted({
+        status: normalizeReferenceGuideStatus(guideData),
+        isActive: worldData.defaultReferenceGuideId === referenceGuideId,
+        historicallyReferenced: !reference.empty,
+      });
+      if (adminStorage) {
+        const safePrefix = `nexus/${context.studioKey}/story-worlds/${universeId}/reference-guides/${referenceGuideId}/`;
+        const paths = [guideData.sourceStoragePath, guideData.extractedTextStoragePath]
+          .filter((value): value is string => typeof value === "string" && value.startsWith(safePrefix));
+        await Promise.all(paths.map((path) => adminStorage.bucket().file(path).delete({ ignoreNotFound: true })));
+      }
+      await writeReferenceGuideAudit(worldRef, context, "incomplete_deleted", referenceGuideId);
+      await adminDb.recursiveDelete(guideRef);
+      return NextResponse.json({ success: true, status: "deleted" });
+    }
+    throw new NexusRouteError(400, "The Reference Guide action is invalid.");
+  } catch (error) {
+    return lifecycleErrorResponse(error);
+  }
+}
+
+async function writeReferenceGuideAudit(
+  worldRef: FirebaseFirestore.DocumentReference,
+  context: Awaited<ReturnType<typeof requireNexusAuthorContext>>,
+  action: "active_cleared" | "active_set" | "archived" | "incomplete_deleted",
+  referenceGuideId: string | null
+) {
+  await worldRef.collection("reference_guide_audit_events").doc(randomUUID()).create({
+    schemaVersion: 1,
+    action,
+    referenceGuideId,
+    universeId: worldRef.id,
+    studioKey: context.studioKey,
+    authorId: context.authorId,
+    actorUid: context.session.uid,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+}
+
+function lifecycleErrorResponse(error: unknown) {
+  if (error instanceof ReferenceGuideLifecycleError) return NextResponse.json({ success: false, code: error.code, error: error.message }, { status: error.status });
+  return nexusErrorResponse(error);
 }
 
 async function extractText(bytes: Buffer, name: string, mimeType: string): Promise<string> {

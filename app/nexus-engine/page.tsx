@@ -18,8 +18,6 @@ import { getAuth, onAuthStateChanged, type User } from "firebase/auth";
 
 import Layout from "@/components/layout";
 import { AuthorIntakeForm } from "@/components/author-intake-form";
-import { BrandProfileModal } from "@/components/brand-profile-modal";
-import { AdminControlsModal } from "@/components/admin-controls-modal";
 import { NexusKnowledgePanel } from "@/components/nexus-knowledge-panel";
 import { BlogEngineGateModal } from "@/components/modals/BlogEngineGateModal";
 import {
@@ -41,7 +39,7 @@ export default function NexusEnginePage() {
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [loadingAccess, setLoadingAccess] = useState(true);
   const [hasContentEngineAccess, setHasContentEngineAccess] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
   const [pageNumber, setPageNumber] = useState(1);
   const [pageAnchor, setPageAnchor] = useState<PageAnchor>({ kind: "first" });
   const [lastVisible, setLastVisible] =
@@ -87,13 +85,13 @@ export default function NexusEnginePage() {
           throw new Error("Your Blog Engine access could not be verified.");
         }
         setHasContentEngineAccess(payload.hasContentEngineAccess === true);
-        setIsAdmin(payload.isOwner === true);
+        setIsOwner(payload.isOwner === true);
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         console.error("Blog Engine access check failed:", error);
         setHasContentEngineAccess(false);
-        setIsAdmin(false);
+        setIsOwner(false);
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoadingAccess(false);
@@ -221,41 +219,13 @@ export default function NexusEnginePage() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-          <div className="lg:col-span-2">
-            <AuthorIntakeForm />
-          </div>
+        <AuthorIntakeForm />
 
-          <div className="p-5 bg-card rounded-xl border border-border space-y-4 text-sm text-muted-foreground shadow-sm">
-            <h3 className="font-bold text-foreground">Blog Settings</h3>
-            <p>
-              Your request uses the active brand settings connected to this
-              author workspace.
-            </p>
-
-            <div className="pt-3 border-t border-border space-y-1 text-xs">
-              <div>
-                <span className="font-semibold text-foreground">
-                  Active workspace:
-                </span>{" "}
-                Content Blog Engine
-              </div>
-              <div className="truncate">
-                <span className="font-semibold text-foreground">
-                  Signed in as:
-                </span>{" "}
-                {currentUserEmail}
-              </div>
-            </div>
-
-            <div className="pt-2 space-y-2">
-              <BrandProfileModal />
-              {isAdmin && <AdminControlsModal />}
-            </div>
-          </div>
+        <div>
+          <h2 className="text-xl font-bold tracking-tight text-white">Knowledge &amp; Strategy</h2>
+          <p className="text-xs text-muted-foreground">Manage brand knowledge, Story Worlds, Reference Guides, strategy methods, and verified destinations.</p>
         </div>
-
-        <NexusKnowledgePanel />
+        <NexusKnowledgePanel isOwner={isOwner} />
 
         <div className="space-y-3 pt-4">
           <div>

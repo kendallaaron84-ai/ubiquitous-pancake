@@ -109,6 +109,13 @@ export type NexusReferenceGuideStatus =
   | "failed"
   | "archived";
 
+export type NexusReferenceGuideLifecycleStatus =
+  | "processing"
+  | "ready"
+  | "failed"
+  | "archived"
+  | "incomplete";
+
 export interface NexusReferenceGuide {
   schemaVersion: 1;
   referenceGuideId: string;
@@ -140,6 +147,20 @@ export interface NexusReferenceGuide {
   publicSafeAcknowledged: true;
   publicSafeAcknowledgedAt: unknown;
   publicSafeAcknowledgedByUid: string;
+}
+
+export interface NexusReferenceGuideSummary {
+  id: string;
+  displayName: string;
+  version: number;
+  status: NexusReferenceGuideLifecycleStatus;
+  wordCount: number;
+  extractedCharacterCount: number;
+  active: boolean;
+  createdAt: unknown;
+  updatedAt: unknown;
+  readyAt: unknown | null;
+  failureReason: string | null;
 }
 
 export interface NexusKnowledgeChunk {
@@ -239,7 +260,9 @@ export interface NexusBlueprintAdditions {
   resolvedGoal: NexusGoal;
   strategySelectionMode: NexusStrategySelectionMode;
   primaryStrategyGuideId: string;
+  primaryStrategyGuideVersion: number;
   supportingStrategyGuideId: string | null;
+  supportingStrategyGuideVersion: number | null;
   strategySelectionReason: string;
   knowledgeChunkIds: string[];
   knowledgeRetrievalVersion: number;
