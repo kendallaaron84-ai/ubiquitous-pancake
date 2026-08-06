@@ -194,6 +194,8 @@ test("Setup and Nexus UI use the canonical multi-site website workflow", async (
   assert.match(connectionRoute, /listNexusWebsiteConnections/);
   assert.match(connectionRoute, /searchParams\.get\("websiteConnectionId"\)/);
   assert.match(connectionRoute, /selectedConnection\.secretCredentialRef/);
+  assert.match(connectionRoute, /requestedContentRole/);
+  assert.match(connectionRoute, /WEBSITE_CONFIGURATION_CONFLICT/);
 
   assert.match(intake, /Destination Website/);
   assert.match(intake, /context\.websites/);
@@ -206,6 +208,11 @@ test("Setup and Nexus UI use the canonical multi-site website workflow", async (
 
   assert.match(websiteService, /storedStatus === "disabled"/);
   assert.match(websiteService, /normalizeLegacyWebsite/);
+  assert.match(
+    websiteService,
+    /A maximum of two websites have been assigned to this plugin license\./
+  );
+  assert.match(websiteService, /assertNexusWebsiteRoleConfiguration/);
 });
 
 test("worker and gateway retain critical baseline controls", async () => {

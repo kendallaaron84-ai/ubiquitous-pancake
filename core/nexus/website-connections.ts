@@ -96,18 +96,38 @@ export async function resolveNexusWebsiteConnection(
 
 export async function assertWebsiteCapacityAndUniqueness(
   database: FirebaseFirestore.Firestore,
-  input: { studioKey: string; authorId: string; wordpressOrigin: string; excludeId?: string }
+  input: { studioKey: string; authorId: string; wordpressOrigin: string; excludeId?: string; contentRole?: NexusWebsiteContentRole }
 ): Promise<void> {
   const normalizedOrigin = normalizeHttpsOrigin(input.wordpressOrigin);
   const active = (await listNexusWebsiteConnections(database, input.studioKey, input.authorId)).filter((item) => item.status === "active" && item.websiteConnectionId !== input.excludeId);
   if (active.some((item) => item.wordpressOrigin === normalizedOrigin)) throw new BlogConnectionError("This WordPress origin is already connected.");
-  if (active.length >= NEXUS_MAX_ACTIVE_WEBSITES) throw new BlogConnectionError("No more than two active WordPress websites are supported.");
+  if (active.length >= NEXUS_MAX_ACTIVE_WEBSITES) {
+    throw new BlogConnectionError("A maximum of two websites have been assigned to this plugin license.");
+  }
+  if (input.contentRole) {
+    assertNexusWebsiteRoleConfiguration([
+      ...active.map((connection) => connection.contentRole),
+      normalizeRole(input.contentRole),
+    ]);
+  }
 }
 
 export async function updateNexusWebsiteMetadata(
   database: FirebaseFirestore.Firestore,
-  input: { studioKey: string; websiteConnectionId: string; displayName?: string; contentRole?: NexusWebsiteContentRole; defaultUniverseId?: string | null; status?: "active" | "disabled" }
+  input: { studioKey: string; authorId: string; websiteConnectionId: string; displayName?: string; contentRole?: NexusWebsiteContentRole; defaultUniverseId?: string | null; status?: "active" | "disabled" }
 ): Promise<void> {
+  const current = await listNexusWebsiteConnections(database, input.studioKey, input.authorId);
+  const selected = current.find((connection) => connection.websiteConnectionId === input.websiteConnectionId);
+  if (!selected) throw new BlogConnectionError("The website connection was not found.");
+  const nextStatus = input.status || selected.status;
+  const activeRoles = current
+    .filter((connection) => connection.websiteConnectionId !== input.websiteConnectionId && connection.status === "active")
+    .map((connection) => connection.contentRole);
+  if (nextStatus === "active") {
+    activeRoles.push(input.contentRole ? normalizeRole(input.contentRole) : selected.contentRole);
+  }
+  assertNexusWebsiteRoleConfiguration(activeRoles);
+
   const patch: Record<string, unknown> = { updatedAt: FieldValue.serverTimestamp() };
   if (input.displayName !== undefined) patch.displayName = clean(input.displayName).slice(0, 120);
   if (input.contentRole !== undefined) patch.contentRole = normalizeRole(input.contentRole);
@@ -145,6 +165,18 @@ function normalizeStoredWebsite(id: string, data: Record<string, unknown>, studi
     };
   } catch {
     return null;
+  }
+}
+
+export function assertNexusWebsiteRoleConfiguration(roles: NexusWebsiteContentRole[]): void {
+  if (roles.length > NEXUS_MAX_ACTIVE_WEBSITES) {
+    throw new BlogConnectionError("A maximum of two websites have been assigned to this plugin license.");
+  }
+  if (roles.length < 2) return;
+  if (roles.includes("both") || roles[0] === roles[1]) {
+    throw new BlogConnectionError(
+      "Choose one combined site or two specialized Business Brand and Story World sites."
+    );
   }
 }
 

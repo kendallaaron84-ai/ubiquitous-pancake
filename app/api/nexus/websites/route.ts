@@ -44,6 +44,7 @@ export async function PATCH(request: Request) {
     const status = body.status === "active" || body.status === "disabled" ? body.status : undefined;
     await updateNexusWebsiteMetadata(adminDb, {
       studioKey: context.studioKey,
+      authorId: context.authorId,
       websiteConnectionId,
       displayName: body.displayName === undefined ? undefined : text(body.displayName, 120),
       contentRole,

@@ -27,6 +27,7 @@ import {
   type VerifiedWordPressConnection,
   type WordPressConnectionDiagnosticCode,
 } from "@/core/security/wordpress-connection";
+import { BlogConnectionError } from "@/core/security/blog-connection";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -372,11 +373,16 @@ export async function POST(request: Request) {
     if (websiteConnectionId !== "primary" && !/^site_[a-f0-9]{16}$/.test(websiteConnectionId)) {
       throw new ConnectionRouteError(400, "The website connection selection is invalid.");
     }
+    const requestedContentRole = body.contentRole === "business_brand" ||
+      body.contentRole === "story_world" || body.contentRole === "both"
+      ? body.contentRole
+      : "both";
     await assertWebsiteCapacityAndUniqueness(adminDb, {
       studioKey: context.studioKey,
       authorId: clean(context.licenseData.authorId) || context.session.email.toLowerCase(),
       wordpressOrigin: requestedOrigin,
       excludeId: websiteConnectionId,
+      contentRole: requestedContentRole,
     });
 
     let configuration: ReturnType<
@@ -484,9 +490,7 @@ export async function POST(request: Request) {
           authorId: clean(context.licenseData.authorId) || context.session.email.toLowerCase(),
           websiteConnectionId,
           displayName: clean(body.displayName).slice(0, 120) || new URL(verified.targetWpOrigin).hostname,
-          contentRole: body.contentRole === "business_brand" || body.contentRole === "story_world"
-            ? body.contentRole
-            : "both",
+          contentRole: requestedContentRole,
           defaultUniverseId: clean(body.defaultUniverseId) || null,
           status: "active",
           verificationStatus: "verified",
@@ -635,6 +639,12 @@ class ConnectionRouteError extends Error {
 }
 
 function connectionErrorResponse(error: unknown) {
+  if (error instanceof BlogConnectionError) {
+    return NextResponse.json(
+      { success: false, error: error.message, code: "WEBSITE_CONFIGURATION_CONFLICT" },
+      { status: 409, headers: { "Cache-Control": "no-store" } }
+    );
+  }
   if (error instanceof ConnectionRouteError) {
     return NextResponse.json(
       {
