@@ -158,7 +158,7 @@ export function ReaderAuthForm({
         : "Recover your reader account";
 
   return (
-    <Card className="w-full border border-[#7084b5]/35 bg-[#243665] text-white shadow-2xl">
+    <Card className="mx-auto w-full max-w-md border border-[#7084b5]/35 bg-[#243665] text-white shadow-2xl">
       <CardHeader className="text-center">
         <p className="text-xs font-bold uppercase tracking-[0.24em] text-[#EFB752]">
           KOBA-I Reader

@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
 export default function ReaderPage() {
-  redirect("/reader/signin");
+  redirect("/reader/account");
 }
