@@ -178,6 +178,11 @@ export async function POST(request: Request) {
       );
     }
 
+    const dashboardOrigin = normalizeWebOrigin(
+      process.env.KOBA_DASHBOARD_URL || process.env.NEXT_PUBLIC_API_URL
+    );
+    if (!dashboardOrigin) throw new Error("READER_CLAIM_ORIGIN_MISSING");
+
     const productType = cleanString(productData.type || productData.mediaType) ||
       (assetKey.startsWith("ebk_") ? "ebook" : "audiobook");
     const metadata = {
@@ -222,7 +227,7 @@ export async function POST(request: Request) {
       }],
       payment_intent_data: paymentIntentData,
       metadata,
-      success_url: `${wordpressOrigin}/koba_publication/${encodeURIComponent(assetKey)}/?session_id={CHECKOUT_SESSION_ID}&status=success`,
+      success_url: `${dashboardOrigin}/reader/claim?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${wordpressOrigin}/koba_publication/${encodeURIComponent(assetKey)}/?status=cancelled`,
     };
     const requestOptions = paymentProfile.paymentModel === "author_direct"
@@ -257,7 +262,11 @@ export async function POST(request: Request) {
     );
   } catch (error) {
     console.error("Unable to create listener checkout session.", error);
-    const configurationError = error instanceof Error && error.message === "STRIPE_CONFIGURATION_MISSING";
+    const configurationError =
+      error instanceof Error &&
+      ["STRIPE_CONFIGURATION_MISSING", "READER_CLAIM_ORIGIN_MISSING"].includes(
+        error.message
+      );
     if (error instanceof StripeConnectConfigurationError) {
       return NextResponse.json(
         { success: false, code: error.code, error: error.publicMessage },

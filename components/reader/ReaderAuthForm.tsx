@@ -59,7 +59,18 @@ async function openReaderSession(idToken: string) {
   }
 }
 
-export function ReaderAuthForm({ mode }: { mode: ReaderAuthMode }) {
+function safeNextPath(value?: string): string | null {
+  if (!value || !value.startsWith("/reader/claim?session_id=cs_")) return null;
+  return value;
+}
+
+export function ReaderAuthForm({
+  mode,
+  nextPath,
+}: {
+  mode: ReaderAuthMode;
+  nextPath?: string;
+}) {
   const router = useRouter();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -67,6 +78,11 @@ export function ReaderAuthForm({ mode }: { mode: ReaderAuthMode }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const continuation = safeNextPath(nextPath);
+  const authHref = (path: string) =>
+    continuation
+      ? `${path}?next=${encodeURIComponent(continuation)}`
+      : path;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -76,7 +92,7 @@ export function ReaderAuthForm({ mode }: { mode: ReaderAuthMode }) {
     try {
       if (mode === "recover") {
         await sendPasswordResetEmail(auth, email.trim(), {
-          url: `${window.location.origin}/reader/signin`,
+          url: `${window.location.origin}${authHref("/reader/signin")}`,
         });
         setNotice("Password recovery instructions were sent if that reader account exists.");
         return;
@@ -92,7 +108,11 @@ export function ReaderAuthForm({ mode }: { mode: ReaderAuthMode }) {
           await updateProfile(credential.user, { displayName: name.trim() });
         }
         await sendEmailVerification(credential.user, {
-          url: `${window.location.origin}/reader/signin?verified=1`,
+          url: `${window.location.origin}/reader/signin?verified=1${
+            continuation
+              ? `&next=${encodeURIComponent(continuation)}`
+              : ""
+          }`,
         });
         await signOut(auth);
         setNotice(
@@ -109,7 +129,11 @@ export function ReaderAuthForm({ mode }: { mode: ReaderAuthMode }) {
       await credential.user.reload();
       if (!credential.user.emailVerified) {
         await sendEmailVerification(credential.user, {
-          url: `${window.location.origin}/reader/signin?verified=1`,
+          url: `${window.location.origin}/reader/signin?verified=1${
+            continuation
+              ? `&next=${encodeURIComponent(continuation)}`
+              : ""
+          }`,
         });
         await signOut(auth);
         throw new Error(
@@ -117,7 +141,7 @@ export function ReaderAuthForm({ mode }: { mode: ReaderAuthMode }) {
         );
       }
       await openReaderSession(await credential.user.getIdToken(true));
-      router.push("/reader/account");
+      router.push(continuation || "/reader/account");
       router.refresh();
     } catch (requestError: unknown) {
       setError(friendlyError(requestError));
@@ -183,9 +207,9 @@ export function ReaderAuthForm({ mode }: { mode: ReaderAuthMode }) {
           </Button>
         </form>
         <div className="mt-6 flex flex-wrap justify-center gap-4 text-sm">
-          {mode !== "signin" && <Link className="text-[#EFB752] underline" href="/reader/signin">Reader sign in</Link>}
-          {mode !== "signup" && <Link className="text-[#EFB752] underline" href="/reader/signup">Create account</Link>}
-          {mode !== "recover" && <Link className="text-[#EFB752] underline" href="/reader/recover">Forgot password?</Link>}
+          {mode !== "signin" && <Link className="text-[#EFB752] underline" href={authHref("/reader/signin")}>Reader sign in</Link>}
+          {mode !== "signup" && <Link className="text-[#EFB752] underline" href={authHref("/reader/signup")}>Create account</Link>}
+          {mode !== "recover" && <Link className="text-[#EFB752] underline" href={authHref("/reader/recover")}>Forgot password?</Link>}
         </div>
       </CardContent>
     </Card>

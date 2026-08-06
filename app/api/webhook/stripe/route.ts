@@ -7,6 +7,7 @@ import { processAuthorTranscriptionPayment } from "@/core/security/transcription
 import { processAuthorSubscriptionPayment } from "@/core/security/author-subscription";
 import { syncConnectedAccountFromWebhook } from "@/core/security/stripe-connect-server";
 import { processCanonicalReaderPurchase } from "@/core/security/reader-platform-stripe";
+import { processReaderPurchaseWebhook } from "@/core/security/reader-purchase-webhook";
 import { processCanonicalReaderFinancialEvent } from "@/core/security/reader-platform-financial-events";
 
 export const dynamic = "force-dynamic";
@@ -135,39 +136,40 @@ export async function POST(request: Request) {
 
   if (isListenerPurchase) {
     try {
-      const result = await processListenerPurchaseEntitlement(event, session);
-      if (!result.success) {
-        return NextResponse.json(
-          { error: "Listener entitlement validation failed." },
-          { status: 500 }
+      const result = await processReaderPurchaseWebhook(event, session, {
+        recordCanonicalPurchase: (stripeEvent, checkoutSession) =>
+          processCanonicalReaderPurchase(stripeEvent, checkoutSession, stripe),
+        fulfillLegacyPurchase: processListenerPurchaseEntitlement,
+      });
+      if (!result.legacy.success) {
+        console.warn(
+          "Legacy listener fulfillment failed after canonical purchase recording.",
+          { status: result.legacy.status }
         );
       }
-
-      const canonical = await processCanonicalReaderPurchase(event, session, stripe);
-
       return NextResponse.json(
         {
           success: true,
           listenerMode: true,
-          status: result.status,
-          readerPlatformPurchaseId: canonical.purchaseId,
-          readerPlatformClaimId: canonical.claimId,
+          legacyStatus: result.legacy.status,
+          readerPlatformPurchaseId: result.canonical.purchaseId,
+          readerPlatformClaimId: result.canonical.claimId,
+          readerPlatformReplay: result.canonical.replay,
           stripeSessionId: session.id,
         },
         { status: 200 }
       );
     } catch (error) {
       console.error(
-        "Listener entitlement processing failed:",
+        "Canonical reader purchase processing failed:",
         errorMessage(error)
       );
       return NextResponse.json(
-        { error: "Listener entitlement processing failed." },
+        { error: "Canonical reader purchase processing failed." },
         { status: 500 }
       );
     }
   }
-
   // Delayed-payment events are only used for listener purchases. The existing
   // author-software fulfillment remains bound to checkout completion so an
   // asynchronous event cannot mint a second StudioKey.

@@ -1,5 +1,12 @@
 import { ReaderAuthForm } from "@/components/reader/ReaderAuthForm";
 
-export default function ReaderSignInPage() {
-  return <ReaderAuthForm mode="signin" />;
+type ReaderAuthPageProps = {
+  searchParams: Promise<{ next?: string }>;
+};
+
+export default async function ReaderAuthPage({
+  searchParams,
+}: ReaderAuthPageProps) {
+  const { next } = await searchParams;
+  return <ReaderAuthForm mode="signin" nextPath={next} />;
 }
