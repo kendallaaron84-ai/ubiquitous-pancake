@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 
 import { adminDb } from "@/core/firebase-admin";
@@ -28,15 +29,14 @@ export async function GET() {
 }
 
 export async function PATCH(request: Request) {
+  const requestId = request.headers.get("x-vercel-id") ||
+    request.headers.get("x-invocation-id") || `local-${randomUUID()}`;
   try {
     const context = await requireNexusAuthorContext();
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body) throw new NexusRouteError(400, "Website settings are required.");
     const websiteConnectionId = text(body.websiteConnectionId, 80);
-    const existing = await listNexusWebsiteConnections(adminDb, context.studioKey, context.authorId);
-    if (!existing.some((website) => website.websiteConnectionId === websiteConnectionId)) {
-      throw new NexusRouteError(404, "The selected website connection was not found.");
-    }
+    const expectedOrigin = text(body.expectedOrigin, 500);
     const contentRole = body.contentRole === "business_brand" || body.contentRole === "story_world" || body.contentRole === "both"
       ? body.contentRole
       : undefined;
@@ -48,12 +48,25 @@ export async function PATCH(request: Request) {
         actorEmail: context.authorEmail,
         firebaseProjectId: process.env.FIREBASE_PROJECT_ID?.trim() || "",
         websiteConnectionId,
+        expectedOrigin,
         displayName: body.displayName === undefined ? undefined : text(body.displayName, 120),
         contentRole,
         defaultUniverseId: body.defaultUniverseId === undefined ? undefined : text(body.defaultUniverseId, 80) || null,
         status,
       });
-      return NextResponse.json({ success: true, grant: persisted.grant });
+      console.info("[Nexus Websites] Website metadata persisted.", {
+        requestId,
+        studioKey: context.studioKey,
+        websiteConnectionId,
+        resolvedOrigin: persisted.grant?.origin || expectedOrigin || null,
+        reconciledLegacyConnection: persisted.reconciledLegacyConnection,
+      });
+      return NextResponse.json({
+        success: true,
+        requestId,
+        grant: persisted.grant,
+        reconciledLegacyConnection: persisted.reconciledLegacyConnection,
+      });
     } catch (error) {
       if (error instanceof PluginSiteAuthorizationError) {
         throw new NexusRouteError(error.status, error.publicMessage, error.code);
@@ -61,6 +74,8 @@ export async function PATCH(request: Request) {
       throw error;
     }
   } catch (error) {
-    return nexusErrorResponse(error);
+    const response = nexusErrorResponse(error);
+    response.headers.set("X-KOBA-Request-ID", requestId);
+    return response;
   }
 }

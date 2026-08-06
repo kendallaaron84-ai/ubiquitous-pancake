@@ -6,6 +6,7 @@ import {
   persistPluginWebsiteMetadata,
   persistVerifiedPluginWebsite,
 } from "../plugin-site-grant-persistence.ts";
+import { listNexusWebsiteConnections } from "../../nexus/website-connections.ts";
 
 const studioKey = "KOBA-AUDIO-E63DC9CA";
 const authorId = "author-1";
@@ -23,6 +24,9 @@ class FakeDocumentReference {
   collection(name) {
     return new FakeCollectionReference(this.database, `${this.path}/${name}`);
   }
+  async get() {
+    return snapshot(this, this.database.documents.get(this.path));
+  }
 }
 
 class FakeCollectionReference {
@@ -32,6 +36,14 @@ class FakeCollectionReference {
   }
   doc(id) {
     return new FakeDocumentReference(this.database, `${this.path}/${id}`);
+  }
+  async get() {
+    const prefix = `${this.path}/`;
+    return {
+      docs: [...this.database.documents.entries()]
+        .filter(([path]) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/"))
+        .map(([path, data]) => snapshot(new FakeDocumentReference(this.database, path), data)),
+    };
   }
 }
 
@@ -323,4 +335,256 @@ test("replacement preserves the revoked grant and appends a replacement audit", 
   assert.equal(result.authorizedSites.some((site) => site.status === "revoked" && site.origin === "https://audio.koba-i.com"), true);
   assert.equal(result.authorizedSites.some((site) => site.status === "active" && site.origin === "https://replacement.example.com"), true);
   assert.equal(database.auditEvents().some((event) => event.action === "replacement"), true);
+});
+
+function productionLegacyAudio(overrides = {}) {
+  return {
+    studioKey,
+    targetWpOrigin: "https://audio.koba-i.com",
+    wpUsername: "kendall.aaron",
+    secretCredentialRef: `projects/400566266819/secrets/WP_CREDS_${studioKey}/versions/latest`,
+    status: "active",
+    verificationStatus: "verified",
+    verifiedAt: "2026-07-27T20:15:12.625Z",
+    registeredBy: actorEmail,
+    ...overrides,
+  };
+}
+
+test("legacy primary connection renders with stable primary ID and reconciliation state", async () => {
+  const database = new FakeFirestore({
+    [licensePath]: activeLicense(),
+    [rootConnectionPath]: productionLegacyAudio(),
+  });
+  const websites = await listNexusWebsiteConnections(database, studioKey, authorId);
+  assert.equal(websites.length, 1);
+  assert.equal(websites[0].websiteConnectionId, "primary");
+  assert.equal(websites[0].persistenceStatus, "legacy_reconcilable");
+});
+
+test("rendered legacy Audio role reconciles and changes to business_brand atomically", async () => {
+  const secretCredentialRef = `projects/400566266819/secrets/WP_CREDS_${studioKey}/versions/latest`;
+  const database = new FakeFirestore({
+    [licensePath]: activeLicense(),
+    [rootConnectionPath]: productionLegacyAudio({ secretCredentialRef }),
+  });
+  const result = await persistPluginWebsiteMetadata(database, {
+    studioKey,
+    authorId,
+    actorEmail,
+    firebaseProjectId: projectId,
+    websiteConnectionId: "primary",
+    expectedOrigin: "https://audio.koba-i.com",
+    contentRole: "business_brand",
+  }, options());
+  assert.equal(result.reconciledLegacyConnection, true);
+  assert.equal(result.grant.role, "business_brand");
+  assert.equal(database.get(rootConnectionPath).authorId, authorId);
+  assert.equal(database.get(rootConnectionPath).websiteConnectionId, "primary");
+  assert.equal(database.get(rootConnectionPath).secretCredentialRef, secretCredentialRef);
+});
+
+test("Duncan remains visible after Audio legacy reconciliation", async () => {
+  const duncanPath = `${rootConnectionPath}/websites/site_duncan`;
+  const database = new FakeFirestore({
+    [licensePath]: activeLicense(),
+    [rootConnectionPath]: productionLegacyAudio(),
+    [duncanPath]: connection(
+      "site_duncan",
+      "https://duncan-hunter.koba-i.com",
+      "story_world"
+    ),
+  });
+  await persistPluginWebsiteMetadata(database, {
+    studioKey,
+    authorId,
+    actorEmail,
+    firebaseProjectId: projectId,
+    websiteConnectionId: "primary",
+    expectedOrigin: "https://audio.koba-i.com",
+    contentRole: "business_brand",
+  }, options());
+  const websites = await listNexusWebsiteConnections(database, studioKey, authorId);
+  assert.deepEqual(
+    websites.map((website) => [website.wordpressOrigin, website.contentRole]),
+    [
+      ["https://audio.koba-i.com", "business_brand"],
+      ["https://duncan-hunter.koba-i.com", "story_world"],
+    ]
+  );
+});
+
+test("a modern website document with a missing redundant ID is backfilled from its authoritative document ID", async () => {
+  const duncanPath = `${rootConnectionPath}/websites/site_duncan`;
+  const duncan = connection(
+    "site_duncan",
+    "https://duncan-hunter.koba-i.com",
+    "story_world"
+  );
+  delete duncan.websiteConnectionId;
+  const database = new FakeFirestore({
+    [licensePath]: activeLicense(),
+    [duncanPath]: duncan,
+  });
+
+  const rendered = await listNexusWebsiteConnections(database, studioKey, authorId);
+  assert.equal(rendered[0].websiteConnectionId, "site_duncan");
+  assert.equal(rendered[0].persistenceStatus, "legacy_reconcilable");
+
+  const result = await persistPluginWebsiteMetadata(database, {
+    studioKey,
+    authorId,
+    actorEmail,
+    firebaseProjectId: projectId,
+    websiteConnectionId: "site_duncan",
+    expectedOrigin: "https://duncan-hunter.koba-i.com",
+    contentRole: "story_world",
+  }, options());
+  assert.equal(result.reconciledLegacyConnection, true);
+  assert.equal(database.get(duncanPath).websiteConnectionId, "site_duncan");
+});
+
+test("repeated legacy reconciliation is idempotent and creates no duplicate grant", async () => {
+  const database = new FakeFirestore({
+    [licensePath]: activeLicense(),
+    [rootConnectionPath]: productionLegacyAudio(),
+  });
+  const input = {
+    studioKey,
+    authorId,
+    actorEmail,
+    firebaseProjectId: projectId,
+    websiteConnectionId: "primary",
+    expectedOrigin: "https://audio.koba-i.com",
+    contentRole: "business_brand",
+  };
+  await persistPluginWebsiteMetadata(database, input, options());
+  const result = await persistPluginWebsiteMetadata(database, input, options());
+  assert.equal(result.reconciledLegacyConnection, false);
+  assert.equal(result.authorizedSites.filter((site) => site.status === "active").length, 1);
+});
+
+test("origin and connection ID mismatch fails closed with a stable code", async () => {
+  const database = new FakeFirestore({
+    [licensePath]: activeLicense(),
+    [rootConnectionPath]: productionLegacyAudio(),
+  });
+  await assert.rejects(
+    () => persistPluginWebsiteMetadata(database, {
+      studioKey,
+      authorId,
+      actorEmail,
+      firebaseProjectId: projectId,
+      websiteConnectionId: "site_duncan",
+      expectedOrigin: "https://audio.koba-i.com",
+      contentRole: "story_world",
+    }, options()),
+    (error) => error.status === 409 && error.code === "WEBSITE_CONNECTION_ID_MISMATCH"
+  );
+});
+
+test("missing legacy evidence does not fabricate a website connection", async () => {
+  const database = new FakeFirestore({ [licensePath]: activeLicense() });
+  await assert.rejects(
+    () => persistPluginWebsiteMetadata(database, {
+      studioKey,
+      authorId,
+      actorEmail,
+      firebaseProjectId: projectId,
+      websiteConnectionId: "site_missing",
+      expectedOrigin: "https://missing.example.com",
+      contentRole: "story_world",
+    }, options()),
+    (error) => error.status === 404 && error.code === "WEBSITE_CONNECTION_NOT_FOUND"
+  );
+  assert.equal(database.get(`${rootConnectionPath}/websites/site_missing`), undefined);
+  assert.equal(database.get(licensePath).authorizedSites, undefined);
+});
+
+test("failed role update changes neither connection nor license grant", async () => {
+  const database = new FakeFirestore({ [licensePath]: activeLicense() });
+  await persistVerifiedPluginWebsite(database, verifiedInput(), options());
+  await persistVerifiedPluginWebsite(database, verifiedInput({
+    websiteConnectionId: "site_duncan",
+    wordpressOrigin: "https://duncan-hunter.koba-i.com",
+    contentRole: "story_world",
+  }), options());
+  const beforeConnection = structuredClone(database.get(rootConnectionPath));
+  const beforeLicense = structuredClone(database.get(licensePath));
+  await assert.rejects(
+    () => persistPluginWebsiteMetadata(database, {
+      studioKey,
+      authorId,
+      actorEmail,
+      firebaseProjectId: projectId,
+      websiteConnectionId: "primary",
+      expectedOrigin: "https://audio.koba-i.com",
+      contentRole: "story_world",
+    }, options()),
+    (error) => error.status === 409
+  );
+  assert.deepEqual(database.get(rootConnectionPath), beforeConnection);
+  assert.deepEqual(database.get(licensePath), beforeLicense);
+});
+
+test("existing one-site both configuration remains valid after reconciliation", async () => {
+  const database = new FakeFirestore({
+    [licensePath]: activeLicense(),
+    [rootConnectionPath]: productionLegacyAudio({ contentRole: "both" }),
+  });
+  const result = await persistPluginWebsiteMetadata(database, {
+    studioKey,
+    authorId,
+    actorEmail,
+    firebaseProjectId: projectId,
+    websiteConnectionId: "primary",
+    expectedOrigin: "https://audio.koba-i.com",
+    displayName: "KOBA-I Audio",
+  }, options());
+  assert.equal(result.grant.role, "both");
+  assert.equal(result.authorizedSites.length, 1);
+});
+
+test("stored ownership mismatch returns WEBSITE_CONNECTION_OWNERSHIP_MISMATCH", async () => {
+  const database = new FakeFirestore({
+    [licensePath]: activeLicense(),
+    [rootConnectionPath]: productionLegacyAudio({ authorId: "different-author" }),
+  });
+  await assert.rejects(
+    () => persistPluginWebsiteMetadata(database, {
+      studioKey,
+      authorId,
+      actorEmail,
+      firebaseProjectId: projectId,
+      websiteConnectionId: "primary",
+      expectedOrigin: "https://audio.koba-i.com",
+      contentRole: "business_brand",
+    }, options()),
+    (error) => error.status === 409 && error.code === "WEBSITE_CONNECTION_OWNERSHIP_MISMATCH"
+  );
+});
+
+test("authorized grant without a connection requires explicit legacy migration", async () => {
+  const database = new FakeFirestore({
+    [licensePath]: activeLicense({
+      authorizedSites: [{
+        websiteConnectionId: "site_duncan",
+        origin: "https://duncan-hunter.koba-i.com",
+        role: "story_world",
+        status: "active",
+      }],
+    }),
+  });
+  await assert.rejects(
+    () => persistPluginWebsiteMetadata(database, {
+      studioKey,
+      authorId,
+      actorEmail,
+      firebaseProjectId: projectId,
+      websiteConnectionId: "site_duncan",
+      expectedOrigin: "https://duncan-hunter.koba-i.com",
+      contentRole: "story_world",
+    }, options()),
+    (error) => error.status === 409 && error.code === "WEBSITE_CONNECTION_LEGACY_MIGRATION_REQUIRED"
+  );
 });

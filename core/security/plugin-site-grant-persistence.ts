@@ -34,6 +34,7 @@ export interface PluginWebsiteMetadataInput {
   actorEmail: string;
   firebaseProjectId: string;
   websiteConnectionId: string;
+  expectedOrigin?: string;
   displayName?: string;
   contentRole?: PluginSiteRole;
   defaultUniverseId?: string | null;
@@ -44,6 +45,7 @@ export interface PluginGrantPersistenceResult {
   grant: PluginAuthorizedSite | null;
   authorizedSites: PluginAuthorizedSite[];
   auditEventIds: string[];
+  reconciledLegacyConnection: boolean;
 }
 
 export async function persistVerifiedPluginWebsite(
@@ -75,6 +77,7 @@ export async function persistVerifiedPluginWebsite(
       createdAt: selected?.createdAt || now,
       updatedAt: now,
       registeredBy: input.actorEmail,
+      persistenceStatus: "authoritative",
     };
     assertCompleteVerifiedConnection(prospective);
 
@@ -126,6 +129,7 @@ export async function persistVerifiedPluginWebsite(
       ) || null,
       authorizedSites,
       auditEventIds,
+      reconciledLegacyConnection: selected?.persistenceStatus === "legacy_reconcilable",
     };
   });
 }
@@ -143,17 +147,32 @@ export async function persistPluginWebsiteMetadata(
       (connection) => connection.websiteConnectionId === input.websiteConnectionId
     );
     if (!selected) {
-      throw new PluginSiteAuthorizationError(404, "PLUGIN_SITE_NOT_AUTHORIZED", "The website connection was not found.");
+      throw metadataConnectionLookupError(state, input);
+    }
+    if (selected.persistenceStatus === "legacy_migration_required") {
+      throw new PluginSiteAuthorizationError(
+        409,
+        "WEBSITE_CONNECTION_LEGACY_MIGRATION_REQUIRED",
+        "This legacy website connection needs an ownership-safe migration before it can be changed."
+      );
     }
     const prospective: StoredConnection = {
       ...selected,
+      studioKey: input.studioKey,
+      authorId: input.authorId,
+      websiteConnectionId: input.websiteConnectionId,
       displayName: input.displayName === undefined ? selected.displayName : input.displayName.trim().slice(0, 120),
       contentRole: input.contentRole || selected.contentRole,
       defaultUniverseId: input.defaultUniverseId === undefined ? selected.defaultUniverseId : input.defaultUniverseId,
       status: input.status || selected.status,
       updatedAt: now,
+      persistenceStatus: "authoritative",
     };
-    const existingEvidence = connectionsToEvidence(state.connections);
+    const existingEvidence = connectionsToEvidence(
+      selected.persistenceStatus === "legacy_reconcilable"
+        ? replaceConnection(state.connections, prospective)
+        : state.connections
+    );
     const baselineSites = reconcilePluginSiteGrants({
       pluginLicenseKey: input.studioKey,
       firebaseProjectId: input.firebaseProjectId,
@@ -200,6 +219,9 @@ export async function persistPluginWebsiteMetadata(
     ];
 
     transaction.set(state.selectedRef, {
+      studioKey: input.studioKey,
+      authorId: input.authorId,
+      websiteConnectionId: input.websiteConnectionId,
       ...(input.displayName !== undefined ? { displayName: prospective.displayName } : {}),
       ...(input.contentRole !== undefined ? { contentRole: prospective.contentRole } : {}),
       ...(input.defaultUniverseId !== undefined ? { defaultUniverseId: prospective.defaultUniverseId } : {}),
@@ -221,6 +243,7 @@ export async function persistPluginWebsiteMetadata(
       ) || null,
       authorizedSites,
       auditEventIds,
+      reconciledLegacyConnection: selected.persistenceStatus === "legacy_reconcilable",
     };
   });
 }
@@ -241,6 +264,7 @@ type StoredConnection = {
   createdAt: unknown;
   updatedAt: unknown;
   registeredBy: string;
+  persistenceStatus: "authoritative" | "legacy_reconcilable" | "legacy_migration_required";
 };
 
 async function readAuthoritativeState(
@@ -266,11 +290,23 @@ async function readAuthoritativeState(
   assertAuthoritativeOwnership(license, input);
   const connections: StoredConnection[] = [];
   if (rootSnapshot.exists) {
-    const normalized = normalizeConnection("primary", rootSnapshot.data() || {}, input.studioKey, input.authorId);
+    const normalized = normalizeConnection(
+      "primary",
+      rootSnapshot.data() || {},
+      input.studioKey,
+      input.authorId,
+      input.websiteConnectionId === "primary"
+    );
     if (normalized) connections.push(normalized);
   }
   for (const snapshot of websiteSnapshots.docs) {
-    const normalized = normalizeConnection(snapshot.id, snapshot.data() || {}, input.studioKey, input.authorId);
+    const normalized = normalizeConnection(
+      snapshot.id,
+      snapshot.data() || {},
+      input.studioKey,
+      input.authorId,
+      input.websiteConnectionId === snapshot.id
+    );
     if (normalized) connections.push(normalized);
   }
   return { licenseRef, rootRef, selectedRef, license, connections };
@@ -296,13 +332,121 @@ function assertAuthoritativeOwnership(
   }
 }
 
+function metadataConnectionLookupError(
+  state: { license: Record<string, unknown>; connections: StoredConnection[] },
+  input: PluginWebsiteMetadataInput
+): PluginSiteAuthorizationError {
+  let expectedOrigin = "";
+  if (input.expectedOrigin) {
+    try {
+      expectedOrigin = normalizePluginOrigin(input.expectedOrigin, {
+        production: process.env.NODE_ENV === "production",
+      });
+    } catch {
+      return new PluginSiteAuthorizationError(
+        409,
+        "WEBSITE_CONNECTION_ID_MISMATCH",
+        "The displayed website origin is not a valid match for this connection."
+      );
+    }
+  }
+  const connectionByOrigin = expectedOrigin
+    ? state.connections.find((connection) => connection.wordpressOrigin === expectedOrigin)
+    : undefined;
+  if (connectionByOrigin && connectionByOrigin.websiteConnectionId !== input.websiteConnectionId) {
+    return new PluginSiteAuthorizationError(
+      409,
+      "WEBSITE_CONNECTION_ID_MISMATCH",
+      "The displayed website ID does not match the authoritative connection ID."
+    );
+  }
+  const grants = Array.isArray(state.license.authorizedSites)
+    ? state.license.authorizedSites.filter(
+        (value): value is Record<string, unknown> => Boolean(value && typeof value === "object")
+      )
+    : [];
+  const grantById = grants.find(
+    (grant) => clean(grant.websiteConnectionId) === input.websiteConnectionId
+  );
+  const grantByOrigin = expectedOrigin
+    ? grants.find((grant) => {
+        try {
+          return normalizePluginOrigin(grant.origin) === expectedOrigin;
+        } catch {
+          return false;
+        }
+      })
+    : undefined;
+  if (
+    grantByOrigin &&
+    clean(grantByOrigin.websiteConnectionId) !== input.websiteConnectionId
+  ) {
+    return new PluginSiteAuthorizationError(
+      409,
+      "WEBSITE_CONNECTION_ID_MISMATCH",
+      "The authorized-site grant and displayed website use different connection IDs."
+    );
+  }
+  if (grantById || grantByOrigin) {
+    return new PluginSiteAuthorizationError(
+      409,
+      "WEBSITE_CONNECTION_LEGACY_MIGRATION_REQUIRED",
+      "This authorized legacy website is missing its authoritative connection record."
+    );
+  }
+  return new PluginSiteAuthorizationError(
+    404,
+    "WEBSITE_CONNECTION_NOT_FOUND",
+    "The website connection was not found."
+  );
+}
+
 function normalizeConnection(
   websiteConnectionId: string,
   data: Record<string, unknown>,
   studioKey: string,
-  authorId: string
+  authorId: string,
+  selected = false
 ): StoredConnection | null {
-  if (clean(data.studioKey) !== studioKey || clean(data.authorId) !== authorId) return null;
+  const storedId = clean(data.websiteConnectionId);
+  const storedStudioKey = clean(data.studioKey);
+  const storedAuthorId = clean(data.authorId);
+  if (storedId && storedId !== websiteConnectionId) {
+    if (selected) {
+      throw new PluginSiteAuthorizationError(
+        409,
+        "WEBSITE_CONNECTION_ID_MISMATCH",
+        "The displayed website ID does not match its stored connection."
+      );
+    }
+    return null;
+  }
+  if (
+    (storedStudioKey && storedStudioKey !== studioKey) ||
+    (storedAuthorId && storedAuthorId !== authorId)
+  ) {
+    if (selected) {
+      throw new PluginSiteAuthorizationError(
+        409,
+        "WEBSITE_CONNECTION_OWNERSHIP_MISMATCH",
+        "The website connection is not owned by this authenticated workspace."
+      );
+    }
+    return null;
+  }
+  const isLegacyRoot = websiteConnectionId === "primary" &&
+    (!storedId || !storedStudioKey || !storedAuthorId || !clean(data.contentRole));
+  const isLegacyStoredWebsite = websiteConnectionId !== "primary" && !storedId;
+  if (websiteConnectionId !== "primary" && (!storedStudioKey || !storedAuthorId)) {
+    if (selected) {
+      throw new PluginSiteAuthorizationError(
+        409,
+        "WEBSITE_CONNECTION_LEGACY_MIGRATION_REQUIRED",
+        "This legacy website connection does not contain enough ownership evidence to migrate safely."
+      );
+    }
+    return null;
+  }
   const status = clean(data.status);
   if (status !== "active" && status !== "disabled" && status !== "verification_failed") return null;
   try {
@@ -324,8 +468,24 @@ function normalizeConnection(
       createdAt: data.createdAt || null,
       updatedAt: data.updatedAt || null,
       registeredBy: clean(data.registeredBy),
+      persistenceStatus: isLegacyStoredWebsite
+        ? "legacy_reconcilable"
+        : isLegacyRoot &&
+            (clean(data.secretCredentialRef) && clean(data.wordpressUsername || data.wpUsername) &&
+              (clean(data.verificationStatus) === "verified" || data.verified === true))
+          ? "legacy_reconcilable"
+          : isLegacyRoot
+            ? "legacy_migration_required"
+            : "authoritative",
     };
   } catch {
+    if (selected) {
+      throw new PluginSiteAuthorizationError(
+        409,
+        "WEBSITE_CONNECTION_LEGACY_MIGRATION_REQUIRED",
+        "This legacy website connection could not be normalized safely."
+      );
+    }
     return null;
   }
 }
@@ -347,6 +507,7 @@ function emptyConnection(studioKey: string, authorId: string, websiteConnectionI
     createdAt: null,
     updatedAt: null,
     registeredBy: "",
+    persistenceStatus: "authoritative",
   };
 }
 

@@ -5,12 +5,12 @@ import {
   type NexusContentSource,
   type NexusWebsiteConnection,
   type NexusWebsiteContentRole,
-} from "@/core/nexus/contracts";
+} from "./contracts.ts";
 import {
   BlogConnectionError,
   normalizeHttpsOrigin,
   resolveVerifiedBlogConnection,
-} from "@/core/security/blog-connection";
+} from "../security/blog-connection.ts";
 
 const PRIMARY_CONNECTION_ID = "primary";
 const WEBSITE_ID_PATTERN = /^[A-Za-z0-9_-]{3,80}$/;
@@ -58,6 +58,7 @@ export async function listNexusWebsiteConnections(
           contentRole: normalizeRole(data.contentRole),
           defaultUniverseId: clean(data.defaultUniverseId) || null,
           status: "active",
+          persistenceStatus: legacyPersistenceStatus(data, studioKey, authorId),
           verifiedAt: data.verifiedAt || null,
           lastValidatedAt: data.lastValidatedAt || data.updatedAt || null,
           createdAt: data.createdAt || null,
@@ -112,6 +113,8 @@ export async function assertWebsiteCapacityAndUniqueness(
 
 function normalizeStoredWebsite(id: string, data: Record<string, unknown>, studioKey: string, authorId: string): NexusWebsiteConnection | null {
   if (clean(data.studioKey) !== studioKey || clean(data.authorId) !== authorId) return null;
+  const storedId = clean(data.websiteConnectionId);
+  if (storedId && storedId !== id) return null;
   const storedStatus = clean(data.status);
   const status = storedStatus === "active" && clean(data.verificationStatus) !== "verified"
     ? "verification_failed"
@@ -130,6 +133,7 @@ function normalizeStoredWebsite(id: string, data: Record<string, unknown>, studi
       contentRole: normalizeRole(data.contentRole),
       defaultUniverseId: clean(data.defaultUniverseId) || null,
       status,
+      persistenceStatus: storedId ? "authoritative" : "legacy_reconcilable",
       verifiedAt: data.verifiedAt || null,
       lastValidatedAt: data.lastValidatedAt || null,
       createdAt: data.createdAt || null,
@@ -174,6 +178,7 @@ function normalizeLegacyWebsite(
       contentRole: normalizeRole(data.contentRole),
       defaultUniverseId: clean(data.defaultUniverseId) || null,
       status,
+      persistenceStatus: legacyPersistenceStatus(data, studioKey, authorId),
       verifiedAt: data.verifiedAt || null,
       lastValidatedAt: data.lastValidatedAt || data.updatedAt || null,
       createdAt: data.createdAt || null,
@@ -186,6 +191,27 @@ function normalizeLegacyWebsite(
 
 function normalizeRole(value: unknown): NexusWebsiteContentRole {
   return value === "business_brand" || value === "story_world" ? value : "both";
+}
+
+function legacyPersistenceStatus(
+  data: Record<string, unknown>,
+  studioKey: string,
+  authorId: string
+): NexusWebsiteConnection["persistenceStatus"] {
+  const storedId = clean(data.websiteConnectionId);
+  const storedStudioKey = clean(data.studioKey);
+  const storedAuthorId = clean(data.authorId);
+  if (
+    (storedId && storedId !== PRIMARY_CONNECTION_ID) ||
+    (storedStudioKey && storedStudioKey !== studioKey) ||
+    (storedAuthorId && storedAuthorId !== authorId)
+  ) {
+    return "legacy_migration_required";
+  }
+  if (!storedId || !storedStudioKey || !storedAuthorId || !clean(data.contentRole)) {
+    return "legacy_reconcilable";
+  }
+  return "authoritative";
 }
 
 function clean(value: unknown): string {

@@ -48,6 +48,7 @@ interface WebsiteConnection {
   contentRole: WebsiteContentRole;
   defaultUniverseId: string | null;
   status: "active" | "disabled" | "verification_failed";
+  persistenceStatus?: "authoritative" | "legacy_reconcilable" | "legacy_migration_required";
 }
 
 const EMPTY_WEBSITE_FORM = {
@@ -304,7 +305,13 @@ export default function Billing() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ websiteConnectionId, ...patch }),
+        body: JSON.stringify({
+          websiteConnectionId,
+          expectedOrigin: websites.find(
+            (website) => website.websiteConnectionId === websiteConnectionId
+          )?.wordpressOrigin,
+          ...patch,
+        }),
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.success) {

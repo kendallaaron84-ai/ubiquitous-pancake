@@ -331,6 +331,7 @@ export async function GET(request: Request) {
           status: website.status,
           verifiedAt: website.verifiedAt,
           lastValidatedAt: website.lastValidatedAt,
+          persistenceStatus: website.persistenceStatus,
         })),
       },
       { headers: { "Cache-Control": "private, no-store" } }

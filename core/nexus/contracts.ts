@@ -67,6 +67,7 @@ export interface NexusWebsiteConnection {
   lastValidatedAt: unknown | null;
   createdAt: unknown;
   updatedAt: unknown;
+  persistenceStatus: "authoritative" | "legacy_reconcilable" | "legacy_migration_required";
 }
 
 export interface NexusBusinessProfile {
