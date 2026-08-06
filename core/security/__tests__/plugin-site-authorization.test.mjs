@@ -229,7 +229,7 @@ test("connection route reaches persistence only after gateway verification succe
     "utf8"
   );
   const verification = route.indexOf("verified = gatewayUrl");
-  const persistence = route.indexOf("await adminDb.runTransaction", verification);
+  const persistence = route.indexOf("await persistVerifiedPluginWebsite", verification);
   assert.ok(verification >= 0);
   assert.ok(persistence > verification);
 });

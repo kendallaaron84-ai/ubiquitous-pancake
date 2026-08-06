@@ -3,10 +3,9 @@ import { NextResponse } from "next/server";
 import { adminDb } from "@/core/firebase-admin";
 import { requireNexusAuthorContext } from "@/core/nexus/author-context";
 import { nexusErrorResponse, NexusRouteError, text } from "@/core/nexus/http";
-import {
-  listNexusWebsiteConnections,
-  updateNexusWebsiteMetadata,
-} from "@/core/nexus/website-connections";
+import { listNexusWebsiteConnections } from "@/core/nexus/website-connections";
+import { PluginSiteAuthorizationError } from "@/core/security/plugin-site-authorization";
+import { persistPluginWebsiteMetadata } from "@/core/security/plugin-site-grant-persistence";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -42,16 +41,25 @@ export async function PATCH(request: Request) {
       ? body.contentRole
       : undefined;
     const status = body.status === "active" || body.status === "disabled" ? body.status : undefined;
-    await updateNexusWebsiteMetadata(adminDb, {
-      studioKey: context.studioKey,
-      authorId: context.authorId,
-      websiteConnectionId,
-      displayName: body.displayName === undefined ? undefined : text(body.displayName, 120),
-      contentRole,
-      defaultUniverseId: body.defaultUniverseId === undefined ? undefined : text(body.defaultUniverseId, 80) || null,
-      status,
-    });
-    return NextResponse.json({ success: true });
+    try {
+      const persisted = await persistPluginWebsiteMetadata(adminDb, {
+        studioKey: context.studioKey,
+        authorId: context.authorId,
+        actorEmail: context.authorEmail,
+        firebaseProjectId: process.env.FIREBASE_PROJECT_ID?.trim() || "",
+        websiteConnectionId,
+        displayName: body.displayName === undefined ? undefined : text(body.displayName, 120),
+        contentRole,
+        defaultUniverseId: body.defaultUniverseId === undefined ? undefined : text(body.defaultUniverseId, 80) || null,
+        status,
+      });
+      return NextResponse.json({ success: true, grant: persisted.grant });
+    } catch (error) {
+      if (error instanceof PluginSiteAuthorizationError) {
+        throw new NexusRouteError(error.status, error.publicMessage, error.code);
+      }
+      throw error;
+    }
   } catch (error) {
     return nexusErrorResponse(error);
   }

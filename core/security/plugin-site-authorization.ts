@@ -273,11 +273,10 @@ export function reconcilePluginSiteGrants(input: {
       revokedBy: null,
     };
   });
-  const retainedRevoked = existing.filter(
-    (grant) => grant.status === "revoked" &&
-      !seenIds.has(grant.websiteConnectionId) && !seenOrigins.has(grant.origin)
+  const retainedHistory = existing.filter(
+    (grant) => !seenIds.has(grant.websiteConnectionId) && !seenOrigins.has(grant.origin)
   );
-  const result = [...retainedRevoked, ...nextActive];
+  const result = [...retainedHistory, ...nextActive];
   assertRoleConfiguration(result);
   return result;
 }

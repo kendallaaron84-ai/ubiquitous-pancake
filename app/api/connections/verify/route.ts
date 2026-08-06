@@ -28,6 +28,10 @@ import {
   type WordPressConnectionDiagnosticCode,
 } from "@/core/security/wordpress-connection";
 import { BlogConnectionError } from "@/core/security/blog-connection";
+import {
+  persistVerifiedPluginWebsite,
+} from "@/core/security/plugin-site-grant-persistence";
+import { PluginSiteAuthorizationError } from "@/core/security/plugin-site-authorization";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -475,53 +479,28 @@ export async function POST(request: Request) {
       );
     }
 
-    const connectionRef = websiteConnectionId === "primary"
-      ? rootConnectionRef
-      : rootConnectionRef.collection("websites").doc(websiteConnectionId);
-    const existingConnection = await connectionRef.get();
-    const existingData = existingConnection.data() || {};
-    const timestamp = FieldValue.serverTimestamp();
-
-    await adminDb.runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
-      transaction.set(
-        connectionRef,
-        {
-          studioKey: context.studioKey,
-          authorId: clean(context.licenseData.authorId) || context.session.email.toLowerCase(),
-          websiteConnectionId,
-          displayName: clean(body.displayName).slice(0, 120) || new URL(verified.targetWpOrigin).hostname,
-          contentRole: requestedContentRole,
-          defaultUniverseId: clean(body.defaultUniverseId) || null,
-          status: "active",
-          verificationStatus: "verified",
-          targetWpOrigin: verified.targetWpOrigin,
-          wpUsername: verified.wpUsername,
-          secretCredentialRef: verified.secretCredentialRef,
-          createdAt: existingData.createdAt || timestamp,
-          updatedAt: timestamp,
-          verifiedAt: timestamp,
-          registeredBy: context.session.email,
-          registrationMode: "author_self_service",
-        },
-        { merge: true }
-      );
-      if (websiteConnectionId === "primary") {
-        transaction.set(
-          context.userRef,
-          {
-            wpConnection: {
-              targetUrl: verified.targetWpOrigin,
-              wpUsername: verified.wpUsername,
-              status: "connected",
-              lastVerifiedAt: timestamp,
-              studioKey: context.studioKey,
-            },
-            updatedAt: timestamp,
-          },
-          { merge: true }
-        );
+    let persisted;
+    try {
+      persisted = await persistVerifiedPluginWebsite(adminDb, {
+        studioKey: context.studioKey,
+        authorId: clean(context.licenseData.authorId) || context.session.email.toLowerCase(),
+        actorEmail: context.session.email,
+        firebaseProjectId: process.env.FIREBASE_PROJECT_ID?.trim() || "",
+        websiteConnectionId,
+        wordpressOrigin: verified.targetWpOrigin,
+        wordpressUsername: verified.wpUsername,
+        secretCredentialRef: verified.secretCredentialRef,
+        contentRole: requestedContentRole,
+        displayName: clean(body.displayName).slice(0, 120) || new URL(verified.targetWpOrigin).hostname,
+        defaultUniverseId: clean(body.defaultUniverseId) || null,
+        primaryUserRef: context.userRef,
+      });
+    } catch (error) {
+      if (error instanceof PluginSiteAuthorizationError) {
+        throw new ConnectionRouteError(error.status, error.publicMessage, error.code);
       }
-    });
+      throw error;
+    }
 
     return NextResponse.json({
       success: true,
@@ -534,6 +513,7 @@ export async function POST(request: Request) {
         targetWpOrigin: verified.targetWpOrigin,
         wpUsername: verified.wpUsername,
       },
+      grant: persisted.grant,
     });
   } catch (error: unknown) {
     return connectionErrorResponse(error);
@@ -631,7 +611,7 @@ class ConnectionRouteError extends Error {
   constructor(
     readonly status: number,
     readonly publicMessage: string,
-    readonly code?: WordPressConnectionDiagnosticCode,
+    readonly code?: WordPressConnectionDiagnosticCode | string,
     readonly ticketId?: string
   ) {
     super(publicMessage);

@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
 
-import { FieldValue } from "firebase-admin/firestore";
-
 import {
   NEXUS_MAX_ACTIVE_WEBSITES,
   type NexusContentSource,
@@ -110,32 +108,6 @@ export async function assertWebsiteCapacityAndUniqueness(
       normalizeRole(input.contentRole),
     ]);
   }
-}
-
-export async function updateNexusWebsiteMetadata(
-  database: FirebaseFirestore.Firestore,
-  input: { studioKey: string; authorId: string; websiteConnectionId: string; displayName?: string; contentRole?: NexusWebsiteContentRole; defaultUniverseId?: string | null; status?: "active" | "disabled" }
-): Promise<void> {
-  const current = await listNexusWebsiteConnections(database, input.studioKey, input.authorId);
-  const selected = current.find((connection) => connection.websiteConnectionId === input.websiteConnectionId);
-  if (!selected) throw new BlogConnectionError("The website connection was not found.");
-  const nextStatus = input.status || selected.status;
-  const activeRoles = current
-    .filter((connection) => connection.websiteConnectionId !== input.websiteConnectionId && connection.status === "active")
-    .map((connection) => connection.contentRole);
-  if (nextStatus === "active") {
-    activeRoles.push(input.contentRole ? normalizeRole(input.contentRole) : selected.contentRole);
-  }
-  assertNexusWebsiteRoleConfiguration(activeRoles);
-
-  const patch: Record<string, unknown> = { updatedAt: FieldValue.serverTimestamp() };
-  if (input.displayName !== undefined) patch.displayName = clean(input.displayName).slice(0, 120);
-  if (input.contentRole !== undefined) patch.contentRole = normalizeRole(input.contentRole);
-  if (input.defaultUniverseId !== undefined) patch.defaultUniverseId = clean(input.defaultUniverseId) || null;
-  if (input.status !== undefined) patch.status = input.status;
-  const root = database.collection("connections").doc(input.studioKey);
-  const ref = input.websiteConnectionId === PRIMARY_CONNECTION_ID ? root : root.collection("websites").doc(input.websiteConnectionId);
-  await ref.set(patch, { merge: true });
 }
 
 function normalizeStoredWebsite(id: string, data: Record<string, unknown>, studioKey: string, authorId: string): NexusWebsiteConnection | null {
