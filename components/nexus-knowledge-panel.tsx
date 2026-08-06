@@ -7,7 +7,13 @@ type Website = { websiteConnectionId: string; displayName: string; wordpressOrig
 type Guide = { id: string; displayName?: string; version?: number; wordCount?: number; extractedCharacterCount?: number; replacementStatus?: string };
 type World = { id: string; title?: string; genre?: string; referenceGuides?: Guide[] };
 type Strategy = { id: string; displayName: string; description: string; goals: string[] };
-type ContextPayload = { websites?: Website[]; storyWorlds?: World[]; strategies?: Strategy[]; businessProfile?: Record<string, unknown> | null };
+type ContextPayload = {
+  websites?: Website[];
+  storyWorlds?: World[];
+  strategies?: Strategy[];
+  businessProfile?: Record<string, unknown> | null;
+  flags?: { storyWorld?: boolean };
+};
 
 const inputClass = "w-full rounded-lg border border-border bg-slate-950/50 px-3 py-2 text-xs text-white focus:border-emerald-500/50 focus:outline-none";
 
@@ -61,7 +67,7 @@ export function NexusKnowledgePanel() {
       </div>
     </details>
 
-    <details className="rounded-lg border border-border p-3">
+    {context.flags?.storyWorld === true ? <details className="rounded-lg border border-border p-3">
       <summary className="flex cursor-pointer items-center gap-2 text-sm font-bold text-foreground"><BookOpen className="h-4 w-4 text-indigo-400" />Story Worlds & Reference Guides</summary>
       <div className="mt-3 space-y-3">
         {(context.storyWorlds || []).map((item) => <div key={item.id} className="rounded-lg bg-slate-950/30 p-3 text-xs">
@@ -74,7 +80,7 @@ export function NexusKnowledgePanel() {
         <textarea className={inputClass} value={world.description} onChange={(e) => setWorld({ ...world, description: e.target.value })} placeholder="World description" />
         <button disabled={busy} className="w-full rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50" onClick={() => submitJson("/api/nexus/story-worlds", "POST", world, "Story World created.")}>Create Story World</button>
       </div>
-    </details>
+    </details> : <div className="rounded-lg border border-border p-3 text-xs text-muted-foreground"><p className="flex items-center gap-2 font-bold text-foreground"><BookOpen className="h-4 w-4 text-indigo-400" />Story Worlds & Reference Guides</p><p className="mt-2">Story World management is not enabled for this environment.</p></div>}
 
     <details className="rounded-lg border border-border p-3">
       <summary className="flex cursor-pointer items-center gap-2 text-sm font-bold text-foreground"><Compass className="h-4 w-4 text-cyan-400" />Strategy Guide Library</summary>

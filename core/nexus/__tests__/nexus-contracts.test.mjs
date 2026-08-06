@@ -166,6 +166,10 @@ test("Setup and Nexus UI use the canonical multi-site website workflow", async (
     new URL("components/author-intake-form.tsx", ROOT),
     "utf8"
   );
+  const knowledgePanel = await readFile(
+    new URL("components/nexus-knowledge-panel.tsx", ROOT),
+    "utf8"
+  );
   const websiteService = await readFile(
     new URL("core/nexus/website-connections.ts", ROOT),
     "utf8"
@@ -189,6 +193,10 @@ test("Setup and Nexus UI use the canonical multi-site website workflow", async (
   assert.match(intake, /context\.websites/);
   assert.match(intake, /site\.status === "active"/);
   assert.match(intake, /different content role/);
+  assert.match(intake, /key=\{strategy\.id\}/);
+  assert.doesNotMatch(intake, /key=\{strategy\.strategyGuideId\}/);
+  assert.match(intake, /context\.flags\?\.storyWorld/);
+  assert.match(knowledgePanel, /context\.flags\?\.storyWorld === true/);
 
   assert.match(websiteService, /storedStatus === "disabled"/);
   assert.match(websiteService, /normalizeLegacyWebsite/);

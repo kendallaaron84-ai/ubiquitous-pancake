@@ -10,8 +10,14 @@ type Goal = { value: string; label: string };
 type Website = { websiteConnectionId: string; displayName: string; wordpressOrigin: string; contentRole: ContentSource | "both"; status: string };
 type Guide = { id: string; displayName?: string; status?: string };
 type World = { id: string; title?: string; referenceGuides?: Guide[] };
-type Strategy = { strategyGuideId: string; displayName: string; description: string };
-type ContextPayload = { websites?: Website[]; storyWorlds?: World[]; strategies?: Strategy[]; error?: string };
+type Strategy = { id: string; displayName: string; description: string };
+type ContextPayload = {
+  websites?: Website[];
+  storyWorlds?: World[];
+  strategies?: Strategy[];
+  flags?: { storyWorld?: boolean };
+  error?: string;
+};
 
 const BUSINESS_GOALS: Goal[] = [
   ["automatic", "Automatic"], ["educate", "Educate"], ["build_authority", "Build authority"],
@@ -133,7 +139,7 @@ export function AuthorIntakeForm() {
             <select className={inputClass} value={form.contentSource} onChange={(e) => {
               const contentSource = e.target.value as ContentSource;
               setForm((current) => ({ ...current, contentSource, universeId: "", referenceGuideId: "", requestedGoal: "automatic", websiteConnectionId: "" }));
-            }}><option value="business_brand">Business Brand</option><option value="story_world">Story World</option></select>
+            }}><option value="business_brand">Business Brand</option><option value="story_world" disabled={context.flags?.storyWorld !== true}>Story World</option></select>
           </Field>
           <Field label="Blog Goal" icon={<Sparkles className="h-3 w-3" />}>
             <select className={inputClass} value={form.requestedGoal} onChange={(e) => update("requestedGoal", e.target.value)}>{goals.map((goal) => <option key={goal.value} value={goal.value}>{goal.label}</option>)}</select>
@@ -151,8 +157,8 @@ export function AuthorIntakeForm() {
         </div>
 
         {form.strategyGuideSelectionMode === "manual" && <div className="grid gap-4 sm:grid-cols-2 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-          <Field label="Primary Strategy Guide"><select required className={inputClass} value={form.primaryStrategyGuideId} onChange={(e) => update("primaryStrategyGuideId", e.target.value)}><option value="">Select one primary guide</option>{strategies.map((strategy) => <option key={strategy.strategyGuideId} value={strategy.strategyGuideId}>{strategy.displayName}</option>)}</select></Field>
-          <Field label="Supporting Guide (optional)"><select className={inputClass} value={form.supportingStrategyGuideId} onChange={(e) => update("supportingStrategyGuideId", e.target.value)}><option value="">No supporting guide</option>{strategies.filter((strategy) => strategy.strategyGuideId !== form.primaryStrategyGuideId).map((strategy) => <option key={strategy.strategyGuideId} value={strategy.strategyGuideId}>{strategy.displayName}</option>)}</select></Field>
+          <Field label="Primary Strategy Guide"><select required className={inputClass} value={form.primaryStrategyGuideId} onChange={(e) => update("primaryStrategyGuideId", e.target.value)}><option value="">Select one primary guide</option>{strategies.map((strategy) => <option key={strategy.id} value={strategy.id}>{strategy.displayName}</option>)}</select></Field>
+          <Field label="Supporting Guide (optional)"><select className={inputClass} value={form.supportingStrategyGuideId} onChange={(e) => update("supportingStrategyGuideId", e.target.value)}><option value="">No supporting guide</option>{strategies.filter((strategy) => strategy.id !== form.primaryStrategyGuideId).map((strategy) => <option key={strategy.id} value={strategy.id}>{strategy.displayName}</option>)}</select></Field>
         </div>}
 
         <Field label="Working Title / Topic" icon={<FileText className="h-3 w-3" />}><input className={inputClass} required value={form.topicTitle} onChange={(e) => update("topicTitle", e.target.value)} placeholder="e.g. 5 Reasons Audiobooks Outsell Print" /></Field>
