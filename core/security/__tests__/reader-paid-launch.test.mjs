@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -95,4 +96,18 @@ test("paidReaderLaunchPath normalizes only valid asset IDs", () => {
   assert.equal(paidReaderLaunchPath("  abk_book  "), "/reader/open?assetId=abk_book");
   assert.equal(paidReaderLaunchPath("x"), null);
   assert.equal(paidReaderLaunchPath("abk/book"), null);
+});
+
+test("middleware lets the paid reader launcher own signed-out continuation", async () => {
+  const middleware = await readFile(
+    new URL("../../../middleware.ts", import.meta.url),
+    "utf8"
+  );
+  const readerPagesStart = middleware.indexOf("const PUBLIC_READER_PAGES");
+  const readerPagesEnd = middleware.indexOf("const PUBLIC_API_EXACT_PATHS");
+  const readerPages = middleware.slice(readerPagesStart, readerPagesEnd);
+
+  assert.ok(readerPagesStart >= 0 && readerPagesEnd > readerPagesStart);
+  assert.match(readerPages, /"\/reader\/open"/);
+  assert.doesNotMatch(readerPages, /"\/signin"/);
 });

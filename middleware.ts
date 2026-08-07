@@ -15,6 +15,7 @@ const PUBLIC_READER_PAGES = new Set([
   "/reader/recover",
   "/reader/claim",
   "/reader/account",
+  "/reader/open",
   "/reader/free",
 ]);
 const PUBLIC_API_EXACT_PATHS = new Set([
