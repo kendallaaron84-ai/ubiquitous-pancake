@@ -2,18 +2,23 @@ import { importPKCS8, jwtVerify, SignJWT } from "jose";
 
 const READER_TOKEN_ALGORITHM = "RS256";
 const READER_TOKEN_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
+export const ANONYMOUS_FREE_TOKEN_LIFETIME_SECONDS = 72 * 60 * 60;
 
 export interface ReaderTokenInput {
   principalId: string;
   tenantId: string;
-  principalType?: "firebase_uid";
+  principalType?: "firebase_uid" | "anonymous_free";
+  assetId?: string;
+  origin?: string;
 }
 
 export interface ReaderTokenClaims {
   principalId: string;
   tenantId: string;
   scope: readonly ["media:read"];
-  principalType: "firebase_uid" | "legacy";
+  principalType: "firebase_uid" | "anonymous_free" | "legacy";
+  assetId?: string;
+  origin?: string;
 }
 
 export async function signReaderToken(
@@ -28,11 +33,16 @@ export async function signReaderToken(
     READER_TOKEN_ALGORITHM
   );
   const issuedAt = Math.floor(now.getTime() / 1000);
+  const lifetime = input.principalType === "anonymous_free"
+    ? ANONYMOUS_FREE_TOKEN_LIFETIME_SECONDS
+    : READER_TOKEN_LIFETIME_SECONDS;
 
   return new SignJWT({
       tenantId: input.tenantId,
       scope: ["media:read"],
       ...(input.principalType ? { principalType: input.principalType } : {}),
+      ...(input.assetId ? { assetId: input.assetId } : {}),
+      ...(input.origin ? { origin: input.origin } : {}),
   })
     .setProtectedHeader({
       alg: READER_TOKEN_ALGORITHM,
@@ -43,7 +53,7 @@ export async function signReaderToken(
     .setIssuer(configuration.issuer)
     .setAudience(configuration.audience)
     .setIssuedAt(issuedAt)
-    .setExpirationTime(issuedAt + READER_TOKEN_LIFETIME_SECONDS)
+    .setExpirationTime(issuedAt + lifetime)
     .sign(signingKey);
 }
 
@@ -70,16 +80,35 @@ export async function verifyReaderToken(
     payload.scope.length !== 1 ||
     payload.scope[0] !== "media:read" ||
     (payload.principalType !== undefined &&
-      payload.principalType !== "firebase_uid")
+      payload.principalType !== "firebase_uid" &&
+      payload.principalType !== "anonymous_free")
   ) {
     throw new Error("Reader token claims are malformed.");
+  }
+  if (payload.principalType === "anonymous_free") {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/.test(String(payload.assetId || ""))) {
+      throw new Error("Reader token anonymous asset claim is malformed.");
+    }
+    try {
+      const parsed = new URL(String(payload.origin || ""));
+      if (parsed.protocol !== "https:" || parsed.origin !== payload.origin) throw new Error();
+    } catch {
+      throw new Error("Reader token anonymous origin claim is malformed.");
+    }
+  } else if (payload.assetId !== undefined || payload.origin !== undefined) {
+    throw new Error("Reader token resource claims are malformed.");
   }
 
   return {
     principalId: payload.sub,
     tenantId: payload.tenantId,
-    principalType:
-      payload.principalType === "firebase_uid" ? "firebase_uid" : "legacy",
+    principalType: payload.principalType === "firebase_uid"
+      ? "firebase_uid"
+      : payload.principalType === "anonymous_free"
+        ? "anonymous_free"
+        : "legacy",
+    ...(typeof payload.assetId === "string" ? { assetId: payload.assetId } : {}),
+    ...(typeof payload.origin === "string" ? { origin: payload.origin } : {}),
     scope: ["media:read"],
   };
 }
@@ -110,9 +139,23 @@ function validateInput(input: ReaderTokenInput): void {
   }
   if (
     input.principalType !== undefined &&
-    input.principalType !== "firebase_uid"
+    input.principalType !== "firebase_uid" &&
+    input.principalType !== "anonymous_free"
   ) {
     throw new TypeError("Reader token principalType is invalid.");
+  }
+  if (input.principalType === "anonymous_free") {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/.test(input.assetId || "")) {
+      throw new TypeError("Reader token assetId is required for anonymous free access.");
+    }
+    try {
+      const parsed = new URL(input.origin || "");
+      if (parsed.protocol !== "https:" || parsed.origin !== input.origin) throw new Error();
+    } catch {
+      throw new TypeError("Reader token HTTPS origin is required for anonymous free access.");
+    }
+  } else if (input.assetId !== undefined || input.origin !== undefined) {
+    throw new TypeError("Reader token resource claims are reserved for anonymous free access.");
   }
 }
 

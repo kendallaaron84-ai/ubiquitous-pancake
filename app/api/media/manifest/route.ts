@@ -4,6 +4,7 @@ import { signReaderToken, verifyReaderToken } from "@/core/security/reader-token
 import { readerAccessKeyId } from "@/core/security/reader-access";
 import { requireAuthorizedAuthorIdentity } from "@/core/security/author-identity";
 import {
+  authorizeAnonymousFreeMedia,
   authorizeReaderMedia,
   buildProtectedPublicationChapters,
   ReaderMediaAuthorizationError,
@@ -226,7 +227,43 @@ export async function GET(request: Request) {
       );
     }
 
-    if (claims.principalType === "firebase_uid") {
+    if (claims.principalType === "anonymous_free") {
+      if (
+        claims.assetId !== assetKey ||
+        !normalizedRequestOrigin ||
+        claims.origin !== normalizedRequestOrigin
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: "READER_MEDIA_FREE_SCOPE_MISMATCH",
+            error: "Free-publication access does not match this asset or website.",
+          },
+          { status: 403, headers }
+        );
+      }
+      try {
+        const authorized = await authorizeAnonymousFreeMedia(adminDb, {
+          assetId: assetKey,
+          requestOrigin: normalizedRequestOrigin,
+        });
+        if (authorized.tenantId !== claims.tenantId) {
+          throw new ReaderMediaAuthorizationError(
+            403,
+            "READER_MEDIA_TENANT_MISMATCH",
+            "Reader access does not match this publication."
+          );
+        }
+      } catch (error: unknown) {
+        if (error instanceof ReaderMediaAuthorizationError) {
+          return NextResponse.json(
+            { success: false, code: error.code, error: error.message },
+            { status: error.status, headers }
+          );
+        }
+        throw error;
+      }
+    } else if (claims.principalType === "firebase_uid") {
       try {
         await authorizeReaderMedia(adminDb, {
           readerUid: claims.principalId,

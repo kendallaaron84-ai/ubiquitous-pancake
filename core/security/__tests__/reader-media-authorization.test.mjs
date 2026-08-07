@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { establishReaderIdentity } from "../reader-auth.ts";
 import {
+  authorizeAnonymousFreeMedia,
   authorizeReaderMedia,
   buildProtectedPublicationChapters,
   ReaderMediaAuthorizationError,
@@ -281,6 +282,24 @@ test("active manifest route selects canonical UID authorization and requires acc
   assert.match(source, /if \(!readerToken\)/);
   assert.doesNotMatch(source, /if \(isPaid\)/);
   assert.match(source, /buildProtectedPublicationChapters/);
+  assert.match(source, /claims\.principalType === "anonymous_free"/);
+  assert.match(source, /claims\.assetId !== assetKey/);
+  assert.match(source, /claims\.origin !== normalizedRequestOrigin/);
+});
+
+test("anonymous free media authorization requires explicit free, published, deployed, exact-origin product", async () => {
+  const db = createMemoryDb({ "products/abk_free": product({ assetId: "abk_free", isFree: true }) });
+  const result = await authorizeAnonymousFreeMedia(db, { assetId: "abk_free", requestOrigin: "https://author.example" });
+  assert.equal(result.tenantId, "studio_a");
+  await assert.rejects(
+    () => authorizeAnonymousFreeMedia(db, { assetId: "abk_free", requestOrigin: "https://attacker.example" }),
+    (error) => error.code === READER_MEDIA_ERROR_CODES.originNotAllowed
+  );
+  db.docs.set("products/abk_free", product({ assetId: "abk_free", price: 9.99 }));
+  await assert.rejects(
+    () => authorizeAnonymousFreeMedia(db, { assetId: "abk_free", requestOrigin: "https://author.example" }),
+    (error) => error.code === READER_MEDIA_ERROR_CODES.freeAccessRequired
+  );
 });
 
 test("reader media token route bypasses author middleware and enforces its own reader session", async () => {

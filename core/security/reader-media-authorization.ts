@@ -3,6 +3,7 @@ import {
   type ReaderPlatformDb,
 } from "./services/service-support.ts";
 import { requireActiveVerifiedReader } from "./services/reader-profile-service.ts";
+import { isExplicitlyFreePublication } from "./reader-free-acquisition.ts";
 
 const ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
 const TENANT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
@@ -18,6 +19,7 @@ export const READER_MEDIA_ERROR_CODES = {
   entitlementRequired: "READER_MEDIA_ENTITLEMENT_REQUIRED",
   originNotAllowed: "READER_MEDIA_ORIGIN_NOT_ALLOWED",
   manifestUnavailable: "READER_MEDIA_MANIFEST_UNAVAILABLE",
+  freeAccessRequired: "READER_MEDIA_FREE_ACCESS_REQUIRED",
 } as const;
 
 type ReaderMediaErrorCode =
@@ -46,6 +48,14 @@ export interface AuthorizedReaderMedia {
   entitlementId: string;
   product: Record<string, unknown>;
   publicationUrl: string | null;
+  allowedOrigins: readonly string[];
+}
+
+export interface AuthorizedAnonymousFreeMedia {
+  tenantId: string;
+  assetId: string;
+  product: Record<string, unknown>;
+  publicationUrl: string;
   allowedOrigins: readonly string[];
 }
 
@@ -218,6 +228,84 @@ export async function authorizeReaderMedia(
       allowedOrigins: evidence.origins,
     };
   });
+}
+
+export async function authorizeAnonymousFreeMedia(
+  db: ReaderPlatformDb,
+  input: { assetId: string; requestOrigin?: string | null }
+): Promise<AuthorizedAnonymousFreeMedia> {
+  const assetId = text(input.assetId, 160);
+  if (!ASSET_ID_PATTERN.test(assetId)) {
+    throw new ReaderMediaAuthorizationError(
+      400,
+      READER_MEDIA_ERROR_CODES.assetInvalid,
+      "A valid publication asset is required."
+    );
+  }
+  const snapshot = await db.collection("products").doc(assetId).get();
+  if (!snapshot.exists) {
+    throw new ReaderMediaAuthorizationError(
+      404,
+      READER_MEDIA_ERROR_CODES.publicationNotFound,
+      "The requested publication was not found."
+    );
+  }
+  const product = (snapshot.data() || {}) as Record<string, unknown>;
+  const tenantId = text(product.studioKey || product.wpStudioKey, 160);
+  if (!TENANT_ID_PATTERN.test(tenantId)) {
+    throw new ReaderMediaAuthorizationError(
+      403,
+      READER_MEDIA_ERROR_CODES.tenantInvalid,
+      "This publication is not linked to a valid author library."
+    );
+  }
+  const evidence = publicationEvidence(product);
+  if (!evidence.isPublished || product.disabled === true || product.isDisabled === true || product.isActive === false) {
+    throw new ReaderMediaAuthorizationError(
+      404,
+      READER_MEDIA_ERROR_CODES.publicationUnavailable,
+      "This publication is not available."
+    );
+  }
+  if (evidence.deploymentStatus !== "deployed" || !evidence.publicationUrl) {
+    throw new ReaderMediaAuthorizationError(
+      403,
+      READER_MEDIA_ERROR_CODES.publicationNotDeployed,
+      "This publication is not deployed for reader access."
+    );
+  }
+  if (!isExplicitlyFreePublication(product)) {
+    throw new ReaderMediaAuthorizationError(
+      403,
+      READER_MEDIA_ERROR_CODES.freeAccessRequired,
+      "This publication requires a purchase or reader entitlement."
+    );
+  }
+  const storedAssetId = text(product.assetId || product.assetKey, 160);
+  if (storedAssetId && storedAssetId !== assetId) {
+    throw new ReaderMediaAuthorizationError(
+      403,
+      READER_MEDIA_ERROR_CODES.assetInvalid,
+      "The publication asset identity is invalid."
+    );
+  }
+  const requestedOrigin = input.requestOrigin
+    ? exactHttpsOrigin(input.requestOrigin)
+    : null;
+  if (input.requestOrigin && (!requestedOrigin || !evidence.origins.includes(requestedOrigin))) {
+    throw new ReaderMediaAuthorizationError(
+      403,
+      READER_MEDIA_ERROR_CODES.originNotAllowed,
+      "This website is not authorized to request the publication."
+    );
+  }
+  return {
+    tenantId,
+    assetId,
+    product,
+    publicationUrl: evidence.publicationUrl,
+    allowedOrigins: evidence.origins,
+  };
 }
 
 export function publicationMediaChapters(
