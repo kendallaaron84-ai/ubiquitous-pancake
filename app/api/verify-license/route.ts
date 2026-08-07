@@ -9,6 +9,7 @@ import {
   PluginSiteAuthorizationError,
   type PluginSiteEvidence,
 } from "@/core/security/plugin-site-authorization";
+import { signStorefrontSiteToken } from "@/core/security/storefront-site-token";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -114,6 +115,12 @@ export async function POST(request: Request) {
       : Array.isArray(license.entitlements)
         ? license.entitlements.filter((entry: unknown): entry is string => typeof entry === "string")
         : [];
+    const storefrontSiteToken = await signStorefrontSiteToken({
+      pluginLicenseKey,
+      licenseCollection: location.collection,
+      websiteConnectionId: authorization.grant.websiteConnectionId,
+      origin: authorization.grant.origin,
+    });
 
     return json({
       authorized: true,
@@ -129,6 +136,7 @@ export async function POST(request: Request) {
       authorId: typeof license.authorId === "string" ? license.authorId : null,
       authorEmail: typeof license.authorEmail === "string" ? license.authorEmail : null,
       entitlements,
+      storefrontSiteToken,
       message: "StudioKey verified and connected to this WordPress site.",
     }, 200);
   } catch (error) {
