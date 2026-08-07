@@ -3,6 +3,11 @@ import { createCorsHeaders } from "@/core/security/cors";
 import { signReaderToken, verifyReaderToken } from "@/core/security/reader-token";
 import { readerAccessKeyId } from "@/core/security/reader-access";
 import { requireAuthorizedAuthorIdentity } from "@/core/security/author-identity";
+import {
+  authorizeReaderMedia,
+  buildProtectedPublicationChapters,
+  ReaderMediaAuthorizationError,
+} from "@/core/security/reader-media-authorization";
 import { NextResponse } from "next/server";
 import { decodeJwt } from "jose";
 
@@ -42,7 +47,15 @@ function registeredPublicationOrigins(
   product: Record<string, unknown>,
   license: Record<string, unknown>
 ): Set<string> {
+  const deployment =
+    product.wordpressDeployment &&
+    typeof product.wordpressDeployment === "object" &&
+    !Array.isArray(product.wordpressDeployment)
+      ? (product.wordpressDeployment as Record<string, unknown>)
+      : {};
   const values = [
+    deployment.targetWpOrigin,
+    deployment.publicationUrl,
     product.associatedWebsite,
     product.targetWpOrigin,
     product.wordpressUrl,
@@ -74,84 +87,27 @@ function publicationChapters(data: Record<string, unknown>, type: string): unkno
 async function attachProtectedChapterUrls(
   chapters: unknown[],
   tenantKey: string,
-  assetKey: string
+  assetKey: string,
+  publicationType: string
 ): Promise<Record<string, unknown>[]> {
   const bucketName =
     process.env.FIREBASE_STORAGE_BUCKET?.trim() ||
     process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET?.trim();
-  const expectedTranscriptPrefix = `transcripts/${tenantKey}/${assetKey}/`;
-  const expectedMediaPrefix = `studio/${assetKey}/`;
-  const signedUrlExpiration = Date.now() + 12 * 60 * 60 * 1000;
-
-  return Promise.all(chapters.map(async (chapter) => {
-    if (!chapter || typeof chapter !== "object" || Array.isArray(chapter)) return {};
-    const chapterData = chapter as Record<string, unknown>;
-    const {
-      transcriptStoragePath: rawTranscriptStoragePath,
-      storagePath: rawMediaStoragePath,
-      ...publicChapter
-    } = chapterData;
-    const transcriptStoragePath = cleanString(rawTranscriptStoragePath);
-    const mediaStoragePath = cleanString(rawMediaStoragePath);
-    const protectedChapter: Record<string, unknown> = { ...publicChapter };
-
-    if (bucketName && mediaStoragePath.startsWith(expectedMediaPrefix)) {
-      try {
-        const [mediaUrl] = await adminStorage
-          .bucket(bucketName)
-          .file(mediaStoragePath)
-          .getSignedUrl({
-            action: "read",
-            expires: signedUrlExpiration,
-          });
-        protectedChapter.url = mediaUrl;
-        protectedChapter.audioUrl = mediaUrl;
-        protectedChapter.mediaUrl = mediaUrl;
-      } catch (error) {
-        console.error("Unable to sign a chapter media URL.", {
-          assetKey,
-          mediaStoragePath,
-          error,
-        });
-      }
-    } else if (mediaStoragePath && !mediaStoragePath.startsWith(expectedMediaPrefix)) {
-      console.warn("Chapter media pointer is outside the publication namespace.", {
-        assetKey,
-        mediaStoragePath,
-      });
-    } else if (mediaStoragePath && !bucketName) {
-      console.warn("Chapter media signing is unavailable because the Storage bucket is not configured.", {
-        assetKey,
-      });
-    }
-
-    if (!transcriptStoragePath) return protectedChapter;
-    if (!bucketName || !transcriptStoragePath.startsWith(expectedTranscriptPrefix)) {
-      console.warn("Transcript pointer is unavailable or outside the publication namespace.", {
-        assetKey,
-        transcriptStoragePath,
-      });
-      return protectedChapter;
-    }
-
-    try {
-      const [transcriptUrl] = await adminStorage
+  const signedUrlExpiration = Date.now() + 60 * 60 * 1000;
+  return buildProtectedPublicationChapters({
+    chapters,
+    tenantId: tenantKey,
+    assetId: assetKey,
+    publicationType,
+    signStoragePath: async (storagePath) => {
+      if (!bucketName) throw new Error("MEDIA_STORAGE_NOT_CONFIGURED");
+      const [url] = await adminStorage
         .bucket(bucketName)
-        .file(transcriptStoragePath)
-        .getSignedUrl({
-          action: "read",
-          expires: signedUrlExpiration,
-        });
-      return { ...protectedChapter, transcriptUrl };
-    } catch (error) {
-      console.error("Unable to sign a chapter transcript URL.", {
-        assetKey,
-        transcriptStoragePath,
-        error,
-      });
-      return protectedChapter;
-    }
-  }));
+        .file(storagePath)
+        .getSignedUrl({ action: "read", expires: signedUrlExpiration });
+      return url;
+    },
+  });
 }
 
 export async function OPTIONS(request: Request) {
@@ -229,29 +185,67 @@ export async function GET(request: Request) {
       console.warn("Serving a legacy publication without an identity registry link.", { assetKey, tenantKey });
     }
     const price = Number(data.price ?? data.unitPrice ?? 0);
-    const isPaid = Number.isFinite(price) && price > 0;
-
     let renewedReaderSession: Record<string, unknown> | null = null;
-    if (isPaid) {
-      const authorization = request.headers.get("authorization") || "";
-      const readerToken = authorization.startsWith("Bearer ")
-        ? authorization.slice(7).trim()
-        : "";
-      if (!readerToken) {
-        return NextResponse.json({ success: false, error: "Verified reader access is required." }, { status: 401, headers });
-      }
+    const authorization = request.headers.get("authorization") || "";
+    const readerToken = authorization.startsWith("Bearer ")
+      ? authorization.slice(7).trim()
+      : "";
+    if (!readerToken) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: "READER_SESSION_INVALID",
+          error: "Verified reader access is required.",
+        },
+        { status: 401, headers }
+      );
+    }
 
-      let claims;
+    let claims;
+    try {
+      claims = await verifyReaderToken(readerToken);
+    } catch {
+      return NextResponse.json(
+        {
+          success: false,
+          code: "INVALID_READER_MEDIA_TOKEN",
+          error: "Reader access has expired or is invalid.",
+        },
+        { status: 401, headers }
+      );
+    }
+
+    if (claims.tenantId !== tenantKey) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: "READER_MEDIA_TENANT_MISMATCH",
+          error: "Reader access does not match this publication.",
+        },
+        { status: 403, headers }
+      );
+    }
+
+    if (claims.principalType === "firebase_uid") {
       try {
-        claims = await verifyReaderToken(readerToken);
-      } catch {
-        return NextResponse.json({ success: false, error: "Reader access has expired or is invalid." }, { status: 401, headers });
+        await authorizeReaderMedia(adminDb, {
+          readerUid: claims.principalId,
+          tenantId: claims.tenantId,
+          assetId: assetKey,
+          requestOrigin: origin,
+        });
+      } catch (error: unknown) {
+        if (error instanceof ReaderMediaAuthorizationError) {
+          return NextResponse.json(
+            { success: false, code: error.code, error: error.message },
+            { status: error.status, headers }
+          );
+        }
+        throw error;
       }
-
-      if (claims.tenantId !== tenantKey) {
-        return NextResponse.json({ success: false, error: "Reader access does not match this publication." }, { status: 403, headers });
-      }
-
+    } else {
+      // Explicit version-0 compatibility. Tokens without the firebase_uid
+      // marker remain on the legacy phone-derived entitlement path until 5F.
       const identityHashSecret = process.env.KOBA_IDENTITY_HASH_SECRET?.trim();
       if (!identityHashSecret) {
         throw new Error("READER_SECURITY_CONFIGURATION_MISSING");
@@ -332,7 +326,8 @@ export async function GET(request: Request) {
     const chapters = await attachProtectedChapterUrls(
       publicationChapters(data, type),
       tenantKey,
-      assetKey
+      assetKey,
+      type
     );
     const product = {
       assetKey,
@@ -361,6 +356,12 @@ export async function GET(request: Request) {
       { status: 200, headers }
     );
   } catch (error) {
+    if (error instanceof ReaderMediaAuthorizationError) {
+      return NextResponse.json(
+        { success: false, code: error.code, error: error.message },
+        { status: error.status, headers }
+      );
+    }
     console.error("Unable to load protected media manifest.", error);
     return NextResponse.json({ success: false, error: "Unable to load this publication." }, { status: 500, headers });
   }

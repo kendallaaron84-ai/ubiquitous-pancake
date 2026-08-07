@@ -34,12 +34,23 @@ test("signs and verifies an asymmetric tenant-scoped reader token", async () => 
 
   assert.deepEqual(claims, {
     ...tokenInput,
+    principalType: "legacy",
     scope: ["media:read"],
   });
   assert.equal(
     encodedClaims.exp - encodedClaims.iat,
     30 * 24 * 60 * 60
   );
+});
+
+test("marks canonical Firebase UID media tokens without changing legacy tokens", async () => {
+  const token = await signReaderToken(
+    { ...tokenInput, principalType: "firebase_uid" },
+    environment
+  );
+  const claims = await verifyReaderToken(token, environment);
+  assert.equal(claims.principalType, "firebase_uid");
+  assert.equal(claims.principalId, tokenInput.principalId);
 });
 
 test("rejects a tampered reader token", async () => {

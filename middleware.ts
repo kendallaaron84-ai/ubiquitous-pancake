@@ -35,6 +35,7 @@ const PUBLIC_API_EXACT_PATHS = new Set([
   "/api/library-manifest",
   "/api/reader/session",
   "/api/reader/logout",
+  "/api/reader/media/token",
   "/api/reader/purchases/claim",
 ]);
 const PUBLIC_API_PREFIXES = ["/api/webhook"];

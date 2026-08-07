@@ -6,10 +6,14 @@ const READER_TOKEN_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 export interface ReaderTokenInput {
   principalId: string;
   tenantId: string;
+  principalType?: "firebase_uid";
 }
 
-export interface ReaderTokenClaims extends ReaderTokenInput {
+export interface ReaderTokenClaims {
+  principalId: string;
+  tenantId: string;
   scope: readonly ["media:read"];
+  principalType: "firebase_uid" | "legacy";
 }
 
 export async function signReaderToken(
@@ -28,6 +32,7 @@ export async function signReaderToken(
   return new SignJWT({
       tenantId: input.tenantId,
       scope: ["media:read"],
+      ...(input.principalType ? { principalType: input.principalType } : {}),
   })
     .setProtectedHeader({
       alg: READER_TOKEN_ALGORITHM,
@@ -63,7 +68,9 @@ export async function verifyReaderToken(
     typeof payload.tenantId !== "string" ||
     !Array.isArray(payload.scope) ||
     payload.scope.length !== 1 ||
-    payload.scope[0] !== "media:read"
+    payload.scope[0] !== "media:read" ||
+    (payload.principalType !== undefined &&
+      payload.principalType !== "firebase_uid")
   ) {
     throw new Error("Reader token claims are malformed.");
   }
@@ -71,6 +78,8 @@ export async function verifyReaderToken(
   return {
     principalId: payload.sub,
     tenantId: payload.tenantId,
+    principalType:
+      payload.principalType === "firebase_uid" ? "firebase_uid" : "legacy",
     scope: ["media:read"],
   };
 }
@@ -91,10 +100,19 @@ function resolveReaderTokenConfiguration(source: NodeJS.ProcessEnv) {
 }
 
 function validateInput(input: ReaderTokenInput): void {
-  for (const [name, value] of Object.entries(input)) {
+  for (const [name, value] of Object.entries({
+    principalId: input.principalId,
+    tenantId: input.tenantId,
+  })) {
     if (typeof value !== "string" || !value.trim()) {
       throw new TypeError(`Reader token ${name} is required.`);
     }
+  }
+  if (
+    input.principalType !== undefined &&
+    input.principalType !== "firebase_uid"
+  ) {
+    throw new TypeError("Reader token principalType is invalid.");
   }
 }
 
