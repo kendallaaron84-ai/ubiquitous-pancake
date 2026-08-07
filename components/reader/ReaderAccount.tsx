@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -21,6 +20,27 @@ export function ReaderAccount({
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [openingAssetId, setOpeningAssetId] = useState<string | null>(null);
+
+  async function openPublication(assetId: string) {
+    setError(null);
+    setOpeningAssetId(assetId);
+    try {
+      const response = await fetch("/api/reader/media/handoff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assetId }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || typeof payload.launchUrl !== "string") {
+        setError(payload.error || "KOBA-I could not open this publication.");
+        return;
+      }
+      window.location.assign(payload.launchUrl);
+    } finally {
+      setOpeningAssetId(null);
+    }
+  }
 
   async function logout() {
     const response = await fetch("/api/reader/logout", { method: "POST" });
@@ -105,10 +125,12 @@ export function ReaderAccount({
                 ) : null}
                 {publication.publicationUrl ? (
                   <Button
-                    asChild
+                    type="button"
+                    onClick={() => openPublication(publication.assetId)}
+                    disabled={openingAssetId === publication.assetId}
                     className="w-full bg-[#ef7a2e] text-black hover:bg-[#f4934f]"
                   >
-                    <Link href={publication.publicationUrl}>Open publication</Link>
+                    {openingAssetId === publication.assetId ? "Opening…" : "Open publication"}
                   </Button>
                 ) : (
                   <p className="rounded-md bg-white/5 px-3 py-2 text-center text-xs text-slate-300">
