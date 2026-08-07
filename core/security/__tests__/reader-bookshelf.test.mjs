@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { establishReaderIdentity } from "../reader-auth.ts";
-import { listReaderBookshelf } from "../reader-bookshelf.ts";
+import { loadReaderBookshelf, listReaderBookshelf } from "../reader-bookshelf.ts";
 import { claimPendingPurchase } from "../services/purchase-claim-service.ts";
 import { recordPaidStripePurchase } from "../services/purchase-service.ts";
 import { createMemoryDb } from "./reader-platform-test-harness.mjs";
@@ -123,6 +123,7 @@ test("Bookshelf deduplicates an asset and exposes only its safe publication proj
 test("new verified readers receive an empty Bookshelf and inactive readers fail closed", async () => {
   const emptyDb = createMemoryDb({ "reader_profiles/new_uid": activeReader });
   assert.deepEqual(await listReaderBookshelf(emptyDb, "new_uid"), []);
+  assert.equal(emptyDb.metrics.batchGets, 0);
 
   const disabledDb = createMemoryDb({
     "reader_profiles/disabled_uid": { ...activeReader, accountStatus: "disabled" },
@@ -131,6 +132,30 @@ test("new verified readers receive an empty Bookshelf and inactive readers fail 
     () => listReaderBookshelf(disabledDb, "disabled_uid"),
     /READER_ACCOUNT_NOT_ACTIVE/
   );
+});
+
+test("Bookshelf joins 50 product records in one batch without N+1 document reads", async () => {
+  const seed = { "reader_profiles/reader_uid": activeReader };
+  for (let index = 1; index <= 50; index += 1) {
+    const assetId = `abk_scale_${String(index).padStart(2, "0")}`;
+    seed[`reader_entitlements/entitlement_${index}`] = {
+      readerUid: "reader_uid",
+      tenantId: "studio_a",
+      assetId,
+      status: "active",
+    };
+    seed[`products/${assetId}`] = publishedProduct({ title: `Book ${index}` });
+  }
+  const db = createMemoryDb(seed);
+
+  const result = await loadReaderBookshelf(db, "reader_uid");
+
+  assert.equal(result.publications.length, 50);
+  assert.equal(result.timings.productMetadataBatchCount, 1);
+  assert.equal(db.metrics.batchGets, 1);
+  assert.equal(db.metrics.batchDocuments, 50);
+  assert.equal(db.metrics.documentGets, 1);
+  assert.equal(db.metrics.queryGets, 1);
 });
 
 test("Phase 5A identity through Phase 5B claim appears in the Phase 5C Bookshelf", async () => {
@@ -188,8 +213,7 @@ test("the reader account page owns session resolution and Bookshelf loading on t
     "utf8"
   );
 
-  assert.match(page, /resolveReaderIdentitySession/);
-  assert.match(page, /listReaderBookshelf\(services\.db, reader\.readerUid\)/);
+  assert.match(page, /loadReaderBookshelfPageData/);
   assert.match(page, /redirect\("\/reader\/signin\?next=\/reader\/account"\)/);
   assert.doesNotMatch(component, /collection\(|\/api\/products|\/api\/studio|\/api\/agent/);
 });

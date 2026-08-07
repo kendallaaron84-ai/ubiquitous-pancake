@@ -6,11 +6,8 @@ import {
   FirebaseAdminConfigurationError,
   getFirebaseAdminServices,
 } from "@/core/firebase-admin";
-import {
-  ReaderAuthError,
-  resolveReaderIdentitySession,
-} from "@/core/security/reader-auth";
-import { listReaderBookshelf } from "@/core/security/reader-bookshelf";
+import { ReaderAuthError } from "@/core/security/reader-auth";
+import { loadReaderBookshelfPageData } from "@/core/security/reader-bookshelf-loader";
 import {
   parseReaderSessionCookie,
   READER_SESSION_COOKIE,
@@ -22,25 +19,18 @@ export default async function ReaderAccountPage() {
   try {
     const services = getFirebaseAdminServices();
     const cookieStore = await cookies();
-    const reader = await resolveReaderIdentitySession(
+    const pageData = await loadReaderBookshelfPageData(
       services.db,
       parseReaderSessionCookie(cookieStore.get(READER_SESSION_COOKIE)?.value)
     );
-    const publications = await listReaderBookshelf(services.db, reader.readerUid);
 
     return (
       <ReaderAccount
         reader={{
-          email:
-            typeof reader.profile.email === "string"
-              ? reader.profile.email
-              : null,
-          displayName:
-            typeof reader.profile.displayName === "string"
-              ? reader.profile.displayName
-              : null,
+          email: pageData.reader.email,
+          displayName: pageData.reader.displayName,
         }}
-        publications={publications}
+        publications={pageData.publications}
       />
     );
   } catch (error: unknown) {
