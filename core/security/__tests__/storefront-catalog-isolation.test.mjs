@@ -119,3 +119,9 @@ test("the public API derives the tenant from a bearer site credential and tenant
   assert.doesNotMatch(route, /headers\.get\("x-studio-key"\)/i);
   assert.match(route, /resolveStorefrontAuthorization/);
 });
+
+test("the authenticated catalog API is not exposed through wildcard browser CORS", async () => {
+  const route = await readFile(new URL("../../../app/api/products/public/route.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(route, /Access-Control-Allow-Origin/i);
+  assert.doesNotMatch(route, /export\s+async\s+function\s+OPTIONS/);
+});

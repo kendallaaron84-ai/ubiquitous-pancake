@@ -15,16 +15,6 @@ import { verifyStorefrontSiteToken } from "@/core/security/storefront-site-token
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type",
-};
-
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
-}
-
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -108,7 +98,7 @@ export async function GET(request: Request) {
       products,
       books: products,
       content: [],
-    }, { status: 200, headers: CORS_HEADERS });
+    }, { status: 200 });
   } catch (error) {
     if (error instanceof StorefrontAuthorizationError) {
       return failure(error.status, error.code, error.publicMessage);
@@ -157,5 +147,5 @@ function clean(value: unknown): string {
 }
 
 function failure(status: number, code: string, error: string) {
-  return NextResponse.json({ success: false, code, error }, { status, headers: CORS_HEADERS });
+  return NextResponse.json({ success: false, code, error }, { status });
 }

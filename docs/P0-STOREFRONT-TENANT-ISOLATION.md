@@ -20,6 +20,8 @@ verified WordPress connection
 
 The StudioKey remains in WordPress only for the existing activation protocol. It is no longer accepted by the public catalog as authorization. Shortcode `scope="global"` is only a request; the server grants it solely when the verified license has `platformGlobalCatalogAuthority: true` or the explicit `platform_global_catalog` entitlement.
 
+`GET /api/products/public` no longer advertises wildcard browser CORS. Plugin 6.0.8 calls the endpoint only from its server-side, same-origin WordPress proxy. Repository-wide consumer tracing found no remaining browser-direct caller, and older StudioKey-header callers are intentionally incompatible with the authenticated endpoint.
+
 Story World sites additionally require the product deployment's `websiteConnectionId` to match the verified Story World connection. Type filters can only remove results.
 
 ## Blast radius
