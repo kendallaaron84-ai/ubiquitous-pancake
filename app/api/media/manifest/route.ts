@@ -1,7 +1,6 @@
 import { adminDb, adminStorage } from "@/core/firebase-admin";
 import { createCorsHeaders } from "@/core/security/cors";
-import { signReaderToken, verifyReaderToken } from "@/core/security/reader-token";
-import { readerAccessKeyId } from "@/core/security/reader-access";
+import { verifyReaderToken } from "@/core/security/reader-token";
 import { requireAuthorizedAuthorIdentity } from "@/core/security/author-identity";
 import {
   authorizeAnonymousFreeMedia,
@@ -9,8 +8,11 @@ import {
   buildProtectedPublicationChapters,
   ReaderMediaAuthorizationError,
 } from "@/core/security/reader-media-authorization";
+import {
+  requireCanonicalReaderMediaPrincipal,
+  UnsupportedReaderMediaPrincipalError,
+} from "@/core/security/reader-media-principal";
 import { NextResponse } from "next/server";
-import { decodeJwt } from "jose";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -186,7 +188,6 @@ export async function GET(request: Request) {
       console.warn("Serving a legacy publication without an identity registry link.", { assetKey, tenantKey });
     }
     const price = Number(data.price ?? data.unitPrice ?? 0);
-    let renewedReaderSession: Record<string, unknown> | null = null;
     const authorization = request.headers.get("authorization") || "";
     const readerToken = authorization.startsWith("Bearer ")
       ? authorization.slice(7).trim()
@@ -214,6 +215,18 @@ export async function GET(request: Request) {
         },
         { status: 401, headers }
       );
+    }
+
+    try {
+      requireCanonicalReaderMediaPrincipal(claims);
+    } catch (error: unknown) {
+      if (error instanceof UnsupportedReaderMediaPrincipalError) {
+        return NextResponse.json(
+          { success: false, code: error.code, error: error.message },
+          { status: error.status, headers }
+        );
+      }
+      throw error;
     }
 
     if (claims.tenantId !== tenantKey) {
@@ -280,82 +293,6 @@ export async function GET(request: Request) {
         }
         throw error;
       }
-    } else {
-      // Explicit version-0 compatibility. Tokens without the firebase_uid
-      // marker remain on the legacy phone-derived entitlement path until 5F.
-      const identityHashSecret = process.env.KOBA_IDENTITY_HASH_SECRET?.trim();
-      if (!identityHashSecret) {
-        throw new Error("READER_SECURITY_CONFIGURATION_MISSING");
-      }
-      const accessKey = readerAccessKeyId(
-        identityHashSecret,
-        claims.tenantId,
-        claims.principalId,
-        assetKey
-      );
-      const accessSnapshot = await adminDb
-        .collection("reader_access_keys")
-        .doc(accessKey)
-        .get();
-      const access = accessSnapshot.data() || {};
-      if (
-        !accessSnapshot.exists ||
-        access.status !== "active" ||
-        access.tenantId !== tenantKey ||
-        access.principalId !== claims.principalId ||
-        access.assetKey !== assetKey ||
-        typeof access.entitlementId !== "string"
-      ) {
-        return NextResponse.json(
-          {
-            success: false,
-            code: "ASSET_NOT_OWNED",
-            error: "This reader does not own the requested publication.",
-          },
-          { status: 403, headers }
-        );
-      }
-
-      const entitlementSnapshot = await adminDb
-        .collection("entitlements")
-        .doc(access.entitlementId)
-        .get();
-      const entitlement = entitlementSnapshot.data() || {};
-      if (
-        !entitlementSnapshot.exists ||
-        entitlement.status !== "active" ||
-        entitlement.assetKey !== assetKey ||
-        (entitlement.tenantKey || entitlement.studioKey) !== tenantKey ||
-        entitlement.principalId !== claims.principalId ||
-        !entitlement.stripeSessionId
-      ) {
-        return NextResponse.json(
-          {
-            success: false,
-            code: "ASSET_NOT_OWNED",
-            error: "An active purchase entitlement was not found.",
-          },
-          { status: 403, headers }
-        );
-      }
-
-      const legacyClaims = decodeJwt(readerToken);
-      const legacyLifetimeSeconds =
-        typeof legacyClaims.exp === "number" && typeof legacyClaims.iat === "number"
-          ? legacyClaims.exp - legacyClaims.iat
-          : 0;
-      if (legacyLifetimeSeconds > 0 && legacyLifetimeSeconds <= 24 * 60 * 60) {
-        const renewedToken = await signReaderToken({
-          principalId: claims.principalId,
-          tenantId: claims.tenantId,
-        });
-        const renewedExpiration = decodeJwt(renewedToken).exp;
-        renewedReaderSession = {
-          readerToken: renewedToken,
-          tenantId: claims.tenantId,
-          expiresAt: renewedExpiration ? renewedExpiration * 1000 : null,
-        };
-      }
     }
 
     const type = cleanString(data.type || data.assetType || data.mediaType).toLowerCase() ||
@@ -388,7 +325,6 @@ export async function GET(request: Request) {
         mode: "authorized-publication",
         products: [product],
         books: [product],
-        readerSession: renewedReaderSession,
       },
       { status: 200, headers }
     );
