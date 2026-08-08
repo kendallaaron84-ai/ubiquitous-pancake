@@ -16,6 +16,9 @@ type FormState = {
 type ProvisionFormState = {
   authorName: string;
   authorEmail: string;
+  hasAudiobookPlayer: boolean;
+  hasEreader: boolean;
+  deferWelcome: boolean;
 };
 
 const EMPTY_FORM: FormState = {
@@ -28,6 +31,9 @@ const EMPTY_FORM: FormState = {
 const EMPTY_PROVISION_FORM: ProvisionFormState = {
   authorName: "",
   authorEmail: "",
+  hasAudiobookPlayer: true,
+  hasEreader: false,
+  deferWelcome: true,
 };
 
 export default function AdminConnectionsPage() {
@@ -39,6 +45,7 @@ export default function AdminConnectionsPage() {
   const [provisionedAuthor, setProvisionedAuthor] = useState<{
     studioKey: string;
     welcomeEmailSent: boolean;
+    welcomeEmailStatus: "pending" | "deferred" | "sending" | "sent" | "failed";
     message: string;
   } | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
@@ -75,6 +82,10 @@ export default function AdminConnectionsPage() {
 
   async function provisionAuthor(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    await submitAuthorProvisioning(provisionForm.deferWelcome ? "defer" : "send");
+  }
+
+  async function submitAuthorProvisioning(welcomeDelivery: "send" | "defer") {
     if (isProvisioning) return;
 
     setIsProvisioning(true);
@@ -86,7 +97,13 @@ export default function AdminConnectionsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify(provisionForm),
+        body: JSON.stringify({
+          authorName: provisionForm.authorName,
+          authorEmail: provisionForm.authorEmail,
+          hasAudiobookPlayer: provisionForm.hasAudiobookPlayer,
+          hasEreader: provisionForm.hasEreader,
+          welcomeDelivery,
+        }),
       });
       const payload = (await response.json().catch(() => null)) as
         | {
@@ -95,6 +112,7 @@ export default function AdminConnectionsPage() {
             message?: string;
             studioKey?: string;
             welcomeEmailSent?: boolean;
+            welcomeEmailStatus?: "pending" | "deferred" | "sending" | "sent" | "failed";
           }
         | null;
 
@@ -105,6 +123,7 @@ export default function AdminConnectionsPage() {
       setProvisionedAuthor({
         studioKey: payload.studioKey,
         welcomeEmailSent: payload.welcomeEmailSent === true,
+        welcomeEmailStatus: payload.welcomeEmailStatus || "pending",
         message: payload.message || "The author workspace is ready.",
       });
       setForm((current) => ({ ...current, studioKey: payload.studioKey || "" }));
@@ -117,6 +136,10 @@ export default function AdminConnectionsPage() {
     } finally {
       setIsProvisioning(false);
     }
+  }
+
+  async function sendDeferredWelcome() {
+    await submitAuthorProvisioning("send");
   }
 
   function continueToConnection() {
@@ -222,6 +245,35 @@ export default function AdminConnectionsPage() {
                 />
               </div>
 
+              <fieldset className="mt-5 rounded-xl border border-[#5b6d9e] bg-[#151d35]/70 p-4">
+                <legend className="px-1 text-sm font-semibold text-white">Approved capabilities</legend>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <ProvisionCheckbox
+                    label="Audiobook player"
+                    checked={provisionForm.hasAudiobookPlayer}
+                    onChange={(checked) => setProvisionForm((current) => ({ ...current, hasAudiobookPlayer: checked }))}
+                  />
+                  <ProvisionCheckbox
+                    label="E-reader"
+                    checked={provisionForm.hasEreader}
+                    onChange={(checked) => setProvisionForm((current) => ({ ...current, hasEreader: checked }))}
+                  />
+                </div>
+              </fieldset>
+
+              <label className="mt-5 flex items-start gap-3 rounded-xl border border-[#EFB752]/20 bg-[#151d35]/70 p-4 text-sm text-slate-100">
+                <input
+                  type="checkbox"
+                  checked={provisionForm.deferWelcome}
+                  onChange={(event) => setProvisionForm((current) => ({ ...current, deferWelcome: event.target.checked }))}
+                  className="mt-0.5 h-4 w-4 accent-[#EFB752]"
+                />
+                <span>
+                  <strong className="block text-white">Defer welcome package</strong>
+                  Create or recover the workspace now. Send the author&apos;s welcome only after site setup is complete.
+                </span>
+              </label>
+
               {provisionError ? (
                 <div role="alert" className="mt-5 rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
                   {provisionError}
@@ -238,7 +290,9 @@ export default function AdminConnectionsPage() {
                       <p className="mt-2 text-xs text-emerald-50/80">
                         {provisionedAuthor.welcomeEmailSent
                           ? "The welcome package was sent to the author."
-                          : "The workspace is ready, but the welcome email was not confirmed."}
+                          : provisionedAuthor.welcomeEmailStatus === "deferred"
+                            ? "The workspace is ready. Welcome delivery is deferred."
+                            : "The workspace is ready, but the welcome email was not confirmed."}
                       </p>
                     </div>
                   </div>
@@ -250,6 +304,17 @@ export default function AdminConnectionsPage() {
                     <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
                     Continue to WordPress connection
                   </button>
+                  {provisionedAuthor.welcomeEmailStatus === "deferred" ? (
+                    <button
+                      type="button"
+                      disabled={isProvisioning}
+                      onClick={sendDeferredWelcome}
+                      className="ml-2 mt-4 inline-flex items-center gap-2 rounded-lg border border-[#EFB752]/40 bg-[#EFB752]/10 px-3 py-2 text-xs font-bold text-[#FFE5A3] transition hover:bg-[#EFB752]/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isProvisioning ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
+                      Send welcome package now
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -355,7 +420,7 @@ function ProvisionField({
   type = "text",
   autoComplete,
 }: {
-  id: keyof ProvisionFormState;
+  id: "authorName" | "authorEmail";
   label: string;
   value: string;
   placeholder: string;
@@ -377,6 +442,28 @@ function ProvisionField({
         onChange={(event) => onChange(event.target.value)}
         className="w-full rounded-lg border border-[#5b6d9e] bg-[#151d35] px-3 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-[#EFB752] focus:ring-2 focus:ring-[#EFB752]/30"
       />
+    </label>
+  );
+}
+
+function ProvisionCheckbox({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange(checked: boolean): void;
+}) {
+  return (
+    <label className="flex items-center gap-3 text-sm text-slate-100">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="h-4 w-4 accent-[#EFB752]"
+      />
+      {label}
     </label>
   );
 }

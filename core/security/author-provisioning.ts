@@ -8,6 +8,8 @@ import { adminDb } from "@/core/firebase-admin";
 import { sendWelcomePackage } from "@/core/messaging/mailer";
 
 export type AuthorProvisioningSource = "stripe_plugin_purchase" | "manual_owner";
+export type WelcomeDeliveryIntent = "send" | "defer";
+export type WelcomeEmailStatus = "pending" | "deferred" | "sending" | "sent" | "failed";
 
 export interface AuthorProvisioningInput {
   authorName: string;
@@ -21,12 +23,14 @@ export interface AuthorProvisioningInput {
   stripeCustomerId?: string | null;
   productId?: string | null;
   productName?: string | null;
+  welcomeDelivery?: WelcomeDeliveryIntent;
 }
 
 export interface AuthorProvisioningResult {
   studioKey: string;
   created: boolean;
   welcomeEmailSent: boolean;
+  welcomeEmailStatus: WelcomeEmailStatus;
 }
 
 interface ProvisioningState {
@@ -65,6 +69,7 @@ export async function provisionAuthorPlugin(
   const authorName = normalizeName(input.authorName);
   const authorEmail = normalizeEmail(input.authorEmail);
   const idempotencyKey = input.idempotencyKey.trim();
+  const welcomeDelivery = input.welcomeDelivery ?? "send";
   if (!authorName) throw new Error("The author name is required.");
   if (!EMAIL_PATTERN.test(authorEmail)) throw new Error("A valid author email is required.");
   if (!idempotencyKey) throw new Error("A provisioning idempotency key is required.");
@@ -72,7 +77,6 @@ export async function provisionAuthorPlugin(
     throw new Error("At least one plugin entitlement is required.");
   }
 
-  const pluginDownloadUrl = resolvePluginDownloadUrl();
   const provisionId = createHash("sha256")
     .update(`${input.source}:${idempotencyKey}`)
     .digest("hex");
@@ -119,6 +123,10 @@ export async function provisionAuthorPlugin(
         : "audiobook_plugin";
     const timestamp = FieldValue.serverTimestamp();
 
+    const welcomeEmailStatus: WelcomeEmailStatus = welcomeDelivery === "defer"
+      ? "deferred"
+      : "pending";
+
     transaction.create(licenseRef, {
       key: studioKey,
       studioKey,
@@ -144,7 +152,7 @@ export async function provisionAuthorPlugin(
       productId: nullableString(input.productId),
       productName: nullableString(input.productName),
       associatedWebsite: null,
-      welcomeEmailStatus: "pending",
+      welcomeEmailStatus,
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -181,15 +189,80 @@ export async function provisionAuthorPlugin(
       provisionId,
       studioKey,
       authorEmail,
+      authorName,
       source: input.source,
       idempotencyKeyHash: provisionId,
-      welcomeEmailStatus: "pending",
+      welcomeEmailStatus,
       createdAt: timestamp,
       updatedAt: timestamp,
     });
 
     return { studioKey, created: true };
   });
+
+  if (welcomeDelivery === "defer") {
+    const welcomeEmailStatus = await deferProvisionedAuthorWelcome(
+      provisionRef,
+      licenseResult.studioKey,
+    );
+    return {
+      ...licenseResult,
+      welcomeEmailSent: welcomeEmailStatus === "sent",
+      welcomeEmailStatus,
+    };
+  }
+
+  return deliverProvisionedAuthorWelcome({
+    provisionRef,
+    authorEmail,
+    authorName,
+    studioKey: licenseResult.studioKey,
+    licenseResult,
+  });
+}
+
+async function deferProvisionedAuthorWelcome(
+  provisionRef: FirebaseFirestore.DocumentReference,
+  studioKey: string,
+): Promise<WelcomeEmailStatus> {
+  let status: WelcomeEmailStatus = "deferred";
+  await adminDb.runTransaction(async (transaction: any) => {
+    const snapshot = await transaction.get(provisionRef);
+    if (!snapshot.exists) throw new Error("Provisioning state was not created.");
+    const data = snapshot.data() as ProvisioningState;
+    const currentStatus = normalizeWelcomeEmailStatus(data.welcomeEmailStatus);
+    if (currentStatus === "sent") {
+      status = "sent";
+      return;
+    }
+    const leaseExpiresAt = Number(data.welcomeEmailLeaseExpiresAt) || 0;
+    if (currentStatus === "sending" && leaseExpiresAt > Date.now()) {
+      status = "sending";
+      return;
+    }
+    const timestamp = FieldValue.serverTimestamp();
+    transaction.update(provisionRef, {
+      welcomeEmailStatus: "deferred",
+      welcomeEmailLeaseExpiresAt: null,
+      updatedAt: timestamp,
+    });
+    transaction.set(adminDb.collection("plugin_licenses").doc(studioKey), {
+      welcomeEmailStatus: "deferred",
+      updatedAt: timestamp,
+    }, { merge: true });
+  });
+  return status;
+}
+
+async function deliverProvisionedAuthorWelcome(input: {
+  provisionRef: FirebaseFirestore.DocumentReference;
+  authorEmail: string;
+  authorName: string;
+  studioKey: string;
+  licenseResult: { studioKey: string; created: boolean };
+}): Promise<AuthorProvisioningResult> {
+  const pluginDownloadUrl = resolvePluginDownloadUrl();
+  const { provisionRef, authorEmail, authorName, studioKey, licenseResult } = input;
 
   const emailClaimId = randomUUID();
   const shouldSendEmail = await adminDb.runTransaction(async (transaction: any) => {
@@ -217,6 +290,9 @@ export async function provisionAuthorPlugin(
     return {
       ...licenseResult,
       welcomeEmailSent: currentState.data()?.welcomeEmailStatus === "sent",
+      welcomeEmailStatus: normalizeWelcomeEmailStatus(
+        currentState.data()?.welcomeEmailStatus,
+      ),
     };
   }
 
@@ -224,7 +300,7 @@ export async function provisionAuthorPlugin(
     const mailResult = await sendWelcomePackage({
       toEmail: authorEmail,
       authorName,
-      studioKey: licenseResult.studioKey,
+      studioKey,
       pluginDownloadUrl,
     });
     const timestamp = FieldValue.serverTimestamp();
@@ -236,14 +312,14 @@ export async function provisionAuthorPlugin(
         welcomeEmailLeaseExpiresAt: null,
         updatedAt: timestamp,
       }, { merge: true }),
-      adminDb.collection("plugin_licenses").doc(licenseResult.studioKey).set({
+      adminDb.collection("plugin_licenses").doc(studioKey).set({
         welcomeEmailStatus: "sent",
         welcomeEmailMessageId: mailResult.messageId,
         welcomeEmailSentAt: timestamp,
         updatedAt: timestamp,
       }, { merge: true }),
     ]);
-    return { ...licenseResult, welcomeEmailSent: true };
+    return { ...licenseResult, welcomeEmailSent: true, welcomeEmailStatus: "sent" };
   } catch (error) {
     const timestamp = FieldValue.serverTimestamp();
     await Promise.all([
@@ -253,13 +329,19 @@ export async function provisionAuthorPlugin(
         welcomeEmailLeaseExpiresAt: null,
         updatedAt: timestamp,
       }, { merge: true }),
-      adminDb.collection("plugin_licenses").doc(licenseResult.studioKey).set({
+      adminDb.collection("plugin_licenses").doc(studioKey).set({
         welcomeEmailStatus: "failed",
         updatedAt: timestamp,
       }, { merge: true }),
     ]);
     throw error;
   }
+}
+
+function normalizeWelcomeEmailStatus(value: unknown): WelcomeEmailStatus {
+  return value === "deferred" || value === "sending" || value === "sent" || value === "failed"
+    ? value
+    : "pending";
 }
 
 function generateStudioKey(): string {
