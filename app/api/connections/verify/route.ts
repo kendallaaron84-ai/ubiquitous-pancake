@@ -1,5 +1,4 @@
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
-import { GoogleAuth } from "google-auth-library";
 import { createHash } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { cookies } from "next/headers";
@@ -27,6 +26,10 @@ import {
   type VerifiedWordPressConnection,
   type WordPressConnectionDiagnosticCode,
 } from "@/core/security/wordpress-connection";
+import {
+  resolveWordPressGatewayUrl,
+  verifyAndProvisionThroughGateway,
+} from "@/core/security/wordpress-egress-gateway";
 import { BlogConnectionError } from "@/core/security/blog-connection";
 import {
   persistVerifiedPluginWebsite,
@@ -38,18 +41,6 @@ export const runtime = "nodejs";
 export const maxDuration = 20;
 
 let secretManagerClient: SecretManagerServiceClient | null = null;
-let gatewayAuthClient: GoogleAuth | null = null;
-const DEFAULT_PRODUCTION_WORDPRESS_GATEWAY =
-  "https://wordpress-egress-gateway-prod-aoosgrwosq-uc.a.run.app";
-
-interface WordPressGatewayResponse {
-  success?: boolean;
-  code?: string;
-  error?: string;
-  targetWpOrigin?: string;
-  wpUsername?: string;
-  secretCredentialRef?: string;
-}
 
 function getSecretManagerClient(): SecretManagerServiceClient {
   if (secretManagerClient) return secretManagerClient;
@@ -84,158 +75,6 @@ function getSecretManagerClient(): SecretManagerServiceClient {
   });
 
   return secretManagerClient;
-}
-
-function getGatewayAuthClient(): GoogleAuth {
-  if (gatewayAuthClient) return gatewayAuthClient;
-
-  const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY
-    ?.replace(/\\n/g, "\n")
-    .trim();
-
-  if (!projectId || !clientEmail || !privateKey) {
-    throw new Error("Cloud Run gateway authentication is not configured.");
-  }
-
-  gatewayAuthClient = new GoogleAuth({
-    projectId,
-    credentials: {
-      client_email: clientEmail,
-      private_key: privateKey,
-    },
-  });
-
-  return gatewayAuthClient;
-}
-
-function resolveWordPressGatewayUrl(): string {
-  const configured =
-    process.env.WORDPRESS_EGRESS_GATEWAY_URL?.trim() ||
-    (process.env.NODE_ENV === "production"
-      ? DEFAULT_PRODUCTION_WORDPRESS_GATEWAY
-      : "");
-  if (!configured) return "";
-
-  let parsed: URL;
-  try {
-    parsed = new URL(configured);
-  } catch {
-    throw new Error("WORDPRESS_EGRESS_GATEWAY_URL is invalid.");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.username ||
-    parsed.password ||
-    parsed.search ||
-    parsed.hash
-  ) {
-    throw new Error(
-      "WORDPRESS_EGRESS_GATEWAY_URL must be a public HTTPS service URL."
-    );
-  }
-  return parsed.origin;
-}
-
-async function verifyAndProvisionThroughGateway(
-  gatewayUrl: string,
-  input: {
-    studioKey: string;
-    websiteConnectionId: string;
-    targetWpOrigin: unknown;
-    wpUsername: unknown;
-    wpAppPassword: unknown;
-  }
-): Promise<VerifiedWordPressConnection> {
-  let gatewayResponse: {
-    status: number;
-    data: WordPressGatewayResponse;
-  };
-
-  try {
-    const authenticatedClient =
-      await getGatewayAuthClient().getIdTokenClient(gatewayUrl);
-    const response = await authenticatedClient.request<WordPressGatewayResponse>(
-      {
-        url: `${gatewayUrl}/verify-wordpress`,
-        method: "POST",
-        data: input,
-        timeout: 20_000,
-        validateStatus: () => true,
-      }
-    );
-    gatewayResponse = {
-      status: response.status,
-      data: response.data || {},
-    };
-  } catch (error: unknown) {
-    console.error("[WordPress Connection] Egress gateway request failed.", {
-      name: error instanceof Error ? error.name : "UnknownError",
-      message: error instanceof Error ? error.message : String(error),
-    });
-    throw new WordPressConnectionDiagnosticError(
-      "NETWORK_TIMEOUT_TLS",
-      "KOBA-I could not reach the secure WordPress connection service. Please retry."
-    );
-  }
-
-  const payload = gatewayResponse.data;
-  if (gatewayResponse.status < 200 || gatewayResponse.status >= 300) {
-    const gatewayCode = clean(payload.code);
-    const publicMessage =
-      clean(payload.error) ||
-      "KOBA-I could not complete the secure WordPress connection.";
-    const diagnosticCodes = new Set<WordPressConnectionDiagnosticCode>([
-      "INVALID_CREDENTIALS",
-      "INSUFFICIENT_PERMISSIONS",
-      "FIREWALL_CHALLENGE",
-      "NETWORK_TIMEOUT_TLS",
-      "REST_API_DISABLED",
-      "VAULT_PROVISION_FAIL",
-    ]);
-
-    if (
-      diagnosticCodes.has(gatewayCode as WordPressConnectionDiagnosticCode)
-    ) {
-      throw new WordPressConnectionDiagnosticError(
-        gatewayCode as WordPressConnectionDiagnosticCode,
-        publicMessage,
-        { httpStatus: gatewayResponse.status }
-      );
-    }
-    if (gatewayResponse.status === 401 || gatewayResponse.status === 403) {
-      throw new WordPressConnectionDiagnosticError(
-        "VAULT_PROVISION_FAIL",
-        "KOBA-I could not authorize the secure WordPress connection service. Please retry."
-      );
-    }
-    throw new Error(publicMessage);
-  }
-
-  const targetWpOrigin = clean(payload.targetWpOrigin);
-  const wpUsername = clean(payload.wpUsername);
-  const secretCredentialRef = clean(payload.secretCredentialRef);
-  if (
-    payload.success !== true ||
-    !targetWpOrigin ||
-    !wpUsername ||
-    !/^projects\/[0-9]+\/secrets\/WP_CREDS_[A-Za-z0-9_-]+\/versions\/latest$/.test(
-      secretCredentialRef
-    )
-  ) {
-    throw new WordPressConnectionDiagnosticError(
-      "VAULT_PROVISION_FAIL",
-      "Your site was verified, but secure setup returned an incomplete result. Please retry."
-    );
-  }
-
-  return {
-    studioKey: clean(input.studioKey),
-    targetWpOrigin,
-    wpUsername,
-    secretCredentialRef,
-  };
 }
 
 type AuthorRecord = Record<string, unknown>;

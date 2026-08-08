@@ -1,8 +1,6 @@
 import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
 
-import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
-import { FieldValue } from "firebase-admin/firestore";
 import { cookies } from "next/headers";
 
 import { adminDb } from "@/core/firebase-admin";
@@ -12,73 +10,88 @@ import {
   verifyDashboardSession,
 } from "@/core/security/dashboard-session";
 import {
-  createConnectionRegistrationHandlers,
+  createModernConnectionRegistrationHandlers,
   type ConnectionRegistrationConfiguration,
-} from "./handler";
+} from "./modern-handler";
+import {
+  assertWebsiteCapacityAndUniqueness,
+  websiteConnectionIdForOrigin,
+} from "@/core/nexus/website-connections";
+import { persistVerifiedPluginWebsite } from "@/core/security/plugin-site-grant-persistence";
+import {
+  resolveWordPressGatewayUrl,
+  verifyAndProvisionThroughGateway,
+} from "@/core/security/wordpress-egress-gateway";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 20;
 
-const DEV_SECRET_PROJECT_ID = "jubilee-command-center---dev";
-const DEV_SECRET_PROJECT_NUMBER = "751521788548";
-const DEV_WORKER_SERVICE_ACCOUNT =
-  "content-worker-dev@jubilee-command-center---dev.iam.gserviceaccount.com";
-
-const secretManager = new SecretManagerServiceClient({
-  projectId: process.env.FIREBASE_PROJECT_ID?.trim(),
-  credentials: {
-    client_email: process.env.FIREBASE_CLIENT_EMAIL?.trim(),
-    private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n").trim(),
-  },
-});
-
-const handlers = createConnectionRegistrationHandlers({
-  db: adminDb,
-  secretManager,
-  serverTimestamp: () => FieldValue.serverTimestamp(),
+const handlers = createModernConnectionRegistrationHandlers({
   loadConfiguration: loadConfiguration,
   readSessionToken: async () =>
     (await cookies()).get(DASHBOARD_SESSION_COOKIE)?.value || null,
   verifySession: (token) =>
     verifyDashboardSession(token, resolveDashboardSessionSecret()),
   resolvePublicHostname,
-  fetchImpl: fetch,
+  resolveAuthorOwnership: async (studioKey) => {
+    const license = await adminDb.collection("plugin_licenses").doc(studioKey).get();
+    if (!license.exists) throw new Error("The author workspace was not found.");
+    const data = license.data() || {};
+    if (String(data.status || "").trim() !== "active") {
+      throw new Error("The author workspace is inactive.");
+    }
+    const storedKey = String(data.studioKey || data.key || "").trim().toUpperCase();
+    if (storedKey && storedKey !== studioKey) throw new Error("The author workspace identity is inconsistent.");
+    const authorId = String(data.authorId || data.authorEmail || "").trim().toLowerCase();
+    if (!authorId) throw new Error("The author workspace owner is unavailable.");
+    return { authorId, primaryUserRef: adminDb.collection("users").doc(authorId) };
+  },
+  websiteConnectionIdForOrigin,
+  assertWebsiteAvailable: async (input) => assertWebsiteCapacityAndUniqueness(adminDb, {
+    studioKey: input.studioKey,
+    authorId: input.authorId,
+    wordpressOrigin: input.wordpressOrigin,
+    excludeId: input.websiteConnectionId,
+    contentRole: input.contentRole,
+  }),
+  verifyAndProvision: async (input) => {
+    const gatewayUrl = resolveWordPressGatewayUrl();
+    if (!gatewayUrl) throw new Error("The secure WordPress connection gateway is not configured.");
+    return verifyAndProvisionThroughGateway(gatewayUrl, input);
+  },
+  persistWebsite: async (input) => persistVerifiedPluginWebsite(adminDb, {
+    studioKey: input.studioKey,
+    authorId: input.authorId,
+    actorEmail: input.actorEmail,
+    firebaseProjectId: input.firebaseProjectId,
+    websiteConnectionId: input.websiteConnectionId,
+    wordpressOrigin: input.wordpressOrigin,
+    wordpressUsername: input.wordpressUsername,
+    secretCredentialRef: input.secretCredentialRef,
+    contentRole: input.contentRole,
+    displayName: input.displayName,
+    defaultUniverseId: null,
+    primaryUserRef: input.primaryUserRef as FirebaseFirestore.DocumentReference | undefined,
+  }),
 });
 
 export const POST = handlers.POST;
 
 function loadConfiguration(): ConnectionRegistrationConfiguration {
-  const secretProjectId =
-    process.env.CONNECTION_SECRET_PROJECT_ID?.trim() ||
-    process.env.CLOUD_TASKS_PROJECT_ID?.trim() ||
-    (process.env.NODE_ENV === "production" ? "" : DEV_SECRET_PROJECT_ID);
-  const secretProjectNumber =
-    process.env.CONNECTION_SECRET_PROJECT_NUMBER?.trim() ||
-    (secretProjectId === DEV_SECRET_PROJECT_ID ? DEV_SECRET_PROJECT_NUMBER : "");
-  const workerServiceAccount =
-    process.env.CONTENT_WORKER_SERVICE_ACCOUNT?.trim() ||
-    (secretProjectId === DEV_SECRET_PROJECT_ID ? DEV_WORKER_SERVICE_ACCOUNT : "");
+  const firebaseProjectId = process.env.FIREBASE_PROJECT_ID?.trim() || "";
   const ownerEmails = splitCsv(process.env.KOBA_OWNER_EMAILS);
   const allowedOrigins = splitCsv(process.env.KOBA_ALLOWED_ORIGINS);
 
-  if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(secretProjectId)) {
-    throw new Error("CONNECTION_SECRET_PROJECT_ID is invalid.");
-  }
-  if (!/^[0-9]{6,20}$/.test(secretProjectNumber)) {
-    throw new Error("CONNECTION_SECRET_PROJECT_NUMBER is invalid.");
-  }
-  if (!workerServiceAccount.endsWith(".iam.gserviceaccount.com")) {
-    throw new Error("CONTENT_WORKER_SERVICE_ACCOUNT is invalid.");
+  if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(firebaseProjectId)) {
+    throw new Error("FIREBASE_PROJECT_ID is invalid.");
   }
   if (ownerEmails.length === 0) {
     throw new Error("KOBA_OWNER_EMAILS must explicitly identify an administrator.");
   }
 
   return {
-    secretProjectId,
-    secretProjectNumber,
-    workerServiceAccount,
+    firebaseProjectId,
     ownerEmails,
     allowedOrigins,
   };
@@ -143,4 +156,3 @@ function splitCsv(value: string | undefined): string[] {
     .map((item) => item.trim())
     .filter(Boolean);
 }
-

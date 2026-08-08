@@ -11,6 +11,7 @@ type FormState = {
   targetWpOrigin: string;
   wpUsername: string;
   wpAppPassword: string;
+  contentRole: "business_brand" | "story_world" | "both";
 };
 
 type ProvisionFormState = {
@@ -26,6 +27,7 @@ const EMPTY_FORM: FormState = {
   targetWpOrigin: "",
   wpUsername: "",
   wpAppPassword: "",
+  contentRole: "both",
 };
 
 const EMPTY_PROVISION_FORM: ProvisionFormState = {
@@ -376,6 +378,22 @@ export default function AdminConnectionsPage() {
                   placeholder="Paste the Application Password"
                   onChange={(value) => setForm((current) => ({ ...current, wpAppPassword: value }))}
                 />
+                <label htmlFor="contentRole" className="grid gap-2 text-sm font-semibold text-white">
+                  Content role
+                  <select
+                    id="contentRole"
+                    value={form.contentRole}
+                    onChange={(event) => setForm((current) => ({
+                      ...current,
+                      contentRole: event.target.value as FormState["contentRole"],
+                    }))}
+                    className="w-full rounded-lg border border-[#5b6d9e] bg-[#151d35] px-3 py-3 text-sm text-white outline-none focus:border-[#f97316] focus:ring-2 focus:ring-[#f97316]/30"
+                  >
+                    <option value="both">Business Brand and Story World</option>
+                    <option value="business_brand">Business Brand</option>
+                    <option value="story_world">Story World</option>
+                  </select>
+                </label>
               </div>
 
               <p className="mt-5 text-xs leading-5 text-slate-300">
