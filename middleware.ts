@@ -56,6 +56,7 @@ const MVP_API_EXACT_PATHS = new Set([
   "/api/generate-blog",
   "/api/checkout/create-session",
   "/api/connections/verify",
+  "/api/author-identities",
 ]);
 
 export async function middleware(request: NextRequest) {
@@ -85,7 +86,7 @@ export async function middleware(request: NextRequest) {
       return MVP_API_EXACT_PATHS.has(pathname)
         ? NextResponse.next()
         : NextResponse.json(
-            { success: false, error: "This API is not available in the MVP workspace." },
+            { success: false, error: "This feature is not available for your account." },
             { status: 404 }
           );
     }
