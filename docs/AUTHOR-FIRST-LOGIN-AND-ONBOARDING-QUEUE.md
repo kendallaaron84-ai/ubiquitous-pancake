@@ -23,7 +23,7 @@ The retired unsigned `/api/auth/activate` boundary returns `410 AUTHOR_ACTIVATIO
 - An expired lease or `failed` delivery can be retried with the same provision/idempotency identity.
 - The SMTP Message-ID is deterministic for the provision.
 - Success updates to the provision and plugin license are committed as one Firestore batch.
-- The unavoidable SMTP-accepted/database-unavailable case remains observable through the deterministic Message-ID and delivery claim; no second messaging system is introduced.
+- After SMTP acceptance, persistence is retried without sending again and the delivery is never downgraded to `failed`. If storage remains unavailable, the request fails while the in-flight lease and deterministic Message-ID preserve evidence; no second messaging system is introduced.
 
 ## Owner queue
 

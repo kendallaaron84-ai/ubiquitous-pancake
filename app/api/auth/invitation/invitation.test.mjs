@@ -79,6 +79,15 @@ test("the dormant unsigned activation boundary is retired", async () => {
   assert.equal(source.includes("request.json"), false);
 });
 
+test("SMTP acceptance is not downgraded to a resendable failure when persistence needs retry", async () => {
+  const source = await readFile(path.join(projectRoot, "core/security/author-provisioning.ts"), "utf8");
+  const acceptedDelivery = source.indexOf("const persistAcceptedDelivery");
+  const deliveryFailure = source.indexOf('welcomeEmailStatus: "failed"');
+  assert.equal(acceptedDelivery > deliveryFailure, true);
+  assert.match(source, /await persistAcceptedDelivery\(\);[\s\S]*await persistAcceptedDelivery\(\);/);
+  assert.match(source, /never downgrade it to `failed`/);
+});
+
 test("authoritative plugin license ownership is required and successful redemption is single use", async () => {
   const token = "B".repeat(43);
   const envelope = createAuthorInvitationEnvelope(Date.now(), token);

@@ -304,8 +304,9 @@ async function deliverProvisionedAuthorWelcome(input: {
     };
   }
 
+  let mailResult: Awaited<ReturnType<typeof sendWelcomePackage>>;
   try {
-    const mailResult = await sendWelcomePackage({
+    mailResult = await sendWelcomePackage({
       toEmail: authorEmail,
       authorName,
       studioKey,
@@ -313,29 +314,13 @@ async function deliverProvisionedAuthorWelcome(input: {
       accountSetupUrl: buildAuthorInvitationUrl(invitation.token),
       deliveryId: provisionRef.id,
     });
-    const timestamp = FieldValue.serverTimestamp();
-    const successBatch = adminDb.batch();
-    successBatch.set(provisionRef, {
-        welcomeEmailStatus: "sent",
-        welcomeEmailMessageId: mailResult.messageId,
-        welcomeEmailSentAt: timestamp,
-        welcomeEmailLeaseExpiresAt: null,
-        updatedAt: timestamp,
-      }, { merge: true });
-    successBatch.set(adminDb.collection("plugin_licenses").doc(studioKey), {
-        welcomeEmailStatus: "sent",
-        welcomeEmailMessageId: mailResult.messageId,
-        welcomeEmailSentAt: timestamp,
-        updatedAt: timestamp,
-      }, { merge: true });
-    await successBatch.commit();
-    return { ...licenseResult, welcomeEmailSent: true, welcomeEmailStatus: "sent" };
   } catch (error) {
     const timestamp = FieldValue.serverTimestamp();
     const failureBatch = adminDb.batch();
     failureBatch.set(provisionRef, {
         welcomeEmailStatus: "failed",
         welcomeEmailError: safeError(error),
+        welcomeEmailClaimId: null,
         welcomeEmailLeaseExpiresAt: null,
         updatedAt: timestamp,
       }, { merge: true });
@@ -346,6 +331,39 @@ async function deliverProvisionedAuthorWelcome(input: {
     await failureBatch.commit();
     throw error;
   }
+
+  const persistAcceptedDelivery = async () => {
+    const timestamp = FieldValue.serverTimestamp();
+    const successBatch = adminDb.batch();
+    successBatch.set(provisionRef, {
+      welcomeEmailStatus: "sent",
+      welcomeEmailMessageId: mailResult.messageId,
+      welcomeEmailSentAt: timestamp,
+      welcomeEmailClaimId: null,
+      welcomeEmailLeaseExpiresAt: null,
+      updatedAt: timestamp,
+    }, { merge: true });
+    successBatch.set(adminDb.collection("plugin_licenses").doc(studioKey), {
+      welcomeEmailStatus: "sent",
+      welcomeEmailMessageId: mailResult.messageId,
+      welcomeEmailSentAt: timestamp,
+      updatedAt: timestamp,
+    }, { merge: true });
+    await successBatch.commit();
+  };
+
+  try {
+    await persistAcceptedDelivery();
+  } catch (firstPersistenceError) {
+    console.error("Welcome SMTP delivery was accepted, but status persistence needs retry.", {
+      provisionId: provisionRef.id,
+      errorName: firstPersistenceError instanceof Error ? firstPersistenceError.name : "UnknownError",
+    });
+    // The SMTP provider already accepted this deterministic delivery. Retry only
+    // the durable write; never downgrade it to `failed` and invite a resend.
+    await persistAcceptedDelivery();
+  }
+  return { ...licenseResult, welcomeEmailSent: true, welcomeEmailStatus: "sent" };
 }
 
 function normalizeWelcomeEmailStatus(value: unknown): WelcomeEmailStatus {
