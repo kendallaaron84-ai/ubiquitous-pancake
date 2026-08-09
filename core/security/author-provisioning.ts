@@ -6,6 +6,7 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { adminDb } from "@/core/firebase-admin";
 import { sendWelcomePackage } from "@/core/messaging/mailer";
+import { buildAuthorInvitationUrl, createAuthorInvitationEnvelope } from "@/core/security/author-invitation";
 
 export type AuthorProvisioningSource = "stripe_plugin_purchase" | "manual_owner";
 export type WelcomeDeliveryIntent = "send" | "defer";
@@ -265,6 +266,7 @@ async function deliverProvisionedAuthorWelcome(input: {
   const { provisionRef, authorEmail, authorName, studioKey, licenseResult } = input;
 
   const emailClaimId = randomUUID();
+  const invitation = createAuthorInvitationEnvelope();
   const shouldSendEmail = await adminDb.runTransaction(async (transaction: any) => {
     const snapshot = await transaction.get(provisionRef);
     if (!snapshot.exists) throw new Error("Provisioning state was not created.");
@@ -280,6 +282,12 @@ async function deliverProvisionedAuthorWelcome(input: {
       welcomeEmailStatus: "sending",
       welcomeEmailClaimId: emailClaimId,
       welcomeEmailLeaseExpiresAt: Date.now() + EMAIL_LEASE_MS,
+      welcomeEmailDeliveryId: provisionRef.id,
+      welcomeInvitationTokenHash: invitation.tokenHash,
+      welcomeInvitationStatus: "active",
+      welcomeInvitationIssuedAt: FieldValue.serverTimestamp(),
+      welcomeInvitationExpiresAt: invitation.expiresAt,
+      welcomeInvitationConsumedAt: null,
       updatedAt: FieldValue.serverTimestamp(),
     });
     return true;
@@ -302,38 +310,40 @@ async function deliverProvisionedAuthorWelcome(input: {
       authorName,
       studioKey,
       pluginDownloadUrl,
+      accountSetupUrl: buildAuthorInvitationUrl(invitation.token),
+      deliveryId: provisionRef.id,
     });
     const timestamp = FieldValue.serverTimestamp();
-    await Promise.all([
-      provisionRef.set({
+    const successBatch = adminDb.batch();
+    successBatch.set(provisionRef, {
         welcomeEmailStatus: "sent",
         welcomeEmailMessageId: mailResult.messageId,
         welcomeEmailSentAt: timestamp,
         welcomeEmailLeaseExpiresAt: null,
         updatedAt: timestamp,
-      }, { merge: true }),
-      adminDb.collection("plugin_licenses").doc(studioKey).set({
+      }, { merge: true });
+    successBatch.set(adminDb.collection("plugin_licenses").doc(studioKey), {
         welcomeEmailStatus: "sent",
         welcomeEmailMessageId: mailResult.messageId,
         welcomeEmailSentAt: timestamp,
         updatedAt: timestamp,
-      }, { merge: true }),
-    ]);
+      }, { merge: true });
+    await successBatch.commit();
     return { ...licenseResult, welcomeEmailSent: true, welcomeEmailStatus: "sent" };
   } catch (error) {
     const timestamp = FieldValue.serverTimestamp();
-    await Promise.all([
-      provisionRef.set({
+    const failureBatch = adminDb.batch();
+    failureBatch.set(provisionRef, {
         welcomeEmailStatus: "failed",
         welcomeEmailError: safeError(error),
         welcomeEmailLeaseExpiresAt: null,
         updatedAt: timestamp,
-      }, { merge: true }),
-      adminDb.collection("plugin_licenses").doc(studioKey).set({
+      }, { merge: true });
+    failureBatch.set(adminDb.collection("plugin_licenses").doc(studioKey), {
         welcomeEmailStatus: "failed",
         updatedAt: timestamp,
-      }, { merge: true }),
-    ]);
+      }, { merge: true });
+    await failureBatch.commit();
     throw error;
   }
 }

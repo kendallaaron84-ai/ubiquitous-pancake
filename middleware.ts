@@ -23,6 +23,7 @@ const PUBLIC_API_EXACT_PATHS = new Set([
   "/api/logout",
   "/api/session",
   "/api/auth/activate",
+  "/api/auth/invitation",
   "/api/auth/sms-send",
   "/api/auth/sms-verify",
   "/api/products/public",

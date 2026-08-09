@@ -11,6 +11,8 @@ export interface WelcomePackagePayload {
   authorName: string;
   studioKey: string;
   pluginDownloadUrl: string;
+  accountSetupUrl: string;
+  deliveryId: string;
 }
 
 export interface SupportIncidentAlertPayload {
@@ -97,6 +99,8 @@ export async function sendWelcomePackage({
   authorName,
   studioKey,
   pluginDownloadUrl,
+  accountSetupUrl,
+  deliveryId,
 }: WelcomePackagePayload): Promise<WelcomePackageResult> {
   const recipient = toEmail.trim().toLowerCase();
   const name = authorName.trim();
@@ -109,16 +113,13 @@ export async function sendWelcomePackage({
   if (!key) throw new Error("A StudioKey is required.");
 
   const senderEmail = requireEnvironmentValue("GOOGLE_WORKSPACE_EMAIL");
-  const dashboardUrl = validateDashboardUrl(
-    process.env.KOBA_DASHBOARD_URL?.trim() ||
-      "https://dashboard.koba-i.com",
-  );
   const validatedPluginDownloadUrl =
     validatePluginDownloadUrl(pluginDownloadUrl);
+  const validatedAccountSetupUrl = validateDashboardUrl(accountSetupUrl);
   const safeName = escapeHtml(name);
   const safeKey = escapeHtml(key);
-  const safeDashboardUrl = escapeHtml(dashboardUrl);
   const safePluginDownloadUrl = escapeHtml(validatedPluginDownloadUrl);
+  const safeAccountSetupUrl = escapeHtml(validatedAccountSetupUrl);
 
   const html = `
     <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;padding:24px;border:1px solid #dbe3ef;border-radius:12px;color:#1e293b;background:#ffffff;line-height:1.6;">
@@ -134,7 +135,7 @@ export async function sendWelcomePackage({
       </div>
 
       <p style="margin:20px 0;">
-        <a href="${safeDashboardUrl}" style="display:inline-block;padding:12px 20px;border-radius:6px;background:#733026;color:#ffffff !important;text-decoration:none;font-weight:700;">Open your dashboard</a>
+        <a href="${safeAccountSetupUrl}" style="display:inline-block;padding:12px 20px;border-radius:6px;background:#733026;color:#ffffff !important;text-decoration:none;font-weight:700;">Establish your workspace identity</a>
       </p>
 
       <h2 style="margin:28px 0 8px;color:#0f172a;font-size:18px;">Connect your WordPress website</h2>
@@ -148,7 +149,7 @@ export async function sendWelcomePackage({
         <p style="margin:0 0 18px;color:#475569;">You do not need to be tech savvy. Follow these four steps, and reply to this email if you would like help.</p>
 
         <h3 style="margin:18px 0 6px;color:#0f172a;font-size:15px;"><span style="color:#f97316;">1.</span> Claim your Command Center account</h3>
-        <p style="margin:0;color:#475569;">Open your dashboard and create your account using this email address. If you already have an account, simply sign in—your StudioKey is linked to your profile.</p>
+        <p style="margin:0;color:#475569;">Use the secure, single-use account-establishment button above to create your password. The link expires after 72 hours. After setup, sign in normally with this email address.</p>
 
         <h3 style="margin:18px 0 6px;color:#0f172a;font-size:15px;"><span style="color:#f97316;">2.</span> Download and install the WordPress plugin</h3>
         <p style="margin:0;color:#475569;">In WordPress, go to <strong>Plugins → Add New → Upload Plugin</strong>. Select <strong>koba-i-audio.zip</strong>, choose Install Now, and then Activate.</p>
@@ -190,10 +191,10 @@ export async function sendWelcomePackage({
     `Welcome to KOBA-I Audio, ${name}.`,
     "Your author workspace is ready.",
     `StudioKey: ${key}`,
-    `Dashboard: ${dashboardUrl}`,
+    `Secure account setup (single use; expires after 72 hours): ${validatedAccountSetupUrl}`,
     `Plugin download: ${validatedPluginDownloadUrl}`,
     "GETTING STARTED",
-    "1. Claim your Command Center account: Open the dashboard and create an account using this email address. If an account already exists, sign in.",
+    "1. Claim your Command Center account: Open the secure account-setup link and create your password. After setup, sign in normally with this email address.",
     "2. Install the plugin: In WordPress, open Plugins > Add New > Upload Plugin, select koba-i-audio.zip, install it, and activate it.",
     `3. Activate your StudioKey: Open Jubilee Activation or KOBA-I Audio in WordPress, enter ${key}, and select Verify & Activate.`,
     "4. Optional Content Engine connection: Create a WordPress Application Password named KOBA-I Content Engine. Open Setup & Connections in your KOBA-I dashboard, enter your site address and WordPress username, paste the generated Application Password, and select Verify and connect my site. Never send or enter your normal WordPress password.",
@@ -207,6 +208,7 @@ export async function sendWelcomePackage({
 
   try {
     const info = await getTransporter().sendMail({
+      messageId: `<koba-welcome-${deliveryId.replace(/[^a-zA-Z0-9_-]/g, "")}@koba-i.com>`,
       from: {
         name: "Kendall Aaron",
         address: senderEmail,
