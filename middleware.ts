@@ -57,6 +57,10 @@ const MVP_API_EXACT_PATHS = new Set([
   "/api/checkout/create-session",
   "/api/connections/verify",
   "/api/author-identities",
+  "/api/stripe/connect/sync",
+  "/api/stripe/connect/onboard",
+  "/api/stripe/connect/dashboard",
+  "/api/nexus/context",
 ]);
 
 export async function middleware(request: NextRequest) {
