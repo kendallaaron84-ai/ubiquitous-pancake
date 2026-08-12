@@ -89,8 +89,20 @@ test("reader continuation accepts only claim or strict paid launch paths", () =>
     safeReaderContinuation("/reader/open?assetId=ebk_testing-paid-book"),
     "/reader/open?assetId=ebk_testing-paid-book"
   );
+  assert.equal(
+    safeReaderContinuation(
+      "/reader/purchases/recover?assetId=ebk_testing-paid-book"
+    ),
+    "/reader/purchases/recover?assetId=ebk_testing-paid-book"
+  );
   assert.equal(safeReaderContinuation("https://attacker.example/reader/open?assetId=abk_book"), null);
   assert.equal(safeReaderContinuation("/reader/open?assetId=bad/asset"), null);
+  assert.equal(
+    safeReaderContinuation(
+      "/reader/purchases/recover?assetId=abk_book&expected_email=x@example.com"
+    ),
+    null
+  );
   assert.equal(safeReaderContinuation("/reader/open?assetId=abk_book&next=/admin"), null);
   assert.equal(
     safeReaderContinuation(
@@ -130,5 +142,7 @@ test("middleware lets the paid reader launcher own signed-out continuation", asy
 
   assert.ok(readerPagesStart >= 0 && readerPagesEnd > readerPagesStart);
   assert.match(readerPages, /"\/reader\/open"/);
+  assert.match(readerPages, /"\/reader\/purchases\/recover"/);
+  assert.match(middleware, /"\/api\/reader\/purchases\/recover"/);
   assert.doesNotMatch(readerPages, /"\/signin"/);
 });

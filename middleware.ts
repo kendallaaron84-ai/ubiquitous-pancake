@@ -17,6 +17,7 @@ const PUBLIC_READER_PAGES = new Set([
   "/reader/account",
   "/reader/open",
   "/reader/free",
+  "/reader/purchases/recover",
 ]);
 const PUBLIC_API_EXACT_PATHS = new Set([
   "/api/login",
@@ -43,6 +44,7 @@ const PUBLIC_API_EXACT_PATHS = new Set([
   "/api/reader/media/handoff/exchange",
   "/api/reader/media/free-handoff",
   "/api/reader/purchases/claim",
+  "/api/reader/purchases/recover",
 ]);
 const PUBLIC_API_PREFIXES = ["/api/webhook"];
 const MVP_PAGE_PREFIXES = [

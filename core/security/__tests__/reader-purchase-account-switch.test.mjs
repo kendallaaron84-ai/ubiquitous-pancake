@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   READER_ACCOUNT_SWITCH_ERROR,
+  switchReaderAccountForContinuation,
   switchReaderPurchaseAccount,
 } from "../reader-purchase-account-switch.ts";
 
@@ -57,6 +58,24 @@ test("failed canonical logout does not clear Firebase identity or navigate", asy
   );
   assert.equal(firebaseCalls, 0);
   assert.equal(navigations, 0);
+});
+
+test("account switch preserves a strict purchase-recovery continuation", async () => {
+  let destination = null;
+  await switchReaderAccountForContinuation({
+    continuationPath:
+      "/reader/purchases/recover?assetId=ebk_the-healing-journey",
+    logoutReaderSession: async () => ({ ok: true }),
+    logoutFirebaseIdentity: async () => {},
+    navigate: (path) => {
+      destination = path;
+    },
+  });
+  const signIn = new URL(destination, "https://dashboard.koba-i.com");
+  assert.equal(
+    signIn.searchParams.get("next"),
+    "/reader/purchases/recover?assetId=ebk_the-healing-journey"
+  );
 });
 
 test("account switch rejects an untrusted or altered continuation", async () => {

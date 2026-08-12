@@ -3,6 +3,26 @@ import { safeReaderContinuation } from "./reader-paid-launch.ts";
 export const READER_ACCOUNT_SWITCH_ERROR =
   "READER_ACCOUNT_SWITCH_FAILED" as const;
 
+export async function switchReaderAccountForContinuation(input: {
+  continuationPath: string;
+  logoutReaderSession: () => Promise<{ ok: boolean }>;
+  logoutFirebaseIdentity: () => Promise<void>;
+  navigate: (path: string) => void;
+}): Promise<void> {
+  const continuation = safeReaderContinuation(input.continuationPath);
+  if (!continuation) {
+    throw new Error(READER_ACCOUNT_SWITCH_ERROR);
+  }
+
+  const response = await input.logoutReaderSession();
+  if (!response.ok) {
+    throw new Error(READER_ACCOUNT_SWITCH_ERROR);
+  }
+
+  await input.logoutFirebaseIdentity();
+  input.navigate(`/reader/signin?next=${encodeURIComponent(continuation)}`);
+}
+
 export async function switchReaderPurchaseAccount(input: {
   claimPath: string;
   logoutReaderSession: () => Promise<{ ok: boolean }>;
@@ -13,14 +33,10 @@ export async function switchReaderPurchaseAccount(input: {
   if (!continuation || !continuation.startsWith("/reader/claim?session_id=")) {
     throw new Error(READER_ACCOUNT_SWITCH_ERROR);
   }
-
-  const response = await input.logoutReaderSession();
-  if (!response.ok) {
-    throw new Error(READER_ACCOUNT_SWITCH_ERROR);
-  }
-
-  await input.logoutFirebaseIdentity();
-  input.navigate(
-    `/reader/signin?next=${encodeURIComponent(continuation)}`
-  );
+  return switchReaderAccountForContinuation({
+    continuationPath: continuation,
+    logoutReaderSession: input.logoutReaderSession,
+    logoutFirebaseIdentity: input.logoutFirebaseIdentity,
+    navigate: input.navigate,
+  });
 }

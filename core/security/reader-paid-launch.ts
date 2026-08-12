@@ -16,6 +16,13 @@ export function paidReaderLaunchPath(assetId: string): string | null {
     : null;
 }
 
+export function paidReaderRecoveryPath(assetId: string): string | null {
+  const normalized = assetId.trim();
+  return ASSET_ID_PATTERN.test(normalized)
+    ? `/reader/purchases/recover?assetId=${encodeURIComponent(normalized)}`
+    : null;
+}
+
 export function safeReaderContinuation(value?: string): string | null {
   if (!value) return null;
 
@@ -35,13 +42,18 @@ export function safeReaderContinuation(value?: string): string | null {
     }
     if (
       parsed.origin !== CONTINUATION_ORIGIN ||
-      parsed.pathname !== "/reader/open" ||
       parsed.hash ||
       [...parsed.searchParams.keys()].some((key) => key !== "assetId")
     ) {
       return null;
     }
-    return paidReaderLaunchPath(parsed.searchParams.get("assetId") || "");
+    if (parsed.pathname === "/reader/open") {
+      return paidReaderLaunchPath(parsed.searchParams.get("assetId") || "");
+    }
+    if (parsed.pathname === "/reader/purchases/recover") {
+      return paidReaderRecoveryPath(parsed.searchParams.get("assetId") || "");
+    }
+    return null;
   } catch {
     return null;
   }
