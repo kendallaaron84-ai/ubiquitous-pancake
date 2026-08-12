@@ -27,7 +27,7 @@ export async function claimPendingPurchase(
     normalizeReaderEmail(input.verifiedEmail)
   );
   const result = { purchaseId: "", entitlementIds: [] as string[], replay: false };
-  let emailMismatch = false;
+  let accountSwitchRequired = false;
 
   await db.runTransaction(async (transaction) => {
     const claimSnapshot = await transaction.get(claimRef);
@@ -57,12 +57,24 @@ export async function claimPendingPurchase(
       priorEntitlementIds.length === 0 &&
       claim.purchaseEmailHash === suppliedEmailHash;
 
+    const isUnclaimedBlockedEmailMismatch =
+      isBlockedEmailMismatch &&
+      !String(claim.claimedUid || "").trim() &&
+      priorEntitlementIds.length === 0;
+
+    if (
+      isUnclaimedBlockedEmailMismatch &&
+      claim.purchaseEmailHash !== suppliedEmailHash
+    ) {
+      throw new Error("PURCHASE_ACCOUNT_SWITCH_REQUIRED");
+    }
+
     if (claim.status !== "unclaimed" && !isEligibleReconciliation) {
       throw new Error("PURCHASE_CLAIM_BLOCKED");
     }
 
     if (claim.status === "unclaimed" && claim.purchaseEmailHash !== suppliedEmailHash) {
-      emailMismatch = true;
+      accountSwitchRequired = true;
       transaction.update(claimRef, {
         status: "blocked",
         manualReviewRequired: true,
@@ -188,6 +200,8 @@ export async function claimPendingPurchase(
     );
   });
 
-  if (emailMismatch) throw new Error("PURCHASE_EMAIL_MISMATCH");
+  if (accountSwitchRequired) {
+    throw new Error("PURCHASE_ACCOUNT_SWITCH_REQUIRED");
+  }
   return result;
 }

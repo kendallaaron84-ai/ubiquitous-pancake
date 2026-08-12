@@ -80,8 +80,10 @@ test("paid launch input fails closed before handoff", async () => {
 
 test("reader continuation accepts only claim or strict paid launch paths", () => {
   assert.equal(
-    safeReaderContinuation("/reader/claim?session_id=cs_live_123"),
-    "/reader/claim?session_id=cs_live_123"
+    safeReaderContinuation(
+      "/reader/claim?session_id=cs_live_1234567890abcdef"
+    ),
+    "/reader/claim?session_id=cs_live_1234567890abcdef"
   );
   assert.equal(
     safeReaderContinuation("/reader/open?assetId=ebk_testing-paid-book"),
@@ -90,6 +92,25 @@ test("reader continuation accepts only claim or strict paid launch paths", () =>
   assert.equal(safeReaderContinuation("https://attacker.example/reader/open?assetId=abk_book"), null);
   assert.equal(safeReaderContinuation("/reader/open?assetId=bad/asset"), null);
   assert.equal(safeReaderContinuation("/reader/open?assetId=abk_book&next=/admin"), null);
+  assert.equal(
+    safeReaderContinuation(
+      "/reader/claim?session_id=cs_live_1234567890&expected_email=attacker@example.com"
+    ),
+    null
+  );
+  assert.equal(
+    safeReaderContinuation("/reader/claim?session_id=cs_short"),
+    null
+  );
+});
+
+test("paid launcher remains entitlement-only and does not infer purchase state", async () => {
+  const source = await readFile(
+    new URL("../reader-paid-launch.ts", import.meta.url),
+    "utf8"
+  );
+  assert.doesNotMatch(source, /pending_purchase_claims|reader_purchases|Stripe/);
+  assert.match(source, /createHandoff\(handoffRequest\)/);
 });
 
 test("paidReaderLaunchPath normalizes only valid asset IDs", () => {

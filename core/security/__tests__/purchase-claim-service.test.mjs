@@ -61,7 +61,7 @@ async function blockWithWrongReader(db) {
           correlationId: "initial-mismatch",
         })
       ),
-    /PURCHASE_EMAIL_MISMATCH/
+    /PURCHASE_ACCOUNT_SWITCH_REQUIRED/
   );
 }
 
@@ -118,7 +118,7 @@ test("original wrong Gmail account remains blocked", async () => {
           correlationId: "wrong-retry",
         })
       ),
-    /PURCHASE_CLAIM_BLOCKED/
+    /PURCHASE_ACCOUNT_SWITCH_REQUIRED/
   );
   assert.equal(entitlementCount(db), 0);
 });
@@ -176,7 +176,7 @@ test("incorrect purchase email hash cannot reconcile", async () => {
   );
   await assert.rejects(
     () => claimPendingPurchase(db, claimInput()),
-    /PURCHASE_CLAIM_BLOCKED/
+    /PURCHASE_ACCOUNT_SWITCH_REQUIRED/
   );
   assert.equal(entitlementCount(db), 0);
 });

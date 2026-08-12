@@ -242,13 +242,98 @@ test("verified reader with wrong email cannot claim another purchase", async () 
       ),
     (error) =>
       error instanceof ReaderPurchaseClaimError &&
-      error.code === "READER_PURCHASE_EMAIL_MISMATCH"
+      error.code === "READER_PURCHASE_ACCOUNT_SWITCH_REQUIRED" &&
+      error.message ===
+        "Sign in with the verified email used at checkout to add this purchase to the correct Bookshelf."
   );
   assert.equal(
     [...db.docs.keys()].filter((key) =>
       key.startsWith("reader_entitlements/")
     ).length,
     0
+  );
+});
+
+test("correct purchase-email account establishes identity and reconciles a blocked claim", async () => {
+  const db = seedDb({ email: "wrong@gmail.com" });
+  const deps = dependencies(db);
+
+  await assert.rejects(
+    () =>
+      claimReaderCheckoutPurchase(
+        db,
+        {
+          checkoutSessionId: sessionId,
+          readerUid: "reader_uid",
+          correlationId: "wrong-account",
+        },
+        deps
+      ),
+    (error) =>
+      error instanceof ReaderPurchaseClaimError &&
+      error.code === "READER_PURCHASE_ACCOUNT_SWITCH_REQUIRED"
+  );
+
+  const identity = await establishReaderIdentity(
+    db,
+    {
+      uid: "purchase_email_uid",
+      email: readerEmail,
+      email_verified: true,
+      firebase: { sign_in_provider: "password", identities: {} },
+      aud: "project",
+      auth_time: 1,
+      exp: 2,
+      iat: 1,
+      iss: "issuer",
+      sub: "purchase_email_uid",
+    },
+    "correct-account-session"
+  );
+
+  const recovered = await claimReaderCheckoutPurchase(
+    db,
+    {
+      checkoutSessionId: sessionId,
+      readerUid: identity.readerUid,
+      correlationId: "correct-account-retry",
+    },
+    deps
+  );
+  const replay = await claimReaderCheckoutPurchase(
+    db,
+    {
+      checkoutSessionId: sessionId,
+      readerUid: identity.readerUid,
+      correlationId: "correct-account-replay",
+    },
+    deps
+  );
+
+  assert.equal(recovered.status, "claimed");
+  assert.equal(recovered.entitlementIds.length, 1);
+  assert.equal(replay.replay, true);
+  assert.equal(
+    [...db.docs.keys()].filter((key) =>
+      key.startsWith("reader_entitlements/")
+    ).length,
+    1
+  );
+
+  await assert.rejects(
+    () =>
+      claimReaderCheckoutPurchase(
+        db,
+        {
+          checkoutSessionId: sessionId,
+          readerUid: "reader_uid",
+          correlationId: "old-account-retry",
+        },
+        deps
+      ),
+    (error) =>
+      error instanceof ReaderPurchaseClaimError &&
+      error.code === "READER_PURCHASE_ALREADY_CLAIMED"
   );
 });
 

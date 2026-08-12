@@ -16,6 +16,7 @@ export const READER_PURCHASE_CLAIM_CODES = {
   checkoutInvalid: "READER_CHECKOUT_INVALID",
   paymentPending: "READER_PURCHASE_PAYMENT_PENDING",
   emailMismatch: "READER_PURCHASE_EMAIL_MISMATCH",
+  accountSwitchRequired: "READER_PURCHASE_ACCOUNT_SWITCH_REQUIRED",
   alreadyClaimed: "READER_PURCHASE_ALREADY_CLAIMED",
   claimBlocked: "READER_PURCHASE_CLAIM_BLOCKED",
 } as const;
@@ -166,6 +167,13 @@ export async function claimReaderCheckoutPurchase(
     };
   } catch (error: unknown) {
     const code = error instanceof Error ? error.message : "";
+    if (code === "PURCHASE_ACCOUNT_SWITCH_REQUIRED") {
+      throw new ReaderPurchaseClaimError(
+        409,
+        READER_PURCHASE_CLAIM_CODES.accountSwitchRequired,
+        "Sign in with the verified email used at checkout to add this purchase to the correct Bookshelf."
+      );
+    }
     if (code === "PURCHASE_EMAIL_MISMATCH") {
       throw new ReaderPurchaseClaimError(
         403,

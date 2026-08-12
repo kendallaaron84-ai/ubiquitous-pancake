@@ -1,4 +1,5 @@
 const ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
+const CHECKOUT_SESSION_PATTERN = /^cs_[A-Za-z0-9_]{12,}$/;
 const CONTINUATION_ORIGIN = "https://reader.koba-i.invalid";
 
 export const READER_PAID_LAUNCH_ERROR_CODES = {
@@ -17,10 +18,21 @@ export function paidReaderLaunchPath(assetId: string): string | null {
 
 export function safeReaderContinuation(value?: string): string | null {
   if (!value) return null;
-  if (value.startsWith("/reader/claim?session_id=cs_")) return value;
 
   try {
     const parsed = new URL(value, CONTINUATION_ORIGIN);
+    if (
+      parsed.origin === CONTINUATION_ORIGIN &&
+      parsed.pathname === "/reader/claim" &&
+      !parsed.hash &&
+      [...parsed.searchParams.keys()].every((key) => key === "session_id") &&
+      parsed.searchParams.getAll("session_id").length === 1 &&
+      CHECKOUT_SESSION_PATTERN.test(parsed.searchParams.get("session_id") || "")
+    ) {
+      return `/reader/claim?session_id=${encodeURIComponent(
+        parsed.searchParams.get("session_id")!
+      )}`;
+    }
     if (
       parsed.origin !== CONTINUATION_ORIGIN ||
       parsed.pathname !== "/reader/open" ||
