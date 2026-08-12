@@ -237,6 +237,45 @@ test("deployment route uses the resolved destination and preserves publication p
   );
   assert.match(route, /stripeConnectId: FieldValue\.delete\(\)/);
   assert.match(route, /stripeAccountId: FieldValue\.delete\(\)/);
+  assert.match(route, /product: deployedProduct/);
+});
+
+test("MVP authors may deploy through the guarded route without broad product API access", async () => {
+  const middleware = await readFile(new URL("../../../middleware.ts", import.meta.url), "utf8");
+  const allowlistStart = middleware.indexOf("const MVP_API_EXACT_PATHS");
+  const allowlistEnd = middleware.indexOf(");", allowlistStart);
+  const allowlist = middleware.slice(allowlistStart, allowlistEnd);
+
+  assert.match(allowlist, /"\/api\/agent\/deploy"/);
+  assert.doesNotMatch(allowlist, /"\/api\/products/);
+  assert.doesNotMatch(allowlist, /"\/api\/admin/);
+  assert.match(middleware, /MVP_API_EXACT_PATHS\.has\(pathname\)/);
+});
+
+test("Save & Sync uses the guarded deploy response without a blocked follow-up PATCH", async () => {
+  const productPage = await readFile(new URL("app/products/page.tsx", ROOT), "utf8");
+  const saveStart = productPage.indexOf("const handleSaveAndDeploy");
+  const deleteStart = productPage.indexOf("const handleDeleteProduct", saveStart);
+  const saveFlow = productPage.slice(saveStart, deleteStart);
+
+  assert.match(saveFlow, /fetch\("\/api\/agent\/deploy"/);
+  assert.match(saveFlow, /const updatedProduct = cloudData\.product/);
+  assert.doesNotMatch(saveFlow, /fetch\(`\/api\/products\//);
+  assert.doesNotMatch(saveFlow, /method:\s*"PATCH"/);
+});
+
+test("publication deployment remains independent of Nexus entitlement", async () => {
+  const [route, productPage] = await Promise.all([
+    readFile(new URL("app/api/agent/deploy/route.ts", ROOT), "utf8"),
+    readFile(new URL("app/products/page.tsx", ROOT), "utf8"),
+  ]);
+
+  assert.doesNotMatch(route, /hasContentEngineAccess|requireNexusEntitlement|NEXUS_ENTITLEMENT/);
+  assert.match(productPage, /if \(response\.status === 403\) return \[\]/);
+  assert.match(route, /verifyDashboardSession/);
+  assert.match(route, /collection\("plugin_licenses"\)\.doc\(session\.studioKey\)/);
+  assert.match(route, /requireAuthorizedAuthorIdentity/);
+  assert.match(route, /resolvePublicationDestination/);
 });
 
 test("Product Catalog requires and submits a verified destination", async () => {

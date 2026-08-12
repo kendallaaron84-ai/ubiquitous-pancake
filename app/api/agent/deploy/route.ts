@@ -393,6 +393,46 @@ export async function POST(request: Request) {
     }
     await productRef.set(successPatch, { merge: true });
 
+    const deployedProduct = {
+      id: assetKey,
+      assetKey,
+      title,
+      synopsis: clean(body?.synopsis) || clean(existing.synopsis),
+      description: clean(body?.synopsis) || clean(existing.description),
+      coverUrl: clean(body?.coverUrl) || clean(existing.coverUrl),
+      coverArtUrl: clean(body?.coverUrl) || clean(existing.coverArtUrl),
+      bgImageUrl: clean(body?.bgImageUrl) || clean(existing.bgImageUrl),
+      type: mediaType,
+      category,
+      price,
+      currency: "usd",
+      status,
+      isPublished: status === "published",
+      chapters,
+      studioTracks: chapters,
+      ebookPayload: body?.ebookPayload ?? existing.ebookPayload ?? null,
+      authorId: session.email.toLowerCase(),
+      authorEmail: session.email.toLowerCase(),
+      authorIdentityId: identity.id,
+      authorName: identity.displayName,
+      studioKey: session.studioKey,
+      wpStudioKey: session.studioKey,
+      universeId: universeId || null,
+      websiteConnectionId: destination.websiteConnectionId,
+      associatedWebsite: wordpress.targetWpOrigin,
+      destinationStatus: "bound",
+      wordpressDeployment: {
+        status: "deployed",
+        websiteConnectionId: destination.websiteConnectionId,
+        targetWpOrigin: wordpress.targetWpOrigin,
+        publicationId: wordpress.publicationId,
+        pageId: wordpress.pageId,
+        bookshelfPageId: wordpress.bookshelfPageId,
+        publicationUrl: wordpress.publicationUrl,
+        bookshelfUrl: wordpress.bookshelfUrl,
+      },
+    };
+
     return NextResponse.json({
       success: true,
       message: "Your publication and bookstore pages were deployed to WordPress.",
@@ -407,6 +447,7 @@ export async function POST(request: Request) {
         publicationUrl: wordpress.publicationUrl,
         bookshelfUrl: wordpress.bookshelfUrl,
       },
+      product: deployedProduct,
     });
   } catch (error) {
     if (error instanceof AuthorIdentityError) {

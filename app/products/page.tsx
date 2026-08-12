@@ -378,20 +378,10 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
       throw new Error(cloudData?.error || "Your publication could not be saved.");
     }
     const canonicalAssetKey = String(cloudData.assetKey || editingProduct.id);
-    const productResponse = await fetch(`/api/products/${encodeURIComponent(canonicalAssetKey)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        synopsis: payload.synopsis,
-        authorIdentityId: payload.authorIdentityId,
-        category: payload.category,
-      }),
-    });
-    const productResult = await productResponse.json().catch(() => ({}));
-    if (!productResponse.ok || !productResult.success) {
-      throw new Error(productResult.error || "The product was deployed, but its synopsis could not be saved.");
+    if (!cloudData.product || String(cloudData.product.id) !== canonicalAssetKey) {
+      throw new Error("The publication was deployed, but its saved product record could not be confirmed.");
     }
-    const updatedProduct = productResult.product;
+    const updatedProduct = cloudData.product;
     setProducts((current) => {
       const remaining = current.filter((product) =>
         product.id !== editingProduct.id && product.id !== canonicalAssetKey

@@ -55,6 +55,7 @@ const MVP_PAGE_PREFIXES = [
 const MVP_API_EXACT_PATHS = new Set([
   "/api/generate-blog",
   "/api/checkout/create-session",
+  "/api/agent/deploy",
   "/api/connections/verify",
   "/api/author-identities",
   "/api/stripe/connect/sync",
