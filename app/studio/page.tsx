@@ -1,35 +1,31 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { db, auth } from "@/core/firebase";
-import { collection, query, where, onSnapshot } from "firebase/firestore";
 import Layout from "@/components/layout";
 import Link from "next/link";
 import { Mic, ArrowRight, Tag, Music, Film, Sparkles, BookOpen } from "lucide-react";
+import { loadStudioProducts } from "@/core/studio-client";
 
 export default function ProductionStudioLobby() {
   const [products, setProducts] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const userEmail = auth.currentUser?.email || "kendallaaron84@gmail.com";
-    const productsRef = collection(db, "products");
-    const q = query(productsRef, where("authorEmail", "==", userEmail));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setIsLoading(false);
-      if (!snapshot.empty) {
-        const updatedList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setProducts(updatedList);
-      } else {
-        setProducts([]);
-      }
-    }, (error) => {
-      console.error("Snapshot Stream Rejected:", error);
-      setIsLoading(false);
-    });
-
-    return () => unsubscribe();
+    let active = true;
+    loadStudioProducts()
+      .then((payload) => {
+        if (active) setProducts(Array.isArray(payload.products) ? payload.products : []);
+      })
+      .catch((error) => {
+        if (active) {
+          console.error("Studio publication lookup failed:", error);
+          setProducts([]);
+        }
+      })
+      .finally(() => {
+        if (active) setIsLoading(false);
+      });
+    return () => { active = false; };
   }, []);
 
   return (

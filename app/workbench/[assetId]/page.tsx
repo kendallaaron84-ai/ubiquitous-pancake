@@ -1,13 +1,11 @@
 "use client";
 
 import React, { useState, useEffect, use } from "react";
-import { db } from "@/core/firebase";
-import { doc, getDoc, setDoc } from "firebase/firestore";
-import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, Settings, X, Key } from "lucide-react";
+import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert } from "lucide-react";
 import Link from "next/link";
-import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
 import { toast } from "@/components/ui/use-toast";
 import { ModeToggle } from "@/components/elements/mode-toggle";
+import { loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
 
 // 🛠️ THEME-RESPONSIVE TOOLTIP
 const Tooltip = ({ text, children }: { text: string, children: React.ReactNode }) => {
@@ -38,43 +36,26 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     loreContext: ""
   });
 
-  // 🔑 NEW: BYOK (Bring Your Own Key) & Model Selection State
-  const [activeModel, setActiveModel] = useState("anthropic"); // default to claude, for example
-    const [apiKeys, setApiKeys] = useState({
-  });
-
   useEffect(() => {
     if (!assetId) return;
     
     const fetchManuscript = async () => {
       try {
         console.log("🎯 Workbench attempting connection for assetId:", assetId);
-        const docRef = doc(db, "products", assetId);
-        const docSnap = await getDoc(docRef);
-
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          if (!data.chapters || data.chapters.length === 0) {
-            data.chapters = [{ id: `ch_1_${assetId}`, title: "Chapter 1", textContent: "" }];
-          }
-          setBookData(data);
-          if (data.guardrails) setGuardrails(data.guardrails);
-          if (data.apiKeys) setApiKeys(data.apiKeys);
-        } else {
-          console.warn("⚠️ Document ID not found in products collection. Loading initialization state.");
-          setBookData({
-            title: "Sandbox Mode: Asset Not Found",
-            type: "ebook",
-            chapters: [{ id: `ch_1_${assetId}`, title: "Chapter 1 Initializer", textContent: "The workbench compiled, but could not locate this book record in your Firestore database. Click 'Save Draft' to initialize a fresh record mapping." }]
-          });
+        const payload = await loadStudioProduct(assetId);
+        const data = payload.product;
+        if (!Array.isArray(data.chapters) || data.chapters.length === 0) {
+          data.chapters = [{ id: `ch_1_${assetId}`, title: "Chapter 1", textContent: "" }];
         }
+        setBookData(data);
+        if (data.guardrails) setGuardrails(data.guardrails);
       } catch (error: any) {
-        // 🚀 FALLBACK 2: Database Rules / Network Connection Blocked
-        console.error("❌ Firestore connection failed:", error);
+        console.error("Workbench publication lookup failed:", error);
         setBookData({
-          title: "Offline Vault Mode",
-          type: "E-Book",
-          chapters: [{ id: `ch_1_${assetId}`, title: "Chapter 1 (Offline)", textContent: `Database handshake failed. Reason: ${error?.message || "Unknown Rule Block"}` }]
+          title: "Publication unavailable",
+          type: "ebook",
+          accessError: error?.message || "This publication could not be opened.",
+          chapters: [],
         });
       }
     };
@@ -87,38 +68,27 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // 1. Point to the "Production-Ready" folder in Firebase Storage
-    const storageInstance = getStorage();
-    const productionPath = `production-vault/${assetId}/${chapterId}_mastered.mp3`;
-    const storageRef = ref(storageInstance, productionPath);
-
-    // 2. Stream the file directly
     toast({ title: "Mastered Upload", description: "Injecting production-ready audio into the vault..." });
-    
-    const uploadTask = uploadBytesResumable(storageRef, file);
-    
-    uploadTask.on("state_changed", null, (err) => {
-        toast({ title: "Upload Failed", description: err.message, variant: "destructive" });
-    }, async () => {
-        const audioUrl = await getDownloadURL(uploadTask.snapshot.ref);
-        
-        // 🎯 Redirected to products with an idempotent setDoc merge
-        const docRef = doc(db, "products", assetId);
-        await setDoc(docRef, {
-            [`audioMap.${chapterId}`]: audioUrl,
-            updatedAt: new Date().toISOString()
-        }, { merge: true });
-        
-        toast({ title: "Production Success", description: "Audio mastered and vaulted." });
-    });
+    try {
+      const uploaded = await uploadStudioFile(assetId, file, "mastered");
+      await saveStudioProduct(assetId, "attach_mastered_audio", {
+        chapterId,
+        storagePath: uploaded.storagePath,
+      });
+      toast({ title: "Production Success", description: "Audio mastered and vaulted." });
+    } catch (error) {
+      toast({
+        title: "Upload Failed",
+        description: error instanceof Error ? error.message : "The mastered audio could not be saved.",
+        variant: "destructive",
+      });
+    }
 };
 
   const handleSave = async () => {
   if (!bookData) return;
   setIsSaving(true);
   try {
-    const docRef = doc(db, "products", assetId);
-    
     const sourceChapters = Array.isArray(bookData.chapters) ? bookData.chapters : [];
     const formattedChapters = sourceChapters.map((ch: any, index: number) => ({
         id: ch.id || `ch_${index + 1}_${assetId}`,
@@ -126,28 +96,14 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
         textContent: ch.textContent || ch.content || "" 
     }));
 
-    await setDoc(docRef, { 
-        assetKey: assetId,
-        id: assetId,
-        type: "ebook",
-        chapters: formattedChapters,
-        ebookPayload: {
-            fontPreference: bookData.ebookPayload?.fontPreference || "Atkinson Hyperlegible",
-            chapters: formattedChapters
-        },
-        guardrails: guardrails,
-        apiKeys: apiKeys,
-        updatedAt: new Date().toISOString()
-    }, { merge: true });
+    const payload = await saveStudioProduct(assetId, "save_workbench_draft", {
+      chapters: formattedChapters,
+      guardrails,
+    });
 
     setBookData((current: any) => ({
       ...current,
-      chapters: formattedChapters,
-      ebookPayload: {
-        ...current?.ebookPayload,
-        fontPreference: current?.ebookPayload?.fontPreference || "Atkinson Hyperlegible",
-        chapters: formattedChapters
-      }
+      ...payload.product,
     }));
 
     console.log("💾 Workbench manuscript saved to products collection.", {
@@ -186,6 +142,18 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
                 INITIALIZING DECOUPLED VAULT MATRIX...
             </p>
         </div>
+    );
+  }
+
+  if (bookData.accessError) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-[#070a0f] p-6 text-center text-white">
+        <div className="max-w-md rounded-xl border border-red-900/40 bg-red-950/10 p-6">
+          <h3 className="mb-2 text-lg font-bold text-red-500">Publication unavailable</h3>
+          <p className="text-sm text-gray-400">{bookData.accessError}</p>
+          <Link href="/products" className="mt-5 inline-block text-sm font-semibold text-orange-400">Return to Product Catalog</Link>
+        </div>
+      </div>
     );
   }
 

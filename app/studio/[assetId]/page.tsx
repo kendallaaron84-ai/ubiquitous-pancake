@@ -1,9 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, use } from "react";
-import { db, storage } from "@/core/firebase"; // 🚀 FIXED: Using your pre-configured instances directly
-import { doc, getDoc, serverTimestamp, updateDoc } from "firebase/firestore";
-import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage"; // 🚀 FIXED: Standard static imports
 import { 
   ChevronLeft, UploadCloud, Mic, ShieldAlert, Lock, 
   CheckCircle2, FileAudio, FileVideo, Save,
@@ -11,6 +8,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
 
 function readMediaDuration(file: File): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -57,20 +55,19 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
     if (!assetId) return;
     const fetchProduct = async () => {
       try {
-        const docRef = doc(db, "products", assetId);
-        const docSnap = await getDoc(docRef);
-        
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          setProductData(data);
-          if (data.vaultStatus) setVaultStatus(data.vaultStatus);
-          if (data.studioTracks) setTracks(data.studioTracks);
-          if (data.mediaType) setMediaType(data.mediaType);
-        } else {
-          setProductData({ title: "Unknown Asset", type: "Audiobook" });
-        }
+        const payload = await loadStudioProduct(assetId);
+        const data = payload.product;
+        setProductData(data);
+        if (data.vaultStatus) setVaultStatus(data.vaultStatus);
+        if (data.studioTracks) setTracks(data.studioTracks);
+        if (data.mediaType) setMediaType(data.mediaType);
       } catch (error) {
         console.error("Error fetching product:", error);
+        setProductData({
+          title: "Publication unavailable",
+          type: "Audiobook",
+          accessError: error instanceof Error ? error.message : "This publication could not be opened.",
+        });
       }
     };
     fetchProduct();
@@ -116,22 +113,15 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
   // Unified save handler to commit current track array to Firestore
   const saveTracksToDatabase = async (currentTracks: any[]) => {
     try {
-      const docRef = doc(db, "products", assetId);
-      const playableTrackCount = currentTracks.filter((track) =>
-        Boolean(track?.url || track?.audioUrl || track?.mediaUrl || track?.streamUrl || track?.src)
-      ).length;
-      await updateDoc(docRef, { 
-        studioTracks: currentTracks,
-        chapters: currentTracks,
-        chapterCount: playableTrackCount,
-        trackCount: playableTrackCount,
-        mediaType: mediaType,
-        vaultStatus: vaultStatus,
-        updatedAt: serverTimestamp()
+      const payload = await saveStudioProduct(assetId, "save_studio_manifest", {
+        tracks: currentTracks,
+        mediaType,
       });
-      console.log("💾 Firestore collection updated successfully.");
+      setProductData(payload.product);
+      setTracks(Array.isArray(payload.product?.studioTracks) ? payload.product.studioTracks : currentTracks);
     } catch (e) {
       console.error("Failed to sync studio context to Firestore:", e);
+      throw e;
     }
   };
 
@@ -345,38 +335,23 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
                                 // 1. Put UI immediately into loading state
                                 setTracks(prev => prev.map(t => t.id === track.id ? { ...t, uploadStatus: "uploading", fileName: "Streaming..." } : t));
 
-                                // 2. Fire reliable upload stream to Firebase Storage
-                                const storagePath = `studio/${assetId}/${Date.now()}_${selectedFile.name}`;
-                                const storageRef = ref(storage, storagePath);
-                                const uploadTask = uploadBytesResumable(storageRef, selectedFile);
-
-                                uploadTask.on(
-                                  "state_changed",
-                                  null,
-                                  (error) => {
-                                    console.error("Storage upload error:", error);
-                                    setTracks(prev => prev.map(t => t.id === track.id ? { ...t, uploadStatus: "empty", fileName: "Upload Failed" } : t));
-                                  },
-                                  async () => {
-                                    // 3. Extract the clean download token URL
-                                    const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-                                    
-                                    const updatedTracks = tracks.map(t => t.id === track.id ? { 
-                                      ...t, 
-                                      uploadStatus: "success", 
-                                      fileName: selectedFile.name,
-                                      durationSeconds,
-                                      mimeType: selectedFile.type || "audio/mpeg",
-                                      storagePath,
-                                      url: downloadUrl // Mapped for api/studio/transcribe
-                                    } : t);
-
-                                    setTracks(updatedTracks);
-                                    
-                                    // 🚀 4. AUTO-SAVE: Commit straight to Firestore collection instantly
-                                    await saveTracksToDatabase(updatedTracks);
-                                  }
-                                );
+                                try {
+                                  const uploaded = await uploadStudioFile(assetId, selectedFile, "source");
+                                  const updatedTracks = tracks.map(t => t.id === track.id ? {
+                                    ...t,
+                                    uploadStatus: "success",
+                                    fileName: selectedFile.name,
+                                    durationSeconds,
+                                    mimeType: uploaded.contentType,
+                                    storagePath: uploaded.storagePath,
+                                    url: uploaded.canonicalUrl,
+                                  } : t);
+                                  setTracks(updatedTracks);
+                                  await saveTracksToDatabase(updatedTracks);
+                                } catch (error) {
+                                  console.error("Storage upload error:", error);
+                                  setTracks(prev => prev.map(t => t.id === track.id ? { ...t, uploadStatus: "empty", fileName: "Upload Failed" } : t));
+                                }
                               }}
                             />
                             <span className={`w-2.5 h-2.5 rounded-full ${

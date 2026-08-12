@@ -1,15 +1,14 @@
 import crypto from "node:crypto";
 
 import { FieldValue } from "firebase-admin/firestore";
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { adminDb } from "@/core/firebase-admin";
 import {
-  DASHBOARD_SESSION_COOKIE,
-  resolveDashboardSessionSecret,
-  verifyDashboardSession,
-} from "@/core/security/dashboard-session";
+  StudioPublicationAccessError,
+  loadOwnedStudioProduct,
+} from "@/core/security/studio-publication-access";
+import { requireStudioAuthorContext } from "@/core/security/studio-publication-session";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -26,21 +25,7 @@ interface StudioTrack {
 
 export async function POST(request: Request) {
   try {
-    const token = (await cookies()).get(DASHBOARD_SESSION_COOKIE)?.value;
-    if (!token) {
-      return failure(401, "Sign in to secure this publication.");
-    }
-
-    const session = await verifyDashboardSession(
-      token,
-      resolveDashboardSessionSecret()
-    ).catch(() => null);
-    if (!session?.studioKey) {
-      return failure(
-        403,
-        "Your dashboard session is not connected to a StudioKey."
-      );
-    }
+    const context = await requireStudioAuthorContext(adminDb);
 
     const body = (await request.json().catch(() => null)) as
       | VaultRequestBody
@@ -54,26 +39,9 @@ export async function POST(request: Request) {
       `Initiating secure C2PA signature protocol for asset: ${assetId}`
     );
 
-    const productRef = adminDb.collection("products").doc(assetId);
-    const productDoc = await productRef.get();
-    if (!productDoc.exists) {
-      return failure(404, "Asset workspace profile not found.");
-    }
-
-    const productData = productDoc.data() || {};
-    const productStudioKey = clean(productData.studioKey);
-    const productAuthor = clean(
-      productData.authorEmail || productData.authorId
-    ).toLowerCase();
-    if (
-      productStudioKey !== session.studioKey ||
-      productAuthor !== session.email.toLowerCase()
-    ) {
-      return failure(
-        403,
-        "This publication belongs to another author workspace."
-      );
-    }
+    const publication = await loadOwnedStudioProduct(adminDb, context, assetId);
+    const productRef = publication.reference;
+    const productData = publication.product;
 
     const bookTitle = clean(productData.title) || "Untitled Work";
     const authorName = clean(productData.authorName) || "Sovereign Author";
@@ -146,6 +114,12 @@ export async function POST(request: Request) {
         .digest("hex"),
     });
   } catch (error: unknown) {
+    if (error instanceof StudioPublicationAccessError) {
+      return NextResponse.json(
+        { success: false, code: error.code, error: error.publicMessage },
+        { status: error.status }
+      );
+    }
     console.error("Voice Vault structural execution failed:", error);
     return failure(
       500,

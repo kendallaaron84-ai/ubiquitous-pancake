@@ -51,6 +51,8 @@ const MVP_PAGE_PREFIXES = [
   "/visibility-cure",
   "/connect",
   "/billing",
+  "/studio",
+  "/workbench",
 ];
 const MVP_API_EXACT_PATHS = new Set([
   "/api/generate-blog",
@@ -62,6 +64,9 @@ const MVP_API_EXACT_PATHS = new Set([
   "/api/stripe/connect/onboard",
   "/api/stripe/connect/dashboard",
   "/api/nexus/context",
+  "/api/studio/publications",
+  "/api/studio/transcribe",
+  "/api/studio/vault",
 ]);
 
 export async function middleware(request: NextRequest) {

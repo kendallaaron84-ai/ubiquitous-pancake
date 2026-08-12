@@ -1,21 +1,17 @@
 import { FieldValue } from "firebase-admin/firestore";
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 
 import { adminDb } from "@/core/firebase-admin";
 import {
-  DASHBOARD_SESSION_COOKIE,
-  resolveDashboardSessionSecret,
-  verifyDashboardSession,
-  type DashboardSessionClaims,
-} from "@/core/security/dashboard-session";
+  StudioPublicationAccessError,
+  loadOwnedStudioProduct,
+} from "@/core/security/studio-publication-access";
+import { requireStudioAuthorContext } from "@/core/security/studio-publication-session";
 import { createTranscriptionQuote } from "@/core/transcription";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-const ASSET_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
 
 class RouteError extends Error {
   constructor(readonly status: number, readonly publicMessage: string) {
@@ -25,9 +21,9 @@ class RouteError extends Error {
 
 export async function GET(request: Request) {
   try {
-    const session = await requireSession();
+    const context = await requireStudioAuthorContext(adminDb);
     const assetId = new URL(request.url).searchParams.get("assetId")?.trim() || "";
-    const { product } = await loadAuthorizedProduct(assetId, session);
+    const { product } = await loadOwnedStudioProduct(adminDb, context, assetId);
     const quote = createTranscriptionQuote(product);
     return NextResponse.json({
       success: true,
@@ -42,10 +38,12 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const session = await requireSession();
+    const context = await requireStudioAuthorContext(adminDb);
+    const session = context.session;
     const body = (await request.json().catch(() => null)) as { assetId?: unknown } | null;
     const assetId = typeof body?.assetId === "string" ? body.assetId.trim() : "";
-    const { product, studioKey } = await loadAuthorizedProduct(assetId, session);
+    const { product } = await loadOwnedStudioProduct(adminDb, context, assetId);
+    const studioKey = context.studioKey;
     const quote = createTranscriptionQuote(product);
     if (quote.pendingTrackCount === 0) {
       throw new RouteError(409, "Every uploaded chapter already has a transcript.");
@@ -111,33 +109,6 @@ export async function POST(request: Request) {
   }
 }
 
-async function requireSession(): Promise<DashboardSessionClaims> {
-  const token = (await cookies()).get(DASHBOARD_SESSION_COOKIE)?.value;
-  if (!token) throw new RouteError(401, "Authentication is required.");
-  try {
-    return await verifyDashboardSession(token, resolveDashboardSessionSecret());
-  } catch {
-    throw new RouteError(401, "Your dashboard session is invalid or expired.");
-  }
-}
-
-async function loadAuthorizedProduct(assetId: string, session: DashboardSessionClaims) {
-  if (!ASSET_KEY_PATTERN.test(assetId)) throw new RouteError(400, "A valid asset ID is required.");
-  const snapshot = await adminDb.collection("products").doc(assetId).get();
-  if (!snapshot.exists) throw new RouteError(404, "Audiobook workspace not found.");
-  const product = snapshot.data() || {};
-  const studioKey = String(product.studioKey || product.wpStudioKey || "").trim();
-  const authorEmail = String(product.authorEmail || product.authorId || "").trim().toLowerCase();
-  if (
-    (!session.studioKey || studioKey !== session.studioKey) &&
-    authorEmail !== session.email.trim().toLowerCase()
-  ) {
-    throw new RouteError(403, "This audiobook belongs to another author workspace.");
-  }
-  if (!studioKey) throw new RouteError(422, "This audiobook is not connected to an author StudioKey.");
-  return { product, studioKey };
-}
-
 function resolveApplicationOrigin(request: Request): string {
   const configured = process.env.KOBA_DASHBOARD_URL?.trim();
   const parsed = new URL(configured || new URL(request.url).origin);
@@ -149,6 +120,12 @@ function resolveApplicationOrigin(request: Request): string {
 }
 
 function routeErrorResponse(error: unknown) {
+  if (error instanceof StudioPublicationAccessError) {
+    return NextResponse.json(
+      { success: false, code: error.code, error: error.publicMessage },
+      { status: error.status }
+    );
+  }
   if (error instanceof RouteError) {
     return NextResponse.json({ success: false, error: error.publicMessage }, { status: error.status });
   }
