@@ -155,6 +155,7 @@ export async function claimReaderCheckoutPurchase(
       readerUid: input.readerUid,
       verifiedEmail,
       emailVerified: profile.emailVerified === true,
+      accountStatus: clean(profile.accountStatus),
       correlationId: input.correlationId,
     });
     return {

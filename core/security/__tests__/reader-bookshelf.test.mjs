@@ -197,6 +197,7 @@ test("Phase 5A identity through Phase 5B claim appears in the Phase 5C Bookshelf
     readerUid: identity.readerUid,
     verifiedEmail: identity.email,
     emailVerified: true,
+    accountStatus: "active",
     correlationId: "phase5b-claim-to-5c",
   });
 
