@@ -327,6 +327,8 @@ def retrieve_story_world_knowledge(
     world = world_snapshot.to_dict() or {}
     if not world_snapshot.exists or str(world.get("studioKey") or "") != studio_key or str(world.get("authorId") or "") != author_id or str(world.get("status") or "") != "active":
         raise PermanentTaskError("The selected Story World is not active for this tenant.")
+    if str(world.get("defaultReferenceGuideId") or "") != reference_guide_id:
+        raise PermanentTaskError("The queued Reference Guide is no longer the active Canonical Guide for this Story World.")
 
     guide_ref = world_ref.collection("reference_guides").document(reference_guide_id)
     guide_snapshot = guide_ref.get()

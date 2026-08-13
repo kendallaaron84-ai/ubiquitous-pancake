@@ -11,6 +11,7 @@ import { getNexusFeatureFlags } from "@/core/nexus/feature-flags";
 import { nexusErrorResponse, NexusRouteError, text } from "@/core/nexus/http";
 import { retrieveNexusKnowledge } from "@/core/nexus/knowledge-service";
 import { selectNexusStrategy } from "@/core/nexus/strategy-library";
+import { assertCanonicalReferenceGuide, assertOwnedStoryWorld } from "@/core/nexus/story-world-authoring";
 import { resolveNexusWebsiteConnection } from "@/core/nexus/website-connections";
 import { resolveStrategySourceVersions } from "@/core/nexus/strategy-source-service";
 
@@ -111,9 +112,19 @@ export async function POST(request: Request) {
 }
 
 async function loadGuideMetadata(universeId: string, guideId: string, context: Awaited<ReturnType<typeof requireNexusAuthorContext>>): Promise<{ version: number }> {
-  const snapshot = await adminDb.collection("nexus_story_worlds").doc(universeId).collection("reference_guides").doc(guideId).get();
+  const worldRef = adminDb.collection("nexus_story_worlds").doc(universeId);
+  const guideRef = worldRef.collection("reference_guides").doc(guideId);
+  const [worldSnapshot, snapshot] = await Promise.all([worldRef.get(), guideRef.get()]);
+  const worldData = worldSnapshot.data() || {};
   const data = snapshot.data() || {};
-  if (!snapshot.exists || data.studioKey !== context.studioKey || data.authorId !== context.authorId || data.status !== "ready" || typeof data.version !== "number" || data.publicSafeAcknowledged !== true || data.contentPolicyVersion !== 1) throw new NexusRouteError(400, "The selected Reference Guide is not active, ready, and acknowledged for public-facing use.");
+  assertOwnedStoryWorld(worldSnapshot.exists, worldData, context, { requireActive: true });
+  assertCanonicalReferenceGuide(worldData, snapshot.exists, data, {
+    studioKey: context.studioKey,
+    authorId: context.authorId,
+    universeId,
+    referenceGuideId: guideId,
+  });
+  if (typeof data.version !== "number" || data.publicSafeAcknowledged !== true || data.contentPolicyVersion !== 1) throw new NexusRouteError(400, "The active Canonical Guide is not ready and acknowledged for public-facing use.");
   return { version: data.version };
 }
 

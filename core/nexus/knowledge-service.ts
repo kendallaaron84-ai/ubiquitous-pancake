@@ -3,6 +3,7 @@ import type {
   NexusGoal,
   NexusReferenceGuide,
 } from "@/core/nexus/contracts";
+import { assertCanonicalReferenceGuide, assertOwnedStoryWorld } from "@/core/nexus/story-world-authoring";
 
 export interface NexusKnowledgeQuery {
   studioKey: string;
@@ -41,11 +42,19 @@ export async function retrieveNexusKnowledge(database: FirebaseFirestore.Firesto
   }
 
   if (!query.universeId || !query.referenceGuideId) throw new Error("NEXUS_REFERENCE_GUIDE_REQUIRED");
-  const guideRef = database.collection("nexus_story_worlds").doc(query.universeId).collection("reference_guides").doc(query.referenceGuideId);
-  const guideSnapshot = await guideRef.get();
+  const worldRef = database.collection("nexus_story_worlds").doc(query.universeId);
+  const guideRef = worldRef.collection("reference_guides").doc(query.referenceGuideId);
+  const [worldSnapshot, guideSnapshot] = await Promise.all([worldRef.get(), guideRef.get()]);
+  const world = worldSnapshot.data() || {};
+  assertOwnedStoryWorld(worldSnapshot.exists, world, query, { requireActive: true });
   if (!guideSnapshot.exists) throw new Error("NEXUS_REFERENCE_GUIDE_NOT_FOUND");
   const guide = guideSnapshot.data() as NexusReferenceGuide;
-  if (guide.studioKey !== query.studioKey || guide.authorId !== query.authorId || guide.universeId !== query.universeId || guide.status !== "ready") throw new Error("NEXUS_REFERENCE_GUIDE_NOT_READY");
+  assertCanonicalReferenceGuide(world, guideSnapshot.exists, guide as unknown as Record<string, unknown>, {
+    studioKey: query.studioKey,
+    authorId: query.authorId,
+    universeId: query.universeId,
+    referenceGuideId: query.referenceGuideId,
+  });
 
   if (guide.publicSafeAcknowledged !== true || guide.contentPolicyVersion !== 1) throw new Error("NEXUS_REFERENCE_GUIDE_ACKNOWLEDGEMENT_REQUIRED");
   const versionSnapshot = await guideRef.collection("versions").doc(String(guide.version)).get();

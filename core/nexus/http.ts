@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { NexusAuthorContextError } from "@/core/nexus/author-context";
+import { NexusStoryWorldAuthoringError } from "@/core/nexus/story-world-authoring";
 
 export class NexusRouteError extends Error {
   constructor(
@@ -14,12 +15,12 @@ export class NexusRouteError extends Error {
 }
 
 export function nexusErrorResponse(error: unknown): NextResponse {
-  if (error instanceof NexusRouteError || error instanceof NexusAuthorContextError) {
+  if (error instanceof NexusRouteError || error instanceof NexusAuthorContextError || error instanceof NexusStoryWorldAuthoringError) {
     return NextResponse.json(
       {
         success: false,
         error: error.publicMessage,
-        ...(error instanceof NexusRouteError && error.code ? { code: error.code } : {}),
+        ...((error instanceof NexusRouteError || error instanceof NexusStoryWorldAuthoringError) && error.code ? { code: error.code } : {}),
       },
       { status: error.status }
     );

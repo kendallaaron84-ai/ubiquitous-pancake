@@ -1,12 +1,13 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Archive, BookOpen, Building2, CheckCircle2, Compass, Globe2, Trash2, Upload, X } from "lucide-react";
+import { Archive, BookOpen, Building2, CheckCircle2, Compass, Eye, Globe2, Pencil, Trash2, Upload, X } from "lucide-react";
 
 type Website = { websiteConnectionId: string; displayName: string; wordpressOrigin: string; contentRole: string; defaultUniverseId?: string | null; status: string };
 type GuideStatus = "processing" | "ready" | "failed" | "archived" | "incomplete";
 type Guide = { id: string; displayName?: string; version?: number; wordCount?: number; extractedCharacterCount?: number; status?: GuideStatus; active?: boolean; failureReason?: string | null; createdAt?: unknown; updatedAt?: unknown };
-type World = { id: string; title?: string; genre?: string; defaultReferenceGuideId?: string | null; referenceGuides?: Guide[] };
+type World = { id: string; title?: string; genre?: string; description?: string; status?: "active" | "archived"; defaultReferenceGuideId?: string | null; referenceGuides?: Guide[] };
+type GuideDetail = { referenceGuideId: string; displayName: string; version: number; requestedVersion: number; canonical: boolean; status: GuideStatus; normalizedText: string; spoilerPolicy: { thingsSafeToDiscuss: string; thingsNeverToReveal: string }; versions: Array<{ version: number; status: string; wordCount: number; characterCount: number; createdAt?: unknown }> };
 type Strategy = { id: string; displayName: string; description: string; goals: string[] };
 type ContextPayload = {
   websites?: Website[];
@@ -26,6 +27,7 @@ export function NexusKnowledgePanel({ isOwner = false }: { isOwner?: boolean }) 
   const [world, setWorld] = useState({ title: "", genre: "", description: "" });
   const [site, setSite] = useState({ targetWpOrigin: "", wpUsername: "", wpAppPassword: "", displayName: "", contentRole: "both" });
   const [managedWorldId, setManagedWorldId] = useState<string | null>(null);
+  const [editingWorldId, setEditingWorldId] = useState<string | null>(null);
 
   async function refresh() {
     const response = await fetch("/api/nexus/context", { credentials: "same-origin", cache: "no-store" });
@@ -88,7 +90,11 @@ export function NexusKnowledgePanel({ isOwner = false }: { isOwner?: boolean }) 
               <div><dt className="font-semibold text-foreground">Processing</dt><dd>{count("processing")}</dd></div>
               <div><dt className="font-semibold text-foreground">Failed</dt><dd>{count("failed") + count("incomplete")}</dd></div>
             </dl>
-            <button type="button" className="mt-4 w-full rounded-lg border border-indigo-400/40 px-3 py-2 font-bold text-indigo-200 hover:bg-indigo-500/10" onClick={() => setManagedWorldId(item.id)}>Manage Reference Guides</button>
+            {editingWorldId === item.id ? <StoryWorldEditor world={item} busy={busy} onCancel={() => setEditingWorldId(null)} onSave={async (patch) => { await submitJson("/api/nexus/story-worlds", "PATCH", { universeId: item.id, ...patch }, "Story World updated."); setEditingWorldId(null); }} /> : <div className="mt-4 flex flex-wrap gap-2">
+              <button type="button" className="flex-1 rounded-lg border border-indigo-400/40 px-3 py-2 font-bold text-indigo-200 hover:bg-indigo-500/10" onClick={() => setManagedWorldId(item.id)}>Manage Reference Guides</button>
+              <button type="button" className="rounded-lg border border-border px-3 py-2 font-bold text-foreground" onClick={() => setEditingWorldId(item.id)}><Pencil className="mr-1 inline h-3 w-3" />Edit Story World</button>
+              <button type="button" disabled={busy} className="rounded-lg border border-border px-3 py-2 font-bold text-muted-foreground disabled:opacity-50" onClick={() => submitJson("/api/nexus/story-worlds", "PATCH", { universeId: item.id, title: item.title, genre: item.genre, description: item.description, status: item.status === "archived" ? "active" : "archived" }, item.status === "archived" ? "Story World reactivated." : "Story World archived.")}>{item.status === "archived" ? "Reactivate" : "Archive"}</button>
+            </div>}
           </div>;
         })}
         {(context.storyWorlds || []).length === 0 && <p className="rounded-lg border border-dashed border-border p-4 text-xs text-muted-foreground">Create a Story World first. Its Reference Guides will be managed from one focused screen.</p>}
@@ -97,7 +103,7 @@ export function NexusKnowledgePanel({ isOwner = false }: { isOwner?: boolean }) 
         <textarea className={inputClass} value={world.description} onChange={(e) => setWorld({ ...world, description: e.target.value })} placeholder="World description" />
         <button disabled={busy} className="w-full rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50" onClick={() => submitJson("/api/nexus/story-worlds", "POST", world, "Story World created.")}>Create Story World</button>
       </div>
-    </details> : <div className="rounded-lg border border-border p-3 text-xs text-muted-foreground"><p className="flex items-center gap-2 font-bold text-foreground"><BookOpen className="h-4 w-4 text-indigo-400" />Story Worlds & Reference Guides</p><p className="mt-2">Story World management is not enabled for this environment.</p></div>}
+    </details> : <div className="rounded-lg border border-border p-3 text-xs text-muted-foreground"><p className="flex items-center gap-2 font-bold text-foreground"><BookOpen className="h-4 w-4 text-indigo-400" />Story Worlds & Reference Guides</p><p className="mt-2">Story World authoring is not available for your account.</p></div>}
 
     <details className="rounded-lg border border-border p-3">
       <summary className="flex cursor-pointer items-center gap-2 text-sm font-bold text-foreground"><Compass className="h-4 w-4 text-cyan-400" />Available Strategies</summary>
@@ -127,6 +133,7 @@ export function NexusKnowledgePanel({ isOwner = false }: { isOwner?: boolean }) 
 function ReferenceGuideManager({ world, busy, onClose, onRefresh, onAction }: { world: World; busy: boolean; onClose: () => void; onRefresh: () => Promise<void>; onAction: (referenceGuideId: string, action: "set_active" | "archive" | "clear_active" | "delete_incomplete") => Promise<void> }) {
   const guides = world.referenceGuides || [];
   const processing = guides.some((guide) => guide.status === "processing");
+  const [selectedGuideId, setSelectedGuideId] = useState<string | null>(null);
   return <div role="dialog" aria-modal="true" aria-label={`Manage Reference Guides for ${world.title || world.id}`} className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
     <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-indigo-500/30 bg-card p-5 shadow-2xl">
       <div className="flex items-start justify-between gap-3"><div><h3 className="text-xl font-bold text-white">{world.title || world.id}</h3><p className="text-xs text-muted-foreground">Reference Guide lifecycle and active canon source</p></div><button type="button" aria-label="Close Reference Guide manager" onClick={onClose}><X className="h-5 w-5" /></button></div>
@@ -137,6 +144,7 @@ function ReferenceGuideManager({ world, busy, onClose, onRefresh, onAction }: { 
           <p className="mt-1 text-muted-foreground">Created {formatTimestamp(guide.createdAt)} · Updated {formatTimestamp(guide.updatedAt)}</p>
           {guide.failureReason && <p className="mt-2 rounded bg-red-500/10 p-2 text-red-200">{guide.failureReason}</p>}
           <div className="mt-3 flex flex-wrap gap-2">
+            {guide.status === "ready" && <button disabled={busy} className="rounded border border-indigo-500/30 px-3 py-1.5 font-semibold text-indigo-200 disabled:opacity-50" onClick={() => setSelectedGuideId(guide.id)}><Eye className="mr-1 inline h-3 w-3" />View Current Guide</button>}
             {guide.status === "ready" && !guide.active && <button disabled={busy} className="rounded border border-emerald-500/30 px-3 py-1.5 font-semibold text-emerald-300 disabled:opacity-50" onClick={() => onAction(guide.id, "set_active")}><CheckCircle2 className="mr-1 inline h-3 w-3" />Set Active</button>}
             {!guide.active && guide.status === "ready" && <button disabled={busy} className="rounded border border-border px-3 py-1.5 font-semibold disabled:opacity-50" onClick={() => onAction(guide.id, "archive")}><Archive className="mr-1 inline h-3 w-3" />Archive</button>}
             {!guide.active && (guide.status === "failed" || guide.status === "incomplete") && <button disabled={busy} className="rounded border border-red-500/30 px-3 py-1.5 font-semibold text-red-300 disabled:opacity-50" onClick={() => { if (window.confirm("Permanently delete this unused failed or incomplete Reference Guide?")) void onAction(guide.id, "delete_incomplete"); }}><Trash2 className="mr-1 inline h-3 w-3" />Delete Incomplete</button>}
@@ -147,6 +155,66 @@ function ReferenceGuideManager({ world, busy, onClose, onRefresh, onAction }: { 
       </div>
       <ReferenceUpload universeId={world.id} label="Add Reference Guide" onComplete={onRefresh} disabled={processing} />
       {guides.some((guide) => guide.active) && <button disabled={busy} type="button" className="mt-3 text-xs text-muted-foreground underline" onClick={() => onAction("", "clear_active")}>Use no active Reference Guide</button>}
+      {selectedGuideId && <ReferenceGuideDetail world={world} referenceGuideId={selectedGuideId} onClose={() => setSelectedGuideId(null)} onComplete={async () => { await onRefresh(); }} />}
+    </div>
+  </div>;
+}
+
+function StoryWorldEditor({ world, busy, onCancel, onSave }: { world: World; busy: boolean; onCancel: () => void; onSave: (patch: { title: string; genre: string; description: string; status: "active" | "archived" }) => Promise<void> }) {
+  const [draft, setDraft] = useState({ title: world.title || "", genre: world.genre || "", description: world.description || "", status: world.status === "archived" ? "archived" as const : "active" as const });
+  return <div className="mt-4 space-y-2 rounded-lg border border-indigo-500/20 p-3">
+    <input className={inputClass} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Story World title" />
+    <input className={inputClass} value={draft.genre} onChange={(event) => setDraft({ ...draft, genre: event.target.value })} placeholder="Genre" />
+    <textarea className={inputClass} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="World description" rows={4} />
+    <div className="flex gap-2"><button type="button" disabled={busy || !draft.title.trim() || !draft.genre.trim() || !draft.description.trim()} className="flex-1 rounded bg-indigo-600 px-3 py-2 font-bold text-white disabled:opacity-50" onClick={() => onSave(draft)}>Save Story World</button><button type="button" className="rounded border border-border px-3 py-2" onClick={onCancel}>Cancel</button></div>
+  </div>;
+}
+
+function ReferenceGuideDetail({ world, referenceGuideId, onClose, onComplete }: { world: World; referenceGuideId: string; onClose: () => void; onComplete: () => Promise<void> }) {
+  const [detail, setDetail] = useState<GuideDetail | null>(null);
+  const [draft, setDraft] = useState("");
+  const [safeToDiscuss, setSafeToDiscuss] = useState("");
+  const [neverReveal, setNeverReveal] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [message, setMessage] = useState("Loading guide…");
+  const [busy, setBusy] = useState(false);
+
+  async function load(version?: number) {
+    setBusy(true); setMessage("Loading guide…");
+    try {
+      const query = new URLSearchParams({ universeId: world.id, referenceGuideId });
+      if (version) query.set("version", String(version));
+      const response = await fetch(`/api/nexus/reference-guides?${query.toString()}`, { credentials: "same-origin", cache: "no-store" });
+      const payload = await response.json().catch(() => null) as { guide?: GuideDetail; error?: string } | null;
+      if (!response.ok || !payload?.guide) throw new Error(payload?.error || "The Reference Guide could not be loaded.");
+      setDetail(payload.guide); setDraft(payload.guide.normalizedText); setSafeToDiscuss(payload.guide.spoilerPolicy.thingsSafeToDiscuss); setNeverReveal(payload.guide.spoilerPolicy.thingsNeverToReveal); setEditing(false); setAcknowledged(false); setMessage("");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The Reference Guide could not be loaded."); }
+    finally { setBusy(false); }
+  }
+
+  useEffect(() => { void load(); }, [referenceGuideId, world.id]);
+
+  async function saveNewVersion() {
+    setBusy(true); setMessage("");
+    try {
+      const response = await fetch("/api/nexus/reference-guides", { method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ universeId: world.id, referenceGuideId, clientRequestId: crypto.randomUUID().replace(/-/g, ""), normalizedText: draft, thingsSafeToDiscuss: safeToDiscuss, thingsNeverToReveal: neverReveal, publicSafeAcknowledged: acknowledged }) });
+      const payload = await response.json().catch(() => null) as { error?: string } | null;
+      if (!response.ok) throw new Error(payload?.error || "The new Reference Guide version could not be saved.");
+      setMessage("New Reference Guide version saved."); await onComplete(); await load();
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The new Reference Guide version could not be saved."); }
+    finally { setBusy(false); }
+  }
+
+  return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/90 p-4" role="dialog" aria-modal="true" aria-label="Reference Guide details">
+    <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-indigo-500/30 bg-card p-5 shadow-2xl">
+      <div className="flex items-start justify-between gap-3"><div><h4 className="text-lg font-bold text-white">{detail?.displayName || "Reference Guide"}</h4><p className="text-xs text-muted-foreground">{detail?.canonical ? "Canonical Guide" : "Available Guide"} · Version {detail?.requestedVersion || "—"}</p></div><button type="button" aria-label="Close guide details" onClick={onClose}><X className="h-5 w-5" /></button></div>
+      {detail && <>
+        <div className="mt-4 flex flex-wrap gap-2 text-xs">{detail.versions.map((version) => <button key={version.version} type="button" disabled={busy} className={`rounded border px-3 py-1.5 ${version.version === detail.requestedVersion ? "border-indigo-400 text-indigo-200" : "border-border text-muted-foreground"}`} onClick={() => load(version.version)}>Version {version.version} · {version.wordCount.toLocaleString()} words</button>)}</div>
+        <textarea className={`${inputClass} mt-4 min-h-[320px] font-mono leading-relaxed`} value={draft} readOnly={!editing} onChange={(event) => setDraft(event.target.value)} aria-label="Reference Guide text" />
+        {editing ? <div className="mt-3 space-y-2"><textarea className={inputClass} value={safeToDiscuss} onChange={(event) => setSafeToDiscuss(event.target.value)} placeholder="Things safe to discuss" rows={2} /><textarea className={inputClass} value={neverReveal} onChange={(event) => setNeverReveal(event.target.value)} placeholder="Things never to reveal" rows={2} /><label className="flex items-start gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} /><span>I confirm this version contains only public-facing information the Nexus SEO Engine may discuss.</span></label><div className="flex gap-2"><button type="button" disabled={busy || !acknowledged} className="flex-1 rounded bg-indigo-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50" onClick={saveNewVersion}>Save as New Version</button><button type="button" className="rounded border border-border px-3 py-2 text-xs" onClick={() => { setEditing(false); setDraft(detail.normalizedText); }}>Cancel</button></div></div> : <button type="button" disabled={busy || detail.requestedVersion !== detail.version} className="mt-3 rounded border border-indigo-500/30 px-3 py-2 text-xs font-bold text-indigo-200 disabled:opacity-50" onClick={() => setEditing(true)}><Pencil className="mr-1 inline h-3 w-3" />Edit as New Version</button>}
+      </>}
+      {message && <p role="status" className="mt-3 rounded border border-border p-2 text-xs text-muted-foreground">{message}</p>}
     </div>
   </div>;
 }

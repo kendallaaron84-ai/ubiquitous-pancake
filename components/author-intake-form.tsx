@@ -68,7 +68,7 @@ export function AuthorIntakeForm() {
 
   const worlds = context.storyWorlds || [];
   const selectedWorld = worlds.find((world) => world.id === form.universeId);
-  const guides = (selectedWorld?.referenceGuides || []).filter((guide) => guide.status === "ready");
+  const guides = (selectedWorld?.referenceGuides || []).filter((guide) => guide.status === "ready" && guide.id === selectedWorld?.defaultReferenceGuideId);
   const websites = (context.websites || []).filter((site) => site.status === "active");
   const selectedWebsite = websites.find(
     (site) => site.websiteConnectionId === form.websiteConnectionId
@@ -103,7 +103,7 @@ export function AuthorIntakeForm() {
 
   useEffect(() => {
     if (form.contentSource !== "story_world" || !selectedWorld) return;
-    const ready = (selectedWorld.referenceGuides || []).filter((guide) => guide.status === "ready");
+    const ready = (selectedWorld.referenceGuides || []).filter((guide) => guide.status === "ready" && guide.id === selectedWorld.defaultReferenceGuideId);
     const preferred = ready.find((guide) => guide.id === selectedWorld.defaultReferenceGuideId) || ready.find((guide) => guide.active) || (ready.length === 1 ? ready[0] : undefined);
     if (ready.some((guide) => guide.id === form.referenceGuideId)) return;
     setForm((current) => ({ ...current, referenceGuideId: preferred?.id || "" }));

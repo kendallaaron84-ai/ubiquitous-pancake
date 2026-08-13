@@ -328,3 +328,57 @@ test("Reference Guide upload deduplication records terminal request state", asyn
   assert.match(guideRoute, /sourceSha256/);
   assert.match(guideRoute, /already processing/);
 });
+
+test("Story World authoring uses the existing tenant-owned routes and immutable guide versions", async () => {
+  const [middleware, worldRoute, guideRoute, panel, intake, knowledge, blueprint, worker] = await Promise.all([
+    readFile(new URL("middleware.ts", ROOT), "utf8"),
+    readFile(new URL("app/api/nexus/story-worlds/route.ts", ROOT), "utf8"),
+    readFile(new URL("app/api/nexus/reference-guides/route.ts", ROOT), "utf8"),
+    readFile(new URL("components/nexus-knowledge-panel.tsx", ROOT), "utf8"),
+    readFile(new URL("components/author-intake-form.tsx", ROOT), "utf8"),
+    readFile(new URL("core/nexus/knowledge-service.ts", ROOT), "utf8"),
+    readFile(new URL("app/api/nexus/blueprints/route.ts", ROOT), "utf8"),
+    readFile(new URL("services/content-engine-worker/main.py", ROOT), "utf8"),
+  ]);
+  const allowlistStart = middleware.indexOf("const MVP_API_EXACT_PATHS");
+  const allowlistEnd = middleware.indexOf(");", allowlistStart);
+  const allowlist = middleware.slice(allowlistStart, allowlistEnd);
+  assert.match(allowlist, /"\/api\/nexus\/story-worlds"/);
+  assert.match(allowlist, /"\/api\/nexus\/reference-guides"/);
+  assert.doesNotMatch(allowlist, /"\/api\/nexus\/blueprints"/);
+  assert.doesNotMatch(allowlist, /"\/api\/admin/);
+
+  assert.match(worldRoute, /export async function PATCH/);
+  assert.match(worldRoute, /assertOwnedStoryWorld/);
+  assert.match(worldRoute, /buildStoryWorldAuthorPatch/);
+  assert.doesNotMatch(worldRoute, /body\?\.studioKey|body\?\.authorId/);
+
+  assert.match(guideRoute, /export async function GET/);
+  assert.match(guideRoute, /export async function PUT/);
+  assert.match(guideRoute, /collection\("versions"\)\.doc\(String\(version\)\)/);
+  assert.match(guideRoute, /await versionRef\.create/);
+  assert.match(guideRoute, /pendingVersionRef\.set\(\{ status: "failed"/);
+  assert.match(guideRoute, /version_created/);
+  assert.match(guideRoute, /Cache-Control.*private, no-store/s);
+  assert.match(panel, /Edit Story World/);
+  assert.match(panel, /View Current Guide/);
+  assert.match(panel, /Edit as New Version/);
+  assert.match(panel, /Canonical Guide/);
+  assert.doesNotMatch(panel, /Story World management is not enabled for this environment/);
+  assert.match(intake, /guide\.id === selectedWorld\?\.defaultReferenceGuideId/);
+
+  for (const source of [knowledge, blueprint]) assert.match(source, /assertCanonicalReferenceGuide/);
+  assert.match(worker, /defaultReferenceGuideId/);
+  assert.match(worker, /active Canonical Guide/);
+});
+
+test("Reference Guide detail responses hide server storage coordinates", async () => {
+  const guideRoute = await readFile(new URL("app/api/nexus/reference-guides/route.ts", ROOT), "utf8");
+  const responseStart = guideRoute.indexOf("return NextResponse.json({", guideRoute.indexOf("export async function GET"));
+  const responseEnd = guideRoute.indexOf("Cache-Control", responseStart);
+  const responseProjection = guideRoute.slice(responseStart, responseEnd);
+  assert.ok(responseStart >= 0 && responseEnd > responseStart);
+  assert.doesNotMatch(responseProjection, /sourceStoragePath|extractedTextStoragePath|bucket/);
+  assert.match(responseProjection, /normalizedText/);
+  assert.match(responseProjection, /versions/);
+});

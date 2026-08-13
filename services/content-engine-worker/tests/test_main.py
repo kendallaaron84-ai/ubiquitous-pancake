@@ -212,6 +212,7 @@ def story_store(*, include_safe=True, include_restricted=False, cross_tenant=Fal
             "studioKey": "KOBA-001",
             "authorId": "author_01",
             "status": "active",
+            "defaultReferenceGuideId": "guide_0001",
             "title": "The Lantern Realm",
             "genre": "Fantasy",
         },
@@ -344,6 +345,13 @@ class WorkerContractTests(unittest.TestCase):
         worker.db = FakeFirestore(story_store())
         with self.assertRaisesRegex(worker.PermanentTaskError, "changed after"):
             worker.resolve_nexus_generation_context(data, "KOBA-001")
+
+    def test_non_canonical_reference_guide_is_rejected(self):
+        store = story_store()
+        store[("nexus_story_worlds", "universe_01")]["defaultReferenceGuideId"] = "guide_other"
+        worker.db = FakeFirestore(store)
+        with self.assertRaisesRegex(worker.PermanentTaskError, "active Canonical Guide"):
+            worker.resolve_nexus_generation_context(nexus_blueprint(), "KOBA-001")
 
     def test_reference_guide_requires_public_safe_acknowledgement(self):
         store = story_store()

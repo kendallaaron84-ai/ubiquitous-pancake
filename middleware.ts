@@ -66,6 +66,8 @@ const MVP_API_EXACT_PATHS = new Set([
   "/api/stripe/connect/onboard",
   "/api/stripe/connect/dashboard",
   "/api/nexus/context",
+  "/api/nexus/story-worlds",
+  "/api/nexus/reference-guides",
   "/api/studio/publications",
   "/api/studio/transcribe",
   "/api/studio/vault",
