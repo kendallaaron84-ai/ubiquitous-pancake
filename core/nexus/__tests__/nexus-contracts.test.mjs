@@ -26,6 +26,7 @@ import {
 import {
   NEXUS_STRATEGY_CATALOG,
   selectNexusStrategy,
+  validateNexusStrategySourceGoals,
 } from "../strategy-library.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
@@ -157,6 +158,29 @@ test("feature flags default closed except the backward-compatible strategy selec
       else process.env[name] = previous[name];
     }
   }
+});
+
+test("strategy source goals are catalog-driven and reject unknown or cross-slot tokens", () => {
+  assert.deepEqual(
+    validateNexusStrategySourceGoals("strategy_brand_positioning", ["build_authority", "challenge_assumptions"]),
+    ["build_authority", "challenge_assumptions"]
+  );
+  assert.deepEqual(
+    validateNexusStrategySourceGoals("strategy_intrigue", ["create_intrigue", "create_intrigue"]),
+    ["create_intrigue"]
+  );
+  assert.throws(
+    () => validateNexusStrategySourceGoals("strategy_intrigue", ["invented_goal"]),
+    /NEXUS_STRATEGY_GOAL_UNKNOWN/
+  );
+  assert.throws(
+    () => validateNexusStrategySourceGoals("strategy_intrigue", ["drive_action"]),
+    /NEXUS_STRATEGY_GOAL_NOT_SUPPORTED_BY_SLOT/
+  );
+  assert.throws(
+    () => validateNexusStrategySourceGoals("strategy_intrigue", []),
+    /NEXUS_STRATEGY_GOAL_REQUIRED/
+  );
 });
 
 test("Setup and Nexus UI use the canonical multi-site website workflow", async () => {
@@ -307,9 +331,17 @@ test("strategy source management is owner-only, private, versioned, and worker-e
   assert.match(sourceRoute, /collection\("versions"\)/);
   assert.match(sourceRoute, /status: "approved"/);
   assert.match(sourceRoute, /cacheControl: "private, no-store"/);
+  assert.match(sourceRoute, /validateNexusStrategySourceGoals/);
+  assert.match(sourceRoute, /NEXUS_STRATEGY_GOAL_UNKNOWN/);
+  assert.match(sourceRoute, /const version = Number\(current\.data\(\)\?\.latestVersion \|\| 0\) \+ 1/);
+  assert.match(sourceRoute, /activeVersion: current\.data\(\)\?\.activeVersion \|\| null/);
+  assert.match(sourceRoute, /status: "active", activeVersion: version/);
   assert.match(ownerPage, /fetch\("\/api\/session"/);
   assert.match(ownerPage, /payload\.isOwner !== true/);
   assert.match(ownerPage, /router\.replace\("\/products"\)/);
+  assert.match(ownerPage, /selectedCatalogEntry\.goals\.map/);
+  assert.match(ownerPage, /Upload New Version/);
+  assert.doesNotMatch(ownerPage, /Comma-separated supported goal IDs/);
   const authorResponse = sourceRoute.slice(sourceRoute.indexOf("export async function GET"), sourceRoute.indexOf("export async function POST"));
   assert.doesNotMatch(authorResponse, /sourceStoragePath|extractedTextStoragePath|normalizedText/);
   assert.match(sourceService, /status === "active"/);
