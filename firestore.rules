@@ -1,0 +1,23 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Nexus Story World knowledge is server-owned. Dashboard clients must use
+    // the authenticated Next.js API, whose Firebase Admin access bypasses
+    // client security rules after enforcing tenant and author ownership.
+    match /nexus_story_worlds/{universeId} {
+      allow read, write: if false;
+
+      match /{nestedDocument=**} {
+        allow read, write: if false;
+      }
+    }
+
+    // Narrow compatibility boundary approved for this repair: preserve the
+    // currently deployed behavior for every unrelated top-level collection.
+    match /{topLevelCollection}/{document=**} {
+      allow read, write: if request.auth != null
+        && topLevelCollection != "nexus_story_worlds";
+    }
+  }
+}

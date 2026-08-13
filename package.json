@@ -8,6 +8,7 @@
     "lint": "next lint",
     "start": "next start",
     "test:security": "node --test core/security/__tests__/*.test.mjs",
+    "test:firestore-rules": "firebase emulators:exec --only firestore --project author-jubilee-command-center-rules-test \"node --test core/security/rules-tests/firestore-nexus-rules.test.mjs\"",
     "test:nexus": "node --test core/nexus/__tests__/*.test.mjs"
   },
   "dependencies": {
@@ -80,6 +81,7 @@
     "zod": "4.1.12"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "5.0.1",
     "@tailwindcss/postcss": "^4.1.14",
     "@types/node": "^24",
     "@types/nodemailer": "^8.0.1",
