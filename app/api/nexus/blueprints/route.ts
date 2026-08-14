@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
 
-import { dispatchBlogGenerationTask } from "@/core/cloud-tasks";
+import {
+  assertBlogGenerationTaskConfiguration,
+  CloudTasksDispatchConfigurationError,
+  dispatchBlogGenerationTask,
+} from "@/core/cloud-tasks";
 import { adminDb } from "@/core/firebase-admin";
 import { requireNexusAuthorContext } from "@/core/nexus/author-context";
 import { BUSINESS_BRAND_GOALS, isGoalAllowed, STORY_WORLD_GOALS, type NexusContentSource, type NexusGoal, type NexusRequestedGoal } from "@/core/nexus/contracts";
@@ -45,6 +49,8 @@ export async function POST(request: Request) {
     const strategyVersions = await resolveStrategySourceVersions(adminDb, [strategy.primaryStrategyGuideId, strategy.supportingStrategyGuideId]);
     const primaryStrategyGuideVersion = strategyVersions[strategy.primaryStrategyGuideId] || 0;
     const supportingStrategyGuideVersion = strategy.supportingStrategyGuideId ? strategyVersions[strategy.supportingStrategyGuideId] || 0 : null;
+    // Reject an unusable task destination before creating a durable blueprint.
+    assertBlogGenerationTaskConfiguration();
     blueprintId = `nexus_${randomUUID().replace(/-/g, "")}`;
     const attemptId = randomUUID();
     const guideMetadata = contentSource === "story_world" ? await loadGuideMetadata(universeId, referenceGuideId, context) : null;
@@ -107,6 +113,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, status: "accepted", blueprintId }, { status: 202 });
   } catch (error) {
     if (blueprintId) await adminDb.collection("content_blueprints").doc(blueprintId).set({ executionState: "failed", errorLog: error instanceof Error ? error.message.slice(0, 500) : "Nexus dispatch failed.", updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
+    if (error instanceof CloudTasksDispatchConfigurationError) {
+      return nexusErrorResponse(
+        new NexusRouteError(
+          error.status,
+          "The Content Engine queue is temporarily unavailable.",
+          error.code,
+          error.message
+        )
+      );
+    }
     return nexusErrorResponse(error);
   }
 }
