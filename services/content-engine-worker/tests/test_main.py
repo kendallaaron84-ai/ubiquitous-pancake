@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os
 import sys
@@ -185,6 +186,37 @@ def complete_guide_text():
     return (facts * 45).strip()
 
 
+def complete_story_brief_text():
+    return (
+        "For this story, Mara interviews Leonard Crane at the North Harbor Hotel in Baltimore. "
+        "Leonard witnessed a blue courier leave the hotel shortly before midnight."
+    )
+
+
+def add_story_brief(store, *, blueprint_id="blueprint_001", studio_key="KOBA-001", digest=None):
+    brief_text = complete_story_brief_text()
+    resolved_digest = digest or hashlib.sha256(brief_text.encode("utf-8")).hexdigest()
+    words, characters = worker.reference_guide_counts(brief_text)
+    store[("nexus_story_worlds", "universe_01", "story_briefs", "brief_0001")] = {
+        "studioKey": studio_key,
+        "authorId": "author_01",
+        "universeId": "universe_01",
+        "boundBlueprintId": blueprint_id,
+        "status": "ready",
+        "activeVersion": 1,
+        "sourceSha256": resolved_digest,
+    }
+    store[("nexus_story_worlds", "universe_01", "story_briefs", "brief_0001", "versions", "1")] = {
+        "status": "ready",
+        "sourceSha256": resolved_digest,
+        "publicSafeAcknowledged": True,
+        "normalizedText": brief_text,
+        "wordCount": words,
+        "characterCount": characters,
+    }
+    return resolved_digest
+
+
 class FakeWordPressSession:
     def __init__(self, base_url):
         self.base_url = base_url
@@ -309,6 +341,19 @@ def nexus_blueprint(content_source="story_world"):
     return data
 
 
+def dual_authority_blueprint():
+    data = nexus_blueprint()
+    data.update({
+        "schemaVersion": 2,
+        "blueprintId": "blueprint_001",
+        "storyAuthorityMode": "canonical_plus_story_brief",
+        "storyBriefId": "brief_0001",
+        "storyBriefVersion": 1,
+        "storyBriefSha256": hashlib.sha256(complete_story_brief_text().encode("utf-8")).hexdigest(),
+    })
+    return data
+
+
 class WorkerContractTests(unittest.TestCase):
     def setUp(self):
         worker.db = FakeFirestore()
@@ -344,6 +389,35 @@ class WorkerContractTests(unittest.TestCase):
         data["referenceGuideVersion"] = 2
         worker.db = FakeFirestore(story_store())
         with self.assertRaisesRegex(worker.PermanentTaskError, "changed after"):
+            worker.resolve_nexus_generation_context(data, "KOBA-001")
+
+    def test_dual_authority_blueprint_loads_pinned_story_brief(self):
+        store = story_store()
+        add_story_brief(store)
+        worker.db = FakeFirestore(store)
+        _, story, _ = worker.resolve_nexus_generation_context(dual_authority_blueprint(), "KOBA-001")
+        self.assertEqual("canonical_plus_story_brief", story["authorityMode"])
+        self.assertEqual(complete_story_brief_text(), story["storyBrief"]["completeStoryBrief"])
+
+    def test_story_brief_is_blueprint_tenant_version_and_digest_bound(self):
+        cases = {
+            "another Blueprint": {"blueprint_id": "blueprint_other"},
+            "another tenant": {"studio_key": "KOBA-OTHER"},
+            "another digest": {"digest": "a" * 64},
+        }
+        for label, mutation in cases.items():
+            with self.subTest(label=label):
+                store = story_store()
+                add_story_brief(store, **mutation)
+                worker.db = FakeFirestore(store)
+                with self.assertRaisesRegex(worker.PermanentTaskError, "Story Brief"):
+                    worker.resolve_nexus_generation_context(dual_authority_blueprint(), "KOBA-001")
+
+    def test_canonical_only_blueprint_rejects_story_brief_pin(self):
+        data = nexus_blueprint()
+        data["storyBriefId"] = "brief_0001"
+        worker.db = FakeFirestore(story_store())
+        with self.assertRaisesRegex(worker.PermanentTaskError, "Canonical-only"):
             worker.resolve_nexus_generation_context(data, "KOBA-001")
 
     def test_non_canonical_reference_guide_is_rejected(self):
@@ -580,6 +654,60 @@ class WorkerContractTests(unittest.TestCase):
                 self.assertIn("narrow the topic", raised.exception.guidance)
                 self.assertEqual(["Public history of the requested kingdom"], raised.exception.missing_information)
 
+    def test_story_brief_support_is_authoritative_but_directives_are_not(self):
+        story = {
+            "completeReferenceGuide": complete_guide_text(),
+            "storyBrief": {"completeStoryBrief": complete_story_brief_text()},
+            "guardrails": {"safeToDiscuss": "", "neverReveal": ""},
+        }
+        blueprint = dual_authority_blueprint()
+        blueprint["customDirectives"] = "Invent a second witness named Avery."
+        worker.article_client.models.generate_content = MagicMock(return_value=FakeModelResult({
+            "status": "supported", "requiresAdditionalCanon": False, "confidence": 0.94,
+            "supportingFacts": ["Leonard witnessed the courier."], "missingInformation": [],
+            "authorityConflicts": [], "warnings": [], "authorGuidance": "Proceed using the Story Brief."
+        }))
+        result = worker.assess_story_world_topic_support(blueprint=blueprint, story_context=story)
+        self.assertEqual("supported", result["status"])
+        prompt = worker.article_client.models.generate_content.call_args.kwargs["contents"]
+        self.assertIn("Leonard Crane", prompt)
+        self.assertIn("Custom Directives are not factual authority", prompt)
+        self.assertNotIn("Avery", prompt)
+
+    def test_story_brief_conflict_with_global_canon_fails_before_generation(self):
+        story = {
+            "completeReferenceGuide": complete_guide_text(),
+            "storyBrief": {"completeStoryBrief": complete_story_brief_text()},
+            "guardrails": {"safeToDiscuss": "", "neverReveal": ""},
+        }
+        worker.article_client.models.generate_content = MagicMock(return_value=FakeModelResult({
+            "status": "warning", "requiresAdditionalCanon": False, "confidence": 0.8,
+            "supportingFacts": [], "missingInformation": [],
+            "authorityConflicts": ["The brief says Mara abandoned the lantern, contrary to global canon."],
+            "warnings": [], "authorGuidance": "Resolve the conflict."
+        }))
+        with self.assertRaises(worker.StoryBriefConflictError) as raised:
+            worker.assess_story_world_topic_support(blueprint=dual_authority_blueprint(), story_context=story)
+        self.assertEqual("NEXUS_STORY_BRIEF_CONTRADICTS_CANON", raised.exception.code)
+
+    def test_grounded_prompt_keeps_story_brief_and_directives_separate(self):
+        story = {
+            "world": {"title": "The Lantern Realm", "genre": "Fantasy"},
+            "completeReferenceGuide": complete_guide_text(),
+            "storyBrief": {"completeStoryBrief": complete_story_brief_text()},
+            "guardrails": {"safeToDiscuss": "", "neverReveal": ""},
+        }
+        blueprint = dual_authority_blueprint()
+        blueprint["customDirectives"] = "Write as a first-person journal."
+        prompt = worker.build_grounded_article_prompt(
+            blueprint=blueprint, business_context=None, story_context=story,
+            strategy_context=[], grounding_assessment={"status": "supported"},
+        )
+        self.assertIn("STORY BRIEF (approved truth only for this Blueprint", prompt)
+        self.assertIn("Leonard Crane", prompt)
+        self.assertIn("Author instructions: Write as a first-person journal.", prompt)
+        self.assertIn("Author instructions control treatment only", prompt)
+
     def test_full_context_validation_blocks_invented_canon_contradiction_and_spoiler(self):
         story = {"completeReferenceGuide": complete_guide_text(), "guardrails": {"neverReveal": "Queen Iris is the traitor"}}
         article = {"seo_title": "Lantern", "blog_post_html": "<p>Draft</p>"}
@@ -596,6 +724,18 @@ class WorkerContractTests(unittest.TestCase):
                 with self.assertRaises(worker.PermanentTaskError):
                     worker.validate_article_against_full_context(blueprint=nexus_blueprint(), article=article, story_context=story)
 
+    def test_full_context_failure_exposes_only_sanitized_claim_diagnostics(self):
+        story = {"completeReferenceGuide": complete_guide_text(), "guardrails": {"neverReveal": ""}}
+        worker.article_client.models.generate_content = MagicMock(return_value=FakeModelResult({
+            "status": "failed", "unsupportedClaims": ["<b>Unknown witness</b>\u0000"],
+            "inventedCanon": [], "contradictions": [], "spoilerLeaks": [], "warnings": [],
+        }))
+        with self.assertRaises(worker.FullContextValidationError) as raised:
+            worker.validate_article_against_full_context(
+                blueprint=nexus_blueprint(), article={"seo_title": "Draft", "blog_post_html": "<p>Draft</p>"}, story_context=story
+            )
+        self.assertEqual(["Unknown witness"], raised.exception.diagnostics["unsupportedClaims"])
+
     def test_full_context_warning_is_returned_without_blocking(self):
         story = {"completeReferenceGuide": complete_guide_text(), "guardrails": {"neverReveal": ""}}
         worker.article_client.models.generate_content = MagicMock(return_value=FakeModelResult({
@@ -607,6 +747,29 @@ class WorkerContractTests(unittest.TestCase):
         )
         self.assertEqual("warning", result["status"])
         self.assertEqual(["A metaphor deserves editorial review."], result["warnings"])
+
+    def test_full_context_validation_uses_both_authorities_not_directives(self):
+        story = {
+            "completeReferenceGuide": complete_guide_text(),
+            "storyBrief": {"completeStoryBrief": complete_story_brief_text()},
+            "guardrails": {"neverReveal": ""},
+        }
+        blueprint = dual_authority_blueprint()
+        blueprint["customDirectives"] = "Invent a dragon named Avery."
+        worker.article_client.models.generate_content = MagicMock(return_value=FakeModelResult({
+            "status": "passed", "unsupportedClaims": [], "inventedCanon": [],
+            "contradictions": [], "spoilerLeaks": [], "warnings": [],
+        }))
+        result = worker.validate_article_against_full_context(
+            blueprint=blueprint,
+            article={"seo_title": "Leonard's Account", "blog_post_html": "<p>Leonard saw the courier.</p>"},
+            story_context=story,
+        )
+        self.assertEqual("passed", result["status"])
+        prompt = worker.article_client.models.generate_content.call_args.kwargs["contents"]
+        self.assertIn("Leonard Crane", prompt)
+        self.assertIn("Claims supported by either", prompt)
+        self.assertNotIn("Avery", prompt)
 
     def test_insufficient_assessment_blocks_generation_artwork_secret_and_wordpress(self):
         data = nexus_blueprint()
@@ -634,13 +797,18 @@ class WorkerContractTests(unittest.TestCase):
             worker, "resolve_nexus_generation_context", return_value=(None, story, [])
         ), patch.object(worker, "assess_story_world_topic_support", return_value=supported), patch.object(
             worker, "validate_generated_article", return_value={"groundingStatus": "grounded", "canonValidationStatus": "passed", "spoilerValidationStatus": "passed", "warnings": []}
-        ), patch.object(worker, "validate_article_against_full_context", side_effect=worker.PermanentTaskError("invented canon")), patch.object(
+        ), patch.object(worker, "validate_article_against_full_context", side_effect=worker.FullContextValidationError("invented canon", {
+            "status": "failed", "unsupportedClaims": ["Unknown witness"], "inventedCanon": [],
+            "contradictions": [], "spoilerLeaks": [], "warnings": [],
+        })), patch.object(
             worker, "generate_featured_image"
-        ) as artwork, patch.object(worker, "wordpress_session") as wordpress, patch.object(worker, "update_attempt"):
+        ) as artwork, patch.object(worker, "wordpress_session") as wordpress, patch.object(worker, "update_attempt") as update:
             with self.assertRaises(worker.PermanentTaskError):
                 worker.execute_generation("blueprint_001", "attempt_001", "KOBA-001", "https://author.example", "secret")
         artwork.assert_not_called()
         wordpress.assert_not_called()
+        diagnostic_updates = [call.args[2] for call in update.call_args_list if call.args[2].get("fullContextValidation")]
+        self.assertEqual("Unknown witness", diagnostic_updates[-1]["fullContextValidation"]["unsupportedClaims"][0])
 
     def test_malformed_new_blueprint_cannot_reach_legacy_book_context(self):
         data = nexus_blueprint()

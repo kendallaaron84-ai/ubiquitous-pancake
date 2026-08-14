@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
@@ -9,6 +8,7 @@ import { requireNexusAuthorContext } from "@/core/nexus/author-context";
 import { getNexusFeatureFlags } from "@/core/nexus/feature-flags";
 import { nexusErrorResponse, NexusRouteError, text } from "@/core/nexus/http";
 import { createTraceabilityChunks, estimateTokens, NEXUS_REFERENCE_GUIDE_LIMITS, validateReferenceGuideFile, validateReferenceGuideText } from "@/core/nexus/reference-guide";
+import { extractNexusSourceText, safeNexusSourceFileName } from "@/core/nexus/source-file";
 import { assertOwnedStoryWorld } from "@/core/nexus/story-world-authoring";
 import {
   assertGuideCanBeArchived,
@@ -20,8 +20,6 @@ import {
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-
-const nodeRequire = createRequire(import.meta.url);
 
 export async function GET(request: Request) {
   try {
@@ -169,7 +167,7 @@ export async function POST(request: Request) {
     let wordCount: number;
     let characterCount: number;
     try {
-      const validated = validateReferenceGuideText(await extractText(bytes, file.name, file.type));
+      const validated = validateReferenceGuideText(await extractNexusSourceText(bytes, file.name, file.type));
       extracted = validated.normalizedText;
       wordCount = validated.wordCount;
       characterCount = validated.characterCount;
@@ -193,7 +191,7 @@ export async function POST(request: Request) {
     try {
       bucket = adminStorage.bucket(resolveFirebaseStorageBucketName());
       await Promise.all([
-        bucket.file(`${basePath}/source/${safeFileName(file.name)}`).save(bytes, { resumable: false, contentType: file.type || "application/octet-stream", metadata: { cacheControl: "private, no-store" } }),
+        bucket.file(`${basePath}/source/${safeNexusSourceFileName(file.name)}`).save(bytes, { resumable: false, contentType: file.type || "application/octet-stream", metadata: { cacheControl: "private, no-store" } }),
         bucket.file(`${basePath}/extracted.txt`).save(Buffer.from(extracted, "utf8"), { resumable: false, contentType: "text/plain; charset=utf-8", metadata: { cacheControl: "private, no-store" } }),
       ]);
     } catch (error) {
@@ -208,7 +206,7 @@ export async function POST(request: Request) {
     const versionRef = createdGuideRef.collection("versions").doc(String(version));
     pendingVersionRef = versionRef;
     const acknowledgement = { contentPolicyVersion: 1, publicSafeAcknowledged: true, publicSafeAcknowledgedAt: FieldValue.serverTimestamp(), publicSafeAcknowledgedByUid: context.session.uid };
-    await versionRef.create({ version, sourceSha256: digest, status: "ready", sourceStoragePath: `${basePath}/source/${safeFileName(file.name)}`, extractedTextStoragePath: `${basePath}/extracted.txt`, extractedCharacterCount: characterCount, wordCount, estimatedTokenCount: estimateTokens(extracted), chunkCount: chunks.length, ...acknowledgement, createdAt: FieldValue.serverTimestamp() });
+    await versionRef.create({ version, sourceSha256: digest, status: "ready", sourceStoragePath: `${basePath}/source/${safeNexusSourceFileName(file.name)}`, extractedTextStoragePath: `${basePath}/extracted.txt`, extractedCharacterCount: characterCount, wordCount, estimatedTokenCount: estimateTokens(extracted), chunkCount: chunks.length, ...acknowledgement, createdAt: FieldValue.serverTimestamp() });
     for (let offset = 0; offset < chunks.length; offset += 400) {
       const batch = adminDb.batch();
       chunks.slice(offset, offset + 400).forEach((chunk, index) => {
@@ -218,7 +216,7 @@ export async function POST(request: Request) {
       });
       await batch.commit();
     }
-    await createdGuideRef.set({ displayName: text(form.get("displayName"), 200) || (typeof existingGuide?.displayName === "string" ? existingGuide.displayName : file.name), originalFileName: file.name.slice(0, 240), mimeType: file.type, fileSizeBytes: file.size, sourceSha256: digest, version, status: "ready", spoilerPolicy, sourceStoragePath: `${basePath}/source/${safeFileName(file.name)}`, extractedTextStoragePath: `${basePath}/extracted.txt`, extractedCharacterCount: characterCount, wordCount, estimatedTokenCount: estimateTokens(extracted), chunkCount: chunks.length, ...acknowledgement, replacementStatus: FieldValue.delete(), pendingVersion: FieldValue.delete(), replacementErrorMessage: FieldValue.delete(), readyAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await createdGuideRef.set({ displayName: text(form.get("displayName"), 200) || (typeof existingGuide?.displayName === "string" ? existingGuide.displayName : file.name), originalFileName: file.name.slice(0, 240), mimeType: file.type, fileSizeBytes: file.size, sourceSha256: digest, version, status: "ready", spoilerPolicy, sourceStoragePath: `${basePath}/source/${safeNexusSourceFileName(file.name)}`, extractedTextStoragePath: `${basePath}/extracted.txt`, extractedCharacterCount: characterCount, wordCount, estimatedTokenCount: estimateTokens(extracted), chunkCount: chunks.length, ...acknowledgement, replacementStatus: FieldValue.delete(), pendingVersion: FieldValue.delete(), replacementErrorMessage: FieldValue.delete(), readyAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
     if (!worldData.defaultReferenceGuideId) {
       await worldRef.set({ defaultReferenceGuideId: referenceGuideId, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
     }
@@ -425,22 +423,7 @@ function lifecycleErrorResponse(error: unknown) {
   return nexusErrorResponse(error);
 }
 
-async function extractText(bytes: Buffer, name: string, mimeType: string): Promise<string> {
-  const extension = name.toLowerCase().split(".").pop();
-  if (mimeType.startsWith("text/") || extension === "txt" || extension === "md" || extension === "markdown") return bytes.toString("utf8");
-  if (mimeType.includes("wordprocessingml") || extension === "docx") {
-    const mammoth = nodeRequire("mammoth") as { extractRawText(input: { buffer: Buffer }): Promise<{ value: string }> };
-    return (await mammoth.extractRawText({ buffer: bytes })).value;
-  }
-  if (mimeType === "application/pdf" || extension === "pdf") {
-    const pdfParse = nodeRequire("pdf-parse") as (buffer: Buffer) => Promise<{ text: string }>;
-    return (await pdfParse(bytes)).text;
-  }
-  throw new NexusRouteError(415, "This Reference Guide file type is not supported.");
-}
-
 function normalizeSpoilerLevel(value: FormDataEntryValue | null): "public_safe" | "limited_spoilers" | "author_directed" { return value === "limited_spoilers" || value === "author_directed" ? value : "public_safe"; }
-function safeFileName(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 180) || "guide"; }
 function storageErrorCode(error: unknown): string | number | null {
   if (!error || typeof error !== "object" || !("code" in error)) return null;
   const code = (error as { code?: unknown }).code;

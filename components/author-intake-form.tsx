@@ -38,11 +38,13 @@ export function AuthorIntakeForm() {
   const [loadingContext, setLoadingContext] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const [storyBriefFile, setStoryBriefFile] = useState<File | null>(null);
+  const [storyBriefPublicSafeAcknowledged, setStoryBriefPublicSafeAcknowledged] = useState(false);
   const [form, setForm] = useState({
     contentSource: "business_brand" as ContentSource,
     universeId: "", referenceGuideId: "", requestedGoal: "automatic",
     strategyGuideSelectionMode: "automatic", primaryStrategyGuideId: "", supportingStrategyGuideId: "",
-    websiteConnectionId: "primary", topicTitle: "", targetAudience: "", customDirectives: "",
+    websiteConnectionId: "primary", topicTitle: "", targetAudience: "", storyBriefText: "", customDirectives: "",
     primaryKeyword: "", secondaryKeyword: "", longTailKeyword: "",
   });
 
@@ -81,8 +83,9 @@ export function AuthorIntakeForm() {
   const strategies = context.strategies || [];
   const canSubmit = useMemo(() => Boolean(
     form.topicTitle.trim() && form.targetAudience.trim() && selectedWebsiteAcceptsSource &&
-    (form.contentSource === "business_brand" || (form.universeId && form.referenceGuideId))
-  ), [form, selectedWebsiteAcceptsSource]);
+    (form.contentSource === "business_brand" || (form.universeId && form.referenceGuideId)) &&
+    (!(form.storyBriefText.trim() || storyBriefFile) || storyBriefPublicSafeAcknowledged)
+  ), [form, selectedWebsiteAcceptsSource, storyBriefFile, storyBriefPublicSafeAcknowledged]);
 
   useEffect(() => {
     setForm((current) => {
@@ -122,18 +125,28 @@ export function AuthorIntakeForm() {
     setIsSubmitting(true);
     setSubmissionError(null);
     try {
+      const { storyBriefText, ...formWithoutStoryBrief } = form;
+      const payload = {
+        ...formWithoutStoryBrief,
+        storyBriefPublicSafeAcknowledged,
+        seoKeywords: { primary: form.primaryKeyword, secondary: form.secondaryKeyword, longTail: form.longTailKeyword },
+      };
+      const storyWorldBody = new FormData();
+      storyWorldBody.set("payload", JSON.stringify(payload));
+      storyWorldBody.set("storyBriefText", storyBriefText);
+      if (storyBriefFile) storyWorldBody.set("storyBriefFile", storyBriefFile);
       const response = await fetch("/api/nexus/blueprints", {
-        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...form,
-          seoKeywords: { primary: form.primaryKeyword, secondary: form.secondaryKeyword, longTail: form.longTailKeyword },
-        }),
+        method: "POST", credentials: "same-origin",
+        headers: form.contentSource === "business_brand" ? { "Content-Type": "application/json" } : undefined,
+        body: form.contentSource === "business_brand" ? JSON.stringify(payload) : storyWorldBody,
         signal: AbortSignal.timeout(20_000),
       });
-      const payload = await response.json().catch(() => null) as { blueprintId?: string; error?: string } | null;
-      if (response.status !== 202 || !payload?.blueprintId) throw new Error(payload?.error || "The Nexus SEO Engine did not accept this request.");
+      const responsePayload = await response.json().catch(() => null) as { blueprintId?: string; error?: string } | null;
+      if (response.status !== 202 || !responsePayload?.blueprintId) throw new Error(responsePayload?.error || "The Nexus SEO Engine did not accept this request.");
       toast({ title: "SEO draft queued", description: "The article, SEO package, social copy, and featured image are building in the background." });
-      setForm((current) => ({ ...current, topicTitle: "", targetAudience: "", customDirectives: "", primaryKeyword: "", secondaryKeyword: "", longTailKeyword: "" }));
+      setForm((current) => ({ ...current, topicTitle: "", targetAudience: "", storyBriefText: "", customDirectives: "", primaryKeyword: "", secondaryKeyword: "", longTailKeyword: "" }));
+      setStoryBriefFile(null);
+      setStoryBriefPublicSafeAcknowledged(false);
     } catch (error) {
       const message = errorMessage(error);
       setSubmissionError(message);
@@ -153,7 +166,9 @@ export function AuthorIntakeForm() {
           <Field label="Content Source" icon={<Briefcase className="h-3 w-3" />}>
             <select className={inputClass} value={form.contentSource} onChange={(e) => {
               const contentSource = e.target.value as ContentSource;
-              setForm((current) => ({ ...current, contentSource, universeId: "", referenceGuideId: "", requestedGoal: "automatic", websiteConnectionId: "" }));
+              setForm((current) => ({ ...current, contentSource, universeId: "", referenceGuideId: "", requestedGoal: "automatic", websiteConnectionId: "", storyBriefText: "" }));
+              setStoryBriefFile(null);
+              setStoryBriefPublicSafeAcknowledged(false);
             }}><option value="business_brand">Business Brand</option><option value="story_world" disabled={!loadingContext && context.flags?.storyWorld !== true}>Story World</option></select>
           </Field>
           <Field label="Blog Goal" icon={<Sparkles className="h-3 w-3" />}>
@@ -179,6 +194,19 @@ export function AuthorIntakeForm() {
         <Field label="Working Title / Topic" icon={<FileText className="h-3 w-3" />}><input className={inputClass} required value={form.topicTitle} onChange={(e) => update("topicTitle", e.target.value)} placeholder="e.g. 5 Reasons Audiobooks Outsell Print" /></Field>
         <Field label="Target Audience" icon={<Users className="h-3 w-3" />}><input className={inputClass} required value={form.targetAudience} onChange={(e) => update("targetAudience", e.target.value)} placeholder="e.g. Independent thriller readers" /></Field>
 
+        {form.contentSource === "story_world" && <div className="space-y-3 rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-indigo-200">Story Brief — what is true for this story</p>
+            <p className="mt-1 text-xs text-muted-foreground">Optional when the Canonical Reference Guide already contains everything needed. Add story-specific people, events, locations, relationships, or circumstances here.</p>
+          </div>
+          <textarea className={`${inputClass} h-36 resize-none`} maxLength={30000} value={form.storyBriefText} onChange={(event) => { update("storyBriefText", event.target.value); if (event.target.value) setStoryBriefFile(null); }} placeholder="Enter facts approved specifically for this story…" />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <label className="text-xs text-muted-foreground">Or upload PDF, DOCX, TXT, or Markdown</label>
+            <input className="max-w-full text-xs text-muted-foreground file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-500/20 file:px-3 file:py-2 file:text-indigo-100" type="file" accept=".pdf,.docx,.txt,.md,.markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" onChange={(event) => { const file = event.target.files?.[0] || null; setStoryBriefFile(file); if (file) update("storyBriefText", ""); }} />
+          </div>
+          {(form.storyBriefText.trim() || storyBriefFile) && <label className="flex items-start gap-2 text-xs text-slate-200"><input className="mt-0.5" type="checkbox" checked={storyBriefPublicSafeAcknowledged} onChange={(event) => setStoryBriefPublicSafeAcknowledged(event.target.checked)} /><span>I confirm these facts are approved for this public-facing story.</span></label>}
+        </div>}
+
         <div className="space-y-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
           <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-300">SEO Keywords — up to three</p>
           <div className="grid gap-3 md:grid-cols-3">
@@ -187,7 +215,7 @@ export function AuthorIntakeForm() {
             <input className={inputClass} maxLength={200} value={form.longTailKeyword} onChange={(e) => update("longTailKeyword", e.target.value)} placeholder="Long-tail keyword" />
           </div>
         </div>
-        <Field label="Custom Directives" icon={<LayoutTemplate className="h-3 w-3" />}><textarea className={`${inputClass} h-28 resize-none`} value={form.customDirectives} onChange={(e) => update("customDirectives", e.target.value)} placeholder="Add tone, message, exclusions, or points the draft must cover." /></Field>
+        <Field label="Custom Directives — how should KOBA-I tell it?" icon={<LayoutTemplate className="h-3 w-3" />}><textarea className={`${inputClass} h-28 resize-none`} value={form.customDirectives} onChange={(e) => update("customDirectives", e.target.value)} placeholder="Add tone, point of view, structure, pacing, exclusions, or creative treatment. Directives do not establish story facts." /></Field>
         {loadingContext && <p className="text-xs text-muted-foreground">Loading verified knowledge and website destinations…</p>}
         {submissionError && <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300"><p className="font-semibold">Your draft request was not completed.</p><p className="mt-1 text-xs">{submissionError}</p></div>}
       </div>

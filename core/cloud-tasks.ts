@@ -21,7 +21,7 @@ export interface BlogGenerationTaskPayload {
   targetWpOrigin: string;
   secretCredentialRef: string;
   seo: BlogSeoStrategy;
-  schemaVersion?: 1;
+  schemaVersion?: 1 | 2;
   authorId?: string;
   authorEmail?: string;
   requestedByUid?: string;
@@ -29,6 +29,11 @@ export interface BlogGenerationTaskPayload {
   contentSource?: NexusContentSource;
   universeId?: string | null;
   referenceGuideId?: string | null;
+  referenceGuideVersion?: number | null;
+  storyAuthorityMode?: "canonical_only" | "canonical_plus_story_brief";
+  storyBriefId?: string | null;
+  storyBriefVersion?: number | null;
+  storyBriefSha256?: string | null;
   requestedGoal?: NexusGoal | "automatic";
   strategyGuideSelectionMode?: NexusStrategySelectionMode;
   primaryStrategyGuideId?: string | null;

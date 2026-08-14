@@ -16,6 +16,11 @@ import {
   validateReferenceGuideText,
   validateReferenceGuideFile,
 } from "../reference-guide.ts";
+import {
+  NEXUS_STORY_BRIEF_LIMITS,
+  validateStoryBriefFile,
+  validateStoryBriefText,
+} from "../story-brief.ts";
 import { validateFirebasePublicConfig } from "../../firebase-config.ts";
 import {
   assertGuideCanBeArchived,
@@ -110,6 +115,24 @@ test("full-context limits reject instead of silently truncating", () => {
   assert.equal(exactlyThirtyThousand.length, 30000);
   assert.equal(validateReferenceGuideText(exactlyThirtyThousand).characterCount, 30000);
   assert.throws(() => validateReferenceGuideText(`${exactlyThirtyThousand}b`), /REFERENCE_GUIDE_CHARACTER_LIMIT_EXCEEDED/);
+});
+
+test("Story Brief validation supports short story-scoped facts without silent truncation", () => {
+  const brief = "Mara interviews Leonard Crane at the North Harbor Hotel.";
+  assert.deepEqual(validateStoryBriefText(brief), {
+    normalizedText: brief,
+    wordCount: 9,
+    characterCount: brief.length,
+  });
+  for (const [name, type] of [
+    ["brief.pdf", "application/pdf"],
+    ["brief.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    ["brief.txt", "text/plain"],
+    ["brief.md", "text/markdown"],
+  ]) assert.doesNotThrow(() => validateStoryBriefFile({ name, type, size: 128 }));
+  assert.throws(() => validateStoryBriefText(""), /STORY_BRIEF_TEXT_EMPTY/);
+  assert.throws(() => validateStoryBriefText(Array.from({ length: 5001 }, () => "fact").join(" ")), /STORY_BRIEF_WORD_LIMIT_EXCEEDED/);
+  assert.throws(() => validateStoryBriefText("x".repeat(NEXUS_STORY_BRIEF_LIMITS.maximumCharacters + 1)), /STORY_BRIEF_CHARACTER_LIMIT_EXCEEDED/);
 });
 
 test("Firebase client configuration fails early with actionable environment errors", () => {
@@ -248,7 +271,7 @@ test("worker and gateway retain critical baseline controls", async () => {
   assert.match(worker, /facebook_post/);
   assert.match(worker, /instagram_caption/);
   assert.match(worker, /generate_featured_image/);
-  assert.match(worker, /COMPLETE Reference Guide/);
+  assert.match(worker, /(?:COMPLETE|CANONICAL) Reference Guide/i);
   assert.match(worker, /NEXUS_INSUFFICIENT_GROUNDING/);
   assert.match(worker, /knowledgeMode.*full_reference_guide/s);
   const fullContextRetrieval = worker.slice(
@@ -402,6 +425,29 @@ test("Story World authoring uses the existing tenant-owned routes and immutable 
   for (const source of [knowledge, blueprint]) assert.match(source, /assertCanonicalReferenceGuide/);
   assert.match(worker, /defaultReferenceGuideId/);
   assert.match(worker, /active Canonical Guide/);
+});
+
+test("Story World schema v2 keeps Story Brief truth separate and protected", async () => {
+  const [contracts, route, intake, worker, rules] = await Promise.all([
+    readFile(new URL("core/nexus/contracts.ts", ROOT), "utf8"),
+    readFile(new URL("app/api/nexus/blueprints/route.ts", ROOT), "utf8"),
+    readFile(new URL("components/author-intake-form.tsx", ROOT), "utf8"),
+    readFile(new URL("services/content-engine-worker/main.py", ROOT), "utf8"),
+    readFile(new URL("firestore.rules", ROOT), "utf8"),
+  ]);
+  assert.match(contracts, /NEXUS_SCHEMA_VERSION = 2/);
+  assert.match(contracts, /canonical_plus_story_brief/);
+  assert.match(route, /collection\("story_briefs"\)/);
+  assert.match(route, /boundBlueprintId/);
+  assert.match(route, /storyBriefSha256/);
+  assert.doesNotMatch(route, /blueprintData[\s\S]{0,2000}normalizedText/);
+  assert.match(intake, /Story Brief — what is true for this story/);
+  assert.match(intake, /Custom Directives — how should KOBA-I tell it/);
+  assert.match(worker, /def retrieve_story_brief/);
+  assert.match(worker, /approved truth only for this Blueprint/);
+  assert.match(worker, /Custom Directives are not factual authority/);
+  assert.match(worker, /NEXUS_STORY_BRIEF_CONTRADICTS_CANON/);
+  assert.match(rules, /match \/nexus_story_worlds\/\{universeId\}[\s\S]*allow read, write: if false/);
 });
 
 test("Reference Guide detail responses hide server storage coordinates", async () => {

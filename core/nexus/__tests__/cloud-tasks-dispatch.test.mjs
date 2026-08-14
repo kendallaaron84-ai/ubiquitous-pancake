@@ -58,7 +58,7 @@ test("Nexus validates task configuration before durable blueprint creation and r
 
   const validationIndex = route.indexOf("assertBlogGenerationTaskConfiguration();");
   const blueprintIdIndex = route.indexOf("blueprintId = `nexus_");
-  const persistenceIndex = route.indexOf("await ref.create({");
+  const persistenceIndex = route.indexOf("await ref.create(blueprintData)");
 
   assert.ok(validationIndex >= 0);
   assert.ok(validationIndex < blueprintIdIndex);

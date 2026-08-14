@@ -1,4 +1,4 @@
-export const NEXUS_SCHEMA_VERSION = 1 as const;
+export const NEXUS_SCHEMA_VERSION = 2 as const;
 export const NEXUS_MAX_ACTIVE_WEBSITES = 2 as const;
 
 export type NexusContentSource = "business_brand" | "story_world";
@@ -19,6 +19,7 @@ export type NexusGoal =
 export type NexusRequestedGoal = NexusGoal | "automatic";
 export type NexusStrategySelectionMode = "automatic" | "manual";
 export type NexusWebsiteContentRole = NexusContentSource | "both";
+export type NexusStoryAuthorityMode = "canonical_only" | "canonical_plus_story_brief";
 
 export interface NexusSeoKeywords {
   primary: string;
@@ -27,7 +28,7 @@ export interface NexusSeoKeywords {
 }
 
 export interface NexusGenerationRequest {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   blueprintId: string;
   generationAttemptId: string;
   studioKey: string;
@@ -40,6 +41,11 @@ export interface NexusGenerationRequest {
   contentSource: NexusContentSource;
   universeId: string | null;
   referenceGuideId: string | null;
+  referenceGuideVersion?: number | null;
+  storyAuthorityMode?: NexusStoryAuthorityMode;
+  storyBriefId?: string | null;
+  storyBriefVersion?: number | null;
+  storyBriefSha256?: string | null;
   topicTitle: string;
   targetAudience: string;
   seoKeywords: NexusSeoKeywords;
@@ -164,6 +170,34 @@ export interface NexusReferenceGuideSummary {
   failureReason: string | null;
 }
 
+export interface NexusStoryBrief {
+  schemaVersion: 1;
+  storyBriefId: string;
+  universeId: string;
+  studioKey: string;
+  authorId: string;
+  boundBlueprintId: string;
+  activeVersion: number;
+  sourceSha256: string;
+  status: "ready" | "failed";
+  createdAt: unknown;
+  updatedAt: unknown;
+}
+
+export interface NexusStoryBriefVersion {
+  schemaVersion: 1;
+  version: number;
+  sourceSha256: string;
+  sourceStoragePath: string | null;
+  extractedTextStoragePath: string;
+  wordCount: number;
+  characterCount: number;
+  status: "ready" | "failed";
+  publicSafeAcknowledged: true;
+  createdByUid: string;
+  createdAt: unknown;
+}
+
 export interface NexusKnowledgeChunk {
   schemaVersion: 1;
   chunkId: string;
@@ -251,12 +285,16 @@ export interface NexusStrategySelection {
 }
 
 export interface NexusBlueprintAdditions {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   websiteConnectionId: string;
   contentSource: NexusContentSource;
   universeId: string | null;
   referenceGuideId: string | null;
   referenceGuideVersion: number | null;
+  storyAuthorityMode: NexusStoryAuthorityMode;
+  storyBriefId: string | null;
+  storyBriefVersion: number | null;
+  storyBriefSha256: string | null;
   requestedGoal: NexusRequestedGoal;
   resolvedGoal: NexusGoal;
   strategySelectionMode: NexusStrategySelectionMode;
@@ -281,10 +319,11 @@ export interface NexusBlueprintAdditions {
 }
 
 export interface NexusTopicGroundingAssessment {
-  status: "supported" | "warning" | "insufficient";
+  status: "supported" | "warning" | "insufficient" | "additional_canon_required" | "authority_conflict";
   confidence: number;
   supportingFacts: string[];
   missingInformation: string[];
+  authorityConflicts?: string[];
   warnings: string[];
   authorGuidance: string;
 }
