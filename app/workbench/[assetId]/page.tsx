@@ -1,11 +1,43 @@
 "use client";
 
-import React, { useState, useEffect, use } from "react";
-import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert } from "lucide-react";
+import React, { useState, useEffect, use, useRef } from "react";
+import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, ImagePlus, Trash2 } from "lucide-react";
 import Link from "next/link";
+import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
 import { toast } from "@/components/ui/use-toast";
 import { ModeToggle } from "@/components/elements/mode-toggle";
 import { loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
+
+const CHAPTER_TAGS = new Set(["A", "ABBR", "B", "BLOCKQUOTE", "BR", "CITE", "CODE", "DIV", "EM", "FIGCAPTION", "FIGURE", "H1", "H2", "H3", "H4", "H5", "H6", "HR", "I", "IMG", "LI", "OL", "P", "PRE", "SECTION", "SMALL", "SPAN", "STRONG", "SUB", "SUP", "UL"]);
+
+function sanitizeChapterHtml(value: string): string {
+  if (typeof window === "undefined") return value;
+  const parsed = new DOMParser().parseFromString(`<div>${value || ""}</div>`, "text/html");
+  const root = parsed.body.firstElementChild;
+  if (!root) return "";
+  root.querySelectorAll("script,style,iframe,object,embed,form,link,meta,svg").forEach((node) => node.remove());
+  [...root.querySelectorAll("*")].forEach((node) => {
+    if (!CHAPTER_TAGS.has(node.tagName)) { node.replaceWith(...node.childNodes); return; }
+    [...node.attributes].forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      if (name.startsWith("on") || !["href", "src", "alt", "title", "class", "role", "aria-label", "loading"].includes(name)) node.removeAttribute(attribute.name);
+    });
+    if (node instanceof HTMLImageElement) {
+      try {
+        const source = new URL(node.getAttribute("src") || "");
+        if (!/^https?:$/.test(source.protocol) || !/\.(?:jpe?g|png|gif|svg)$/i.test(source.pathname)) node.remove();
+      } catch { node.remove(); }
+      node.alt = node.getAttribute("alt") || "Illustration";
+    }
+  });
+  return root.innerHTML;
+}
+
+function editorHtml(value: string): string {
+  const source = String(value || "");
+  if (/<[a-z][\s\S]*>/i.test(source)) return sanitizeChapterHtml(source);
+  return source.split(/\r?\n/).map((line) => `<p>${line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") || "<br>"}</p>`).join("");
+}
 
 // 🛠️ THEME-RESPONSIVE TOOLTIP
 const Tooltip = ({ text, children }: { text: string, children: React.ReactNode }) => {
@@ -28,6 +60,12 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   const [activeChapterIndex, setActiveChapterIndex] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const pendingInsertionSlotRef = useRef<HTMLElement | null>(null);
+  const selectedFigureRef = useRef<HTMLElement | null>(null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [hasSelectedIllustration, setHasSelectedIllustration] = useState(false);
   
   // 🛡️ Style Guardrails State
   const [guardrails, setGuardrails] = useState({
@@ -85,6 +123,121 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     }
 };
 
+  const updateActiveChapterHtml = (html: string) => {
+    setBookData((current: any) => {
+      const chapters = [...(current?.chapters || [])];
+      if (!chapters[activeChapterIndex]) return current;
+      chapters[activeChapterIndex] = { ...chapters[activeChapterIndex], textContent: html };
+      return { ...current, chapters };
+    });
+  };
+
+  const serializedEditorHtml = () => {
+    if (!editorRef.current) return "";
+    const copy = editorRef.current.cloneNode(true) as HTMLElement;
+    copy.querySelectorAll("[data-koba-image-slot]").forEach((slot) => slot.remove());
+    return copy.innerHTML;
+  };
+
+  const refreshImageInsertionSlots = () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.querySelectorAll("[data-koba-image-slot]").forEach((slot) => slot.remove());
+    const blocks = [...editor.children];
+    for (let index = blocks.length; index >= 0; index -= 1) {
+      const slot = document.createElement("button");
+      slot.type = "button";
+      slot.contentEditable = "false";
+      slot.dataset.kobaImageSlot = String(index);
+      slot.className = "koba-image-insertion-slot";
+      slot.textContent = "+ Add Image Here";
+      slot.setAttribute("aria-label", `Add image at chapter position ${index + 1}`);
+      editor.insertBefore(slot, blocks[index] || null);
+    }
+  };
+
+  const chooseImageForSlot = (slot: HTMLElement) => {
+    pendingInsertionSlotRef.current = slot;
+    imageInputRef.current?.click();
+  };
+
+  useEffect(() => {
+    if (!bookData) return;
+    const frame = window.requestAnimationFrame(refreshImageInsertionSlots);
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeChapterIndex, bookData?.chapters?.[activeChapterIndex]?.id]);
+
+  const insertImageAtSelectedPosition = (url: string, alt: string) => {
+    const editor = editorRef.current;
+    const slot = pendingInsertionSlotRef.current;
+    if (!editor || !slot || !editor.contains(slot)) {
+      toast({ title: "Choose an insertion point", description: "Select Add Image Here where the illustration should appear.", variant: "destructive" });
+      return;
+    }
+    const figure = document.createElement("figure");
+    figure.className = "koba-illustration";
+    const image = document.createElement("img");
+    image.src = url;
+    image.alt = alt;
+    image.loading = "lazy";
+    figure.appendChild(image);
+    slot.replaceWith(figure);
+    pendingInsertionSlotRef.current = null;
+    selectedFigureRef.current = figure;
+    setHasSelectedIllustration(true);
+    updateActiveChapterHtml(serializedEditorHtml());
+    refreshImageInsertionSlots();
+  };
+
+  const handleIllustrationUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const allowedTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/svg+xml"]);
+    if (!allowedTypes.has(file.type)) {
+      toast({ title: "Unsupported image", description: "Use JPEG, PNG, GIF, or SVG.", variant: "destructive" });
+      return;
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      toast({ title: "Image too large", description: "Images must be 12 MB or smaller.", variant: "destructive" });
+      return;
+    }
+    setIsUploadingImage(true);
+    try {
+      const extension = file.name.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") || "image";
+      const chapterId = bookData.chapters[activeChapterIndex]?.id || `chapter-${activeChapterIndex + 1}`;
+      const storagePath = `studio/${assetId}/illustrations/${chapterId}/${crypto.randomUUID()}.${extension}`;
+      const storageReference = ref(getStorage(), storagePath);
+      const snapshot = await new Promise<any>((resolve, reject) => {
+        const task = uploadBytesResumable(storageReference, file, { contentType: file.type });
+        task.on("state_changed", undefined, reject, () => resolve(task.snapshot));
+      });
+      insertImageAtSelectedPosition(await getDownloadURL(snapshot.ref), file.name.replace(/\.[^.]+$/, ""));
+      toast({ title: "Image inserted", description: "Save Draft to preserve it in this chapter." });
+    } catch (error: any) {
+      toast({ title: "Image upload failed", description: error?.message || "Please try again.", variant: "destructive" });
+    } finally {
+      setIsUploadingImage(false);
+    }
+  };
+
+  const removeSelectedImage = () => {
+    const selection = window.getSelection();
+    const element = selection?.anchorNode instanceof Element
+      ? selection.anchorNode
+      : selection?.anchorNode?.parentElement;
+    const figure = selectedFigureRef.current || element?.closest("figure.koba-illustration");
+    if (!figure || !editorRef.current?.contains(figure)) {
+      toast({ title: "Select an image", description: "Click an inserted image, then choose Remove Image." });
+      return;
+    }
+    figure.remove();
+    selectedFigureRef.current = null;
+    setHasSelectedIllustration(false);
+    updateActiveChapterHtml(serializedEditorHtml());
+    refreshImageInsertionSlots();
+  };
+
   const handleSave = async () => {
   if (!bookData) return;
   setIsSaving(true);
@@ -93,7 +246,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     const formattedChapters = sourceChapters.map((ch: any, index: number) => ({
         id: ch.id || `ch_${index + 1}_${assetId}`,
         title: ch.title || `Chapter ${index + 1}`,
-        textContent: ch.textContent || ch.content || "" 
+        textContent: sanitizeChapterHtml(editorHtml(ch.textContent || ch.content || ""))
     }));
 
     const payload = await saveStudioProduct(assetId, "save_workbench_draft", {
@@ -267,17 +420,45 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
               className="w-full bg-transparent text-3xl font-bold text-[#1E2B53] dark:text-white border-none outline-none focus:ring-0 placeholder-slate-400 dark:placeholder-white/40 transition-colors"
               placeholder="Chapter Title"
             />
-            <textarea
-              // 🚀 Bind directly to textContent
-              value={bookData.chapters[activeChapterIndex]?.textContent || bookData.chapters[activeChapterIndex]?.content || ""}
-              onChange={(e) => {
-                const newChapters = [...bookData.chapters];
-                newChapters[activeChapterIndex].textContent = e.target.value;
-                setBookData({ ...bookData, chapters: newChapters });
+            <section aria-labelledby="chapter-content-heading" className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-slate-950/20">
+              <div className="mb-3">
+                <h2 id="chapter-content-heading" className="text-sm font-bold text-[#1E2B53] dark:text-white">Chapter Content</h2>
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Write your chapter and add illustrations where they belong.</p>
+                <p className="mt-1 text-xs text-slate-500">Choose an Add Image Here position inside the chapter.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 border-y border-slate-200 py-3 dark:border-white/10">
+              <input ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/svg+xml" className="hidden" onChange={handleIllustrationUpload} />
+              {isUploadingImage && <span className="flex items-center gap-2 text-sm font-bold text-emerald-700"><ImagePlus className="h-4 w-4" /> Uploading illustration…</span>}
+              {hasSelectedIllustration && (
+                <button type="button" onClick={removeSelectedImage} className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30">
+                  <Trash2 className="h-4 w-4" /> Remove Image
+                </button>
+              )}
+              <span className="text-[11px] text-slate-500">JPEG, PNG, GIF, or safely stored SVG · 12 MB max</span>
+            </div>
+            <div
+              key={bookData.chapters[activeChapterIndex]?.id}
+              ref={editorRef}
+              contentEditable
+              suppressContentEditableWarning
+              onInput={() => updateActiveChapterHtml(serializedEditorHtml())}
+              onBlur={refreshImageInsertionSlots}
+              onClick={(event) => {
+                const target = event.target as Element;
+                const slot = target.closest("[data-koba-image-slot]") as HTMLElement | null;
+                if (slot) {
+                  event.preventDefault();
+                  chooseImageForSlot(slot);
+                  return;
+                }
+                selectedFigureRef.current = target.closest("figure.koba-illustration") as HTMLElement | null;
+                setHasSelectedIllustration(Boolean(selectedFigureRef.current));
               }}
-              className="w-full h-[60vh] bg-transparent text-lg text-[#293A71] dark:text-white border-none outline-none focus:ring-0 resize-none leading-relaxed font-serif placeholder-slate-400 dark:placeholder-white/40 transition-colors"
-              placeholder="Drafting continues..."
+              dangerouslySetInnerHTML={{ __html: editorHtml(bookData.chapters[activeChapterIndex]?.textContent || bookData.chapters[activeChapterIndex]?.content || "") }}
+              className="koba-chapter-editor w-full min-h-[60vh] bg-transparent text-lg text-[#293A71] dark:text-white border-none outline-none leading-relaxed font-serif transition-colors [&_.koba-image-insertion-slot]:my-2 [&_.koba-image-insertion-slot]:block [&_.koba-image-insertion-slot]:w-full [&_.koba-image-insertion-slot]:rounded-lg [&_.koba-image-insertion-slot]:border [&_.koba-image-insertion-slot]:border-dashed [&_.koba-image-insertion-slot]:border-emerald-400 [&_.koba-image-insertion-slot]:bg-emerald-50 [&_.koba-image-insertion-slot]:px-3 [&_.koba-image-insertion-slot]:py-2 [&_.koba-image-insertion-slot]:font-sans [&_.koba-image-insertion-slot]:text-sm [&_.koba-image-insertion-slot]:font-bold [&_.koba-image-insertion-slot]:text-emerald-700 [&_.koba-image-insertion-slot]:transition-colors hover:[&_.koba-image-insertion-slot]:bg-emerald-100 focus:[&_.koba-image-insertion-slot]:outline-none focus:[&_.koba-image-insertion-slot]:ring-2 focus:[&_.koba-image-insertion-slot]:ring-emerald-500 [&_figure]:my-6 [&_figure]:max-w-full [&_img]:block [&_img]:h-auto [&_img]:max-w-full [&_img]:rounded-lg [&_figcaption]:mt-2 [&_figcaption]:text-center [&_figcaption]:text-sm [&_figcaption]:text-slate-500"
+              data-placeholder="Drafting continues..."
             />
+            </section>
           </div>
         </div>
       </div>
