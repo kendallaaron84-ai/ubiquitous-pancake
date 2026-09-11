@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, use, useRef } from "react";
-import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, ImagePlus, Trash2 } from "lucide-react";
+import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, ImagePlus, Trash2, GripVertical, Replace } from "lucide-react";
 import Link from "next/link";
 import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
 import { toast } from "@/components/ui/use-toast";
@@ -9,6 +9,20 @@ import { ModeToggle } from "@/components/elements/mode-toggle";
 import { loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
 
 const CHAPTER_TAGS = new Set(["A", "ABBR", "B", "BLOCKQUOTE", "BR", "CITE", "CODE", "DIV", "EM", "FIGCAPTION", "FIGURE", "H1", "H2", "H3", "H4", "H5", "H6", "HR", "I", "IMG", "LI", "OL", "P", "PRE", "SECTION", "SMALL", "SPAN", "STRONG", "SUB", "SUP", "UL"]);
+const PAGE_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/svg+xml"]);
+
+function imageDimensions(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    };
+    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`Could not read ${file.name}.`)); };
+    image.src = url;
+  });
+}
 
 function sanitizeChapterHtml(value: string): string {
   if (typeof window === "undefined") return value;
@@ -66,6 +80,11 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   const selectedFigureRef = useRef<HTMLElement | null>(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [hasSelectedIllustration, setHasSelectedIllustration] = useState(false);
+  const pageInputRef = useRef<HTMLInputElement>(null);
+  const replacePageInputRef = useRef<HTMLInputElement>(null);
+  const replacePageIndexRef = useRef<number | null>(null);
+  const dragPageIndexRef = useRef<number | null>(null);
+  const [isUploadingPages, setIsUploadingPages] = useState(false);
   
   // 🛡️ Style Guardrails State
   const [guardrails, setGuardrails] = useState({
@@ -243,15 +262,16 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   setIsSaving(true);
   try {
     const sourceChapters = Array.isArray(bookData.chapters) ? bookData.chapters : [];
-    const formattedChapters = sourceChapters.map((ch: any, index: number) => ({
-        id: ch.id || `ch_${index + 1}_${assetId}`,
-        title: ch.title || `Chapter ${index + 1}`,
-        textContent: sanitizeChapterHtml(editorHtml(ch.textContent || ch.content || ""))
-    }));
+    const illustrated = bookData.layoutMode === "illustrated_pages";
+    const formattedChapters = sourceChapters.map((ch: any, index: number) => illustrated
+      ? { id: ch.id || `ch_${index + 1}_${assetId}`, title: ch.title || `Chapter ${index + 1}`, pages: Array.isArray(ch.pages) ? ch.pages : [] }
+      : { id: ch.id || `ch_${index + 1}_${assetId}`, title: ch.title || `Chapter ${index + 1}`, textContent: sanitizeChapterHtml(editorHtml(ch.textContent || ch.content || "")) });
 
     const payload = await saveStudioProduct(assetId, "save_workbench_draft", {
       chapters: formattedChapters,
       guardrails,
+      layoutMode: illustrated ? "illustrated_pages" : "reflowable",
+      illustratedPageSettings: bookData.illustratedPageSettings,
     });
 
     setBookData((current: any) => ({
@@ -269,6 +289,63 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     setIsSaving(false);
   }
 };
+
+  const uploadPageFiles = async (files: File[], replaceIndex: number | null = null) => {
+    const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+    if (!sorted.length) return;
+    if (sorted.some((file) => !PAGE_IMAGE_TYPES.has(file.type))) {
+      toast({ title: "Unsupported page", description: "Use JPEG, PNG, GIF, or SVG page images.", variant: "destructive" });
+      return;
+    }
+    setIsUploadingPages(true);
+    try {
+      const uploadedPages: Array<{
+        id: string; assetId: string; previewUrl: string; fileName: string; mimeType: string;
+        width: number; height: number; aspectRatio: number; facingIntent: "auto";
+      }> = [];
+      for (const file of sorted) {
+        const [dimensions, uploaded] = await Promise.all([
+          imageDimensions(file),
+          uploadStudioFile(assetId, file, "illustrated_page"),
+        ]);
+        uploadedPages.push({
+          id: `page_${crypto.randomUUID()}`,
+          assetId: uploaded.storagePath,
+          previewUrl: URL.createObjectURL(file),
+          fileName: file.name,
+          mimeType: file.type,
+          ...dimensions,
+          aspectRatio: dimensions.width / dimensions.height,
+          facingIntent: "auto",
+        });
+      }
+      setBookData((current: any) => {
+        const chapters = [...current.chapters];
+        const chapter = { ...chapters[activeChapterIndex] };
+        const pages = [...(chapter.pages || [])];
+        if (replaceIndex !== null) pages.splice(replaceIndex, 1, uploadedPages[0]);
+        else pages.push(...uploadedPages);
+        chapters[activeChapterIndex] = { ...chapter, pages };
+        return { ...current, chapters };
+      });
+      toast({ title: replaceIndex === null ? "Pages added" : "Page replaced", description: "Save Draft to preserve the illustrated page order." });
+    } catch (error) {
+      toast({ title: "Page upload failed", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" });
+    } finally {
+      setIsUploadingPages(false);
+      replacePageIndexRef.current = null;
+    }
+  };
+
+  const updateCurrentPages = (transform: (pages: any[]) => any[]) => {
+    setBookData((current: any) => {
+      const chapters = [...current.chapters];
+      const chapter = { ...chapters[activeChapterIndex] };
+      chapter.pages = transform([...(chapter.pages || [])]);
+      chapters[activeChapterIndex] = chapter;
+      return { ...current, chapters };
+    });
+  };
 
   const addChapter = () => {
       if(!bookData) return;
@@ -420,6 +497,51 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
               className="w-full bg-transparent text-3xl font-bold text-[#1E2B53] dark:text-white border-none outline-none focus:ring-0 placeholder-slate-400 dark:placeholder-white/40 transition-colors"
               placeholder="Chapter Title"
             />
+            <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-slate-950/20">
+              <div><p className="text-sm font-bold">Presentation</p><p className="text-xs text-slate-500">Choose the authoring model for this publication.</p></div>
+              <select
+                aria-label="Publication presentation model"
+                value={bookData.layoutMode === "illustrated_pages" ? "illustrated_pages" : "reflowable"}
+                onChange={(event) => setBookData({
+                  ...bookData,
+                  layoutMode: event.target.value,
+                  illustratedPageSettings: bookData.illustratedPageSettings || { spreadStart: "right", allowSpreads: true, pageBackground: "#111111" },
+                  chapters: bookData.chapters.map((chapter: any) => ({ ...chapter, pages: chapter.pages || [] })),
+                })}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-white/20 dark:bg-slate-900"
+              >
+                <option value="reflowable">Reflowable book</option>
+                <option value="illustrated_pages">Illustrated finished pages</option>
+              </select>
+            </div>
+            {bookData.layoutMode === "illustrated_pages" ? (
+            <section aria-labelledby="illustrated-pages-heading" className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-slate-950/20">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div><h2 id="illustrated-pages-heading" className="text-sm font-bold">Finished Page Plates</h2><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Upload complete pages. KOBA-I preserves every page as one indivisible composition.</p></div>
+                <button type="button" disabled={isUploadingPages} onClick={() => pageInputRef.current?.click()} className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50"><ImagePlus className="h-4 w-4" />{isUploadingPages ? "Uploading…" : "+ Add Pages"}</button>
+              </div>
+              <input ref={pageInputRef} type="file" multiple accept="image/jpeg,image/png,image/gif,image/svg+xml" className="hidden" onChange={(event) => { const files = [...(event.target.files || [])]; event.target.value = ""; void uploadPageFiles(files); }} />
+              <input ref={replacePageInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/svg+xml" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void uploadPageFiles([file], replacePageIndexRef.current); }} />
+              <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {(currentChapter.pages || []).map((page: any, pageIndex: number) => {
+                  const referenceRatio = Number((currentChapter.pages || [])[0]?.aspectRatio || 0);
+                  const ratioMismatch = referenceRatio > 0 && Math.abs(Number(page.aspectRatio) - referenceRatio) / referenceRatio > 0.08;
+                  return (
+                    <article key={page.id || pageIndex} draggable onDragStart={() => { dragPageIndexRef.current = pageIndex; }} onDragOver={(event) => event.preventDefault()} onDrop={() => { const from = dragPageIndexRef.current; if (from === null || from === pageIndex) return; updateCurrentPages((pages) => { const [moved] = pages.splice(from, 1); pages.splice(pageIndex, 0, moved); return pages; }); dragPageIndexRef.current = null; }} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-white/10 dark:bg-slate-900">
+                      <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2 text-xs dark:border-white/10"><span className="flex items-center gap-1 font-bold"><GripVertical className="h-4 w-4 text-slate-400" /> Page {pageIndex + 1}</span><span>{page.width} × {page.height}</span></div>
+                      <div className="flex h-64 items-center justify-center bg-slate-200 p-2 dark:bg-black/40"><img src={page.previewUrl} alt={`Page ${pageIndex + 1} preview`} draggable={false} className="max-h-full max-w-full object-contain" /></div>
+                      {ratioMismatch && <p className="bg-amber-50 px-3 py-2 text-xs text-amber-800">Aspect ratio differs from the first page.</p>}
+                      <div className="flex items-center justify-between gap-2 p-3">
+                        <select aria-label={`Facing intent for page ${pageIndex + 1}`} value={page.facingIntent || "auto"} onChange={(event) => updateCurrentPages((pages) => pages.map((candidate, index) => index === pageIndex ? { ...candidate, facingIntent: event.target.value } : candidate))} className="rounded border px-2 py-1 text-xs dark:bg-slate-800"><option value="auto">Auto facing</option><option value="left">Left</option><option value="right">Right</option></select>
+                        <div className="flex gap-1"><button type="button" title="Replace page" onClick={() => { replacePageIndexRef.current = pageIndex; replacePageInputRef.current?.click(); }} className="rounded p-2 hover:bg-slate-100 dark:hover:bg-white/10"><Replace className="h-4 w-4" /></button><button type="button" title="Delete page" onClick={() => updateCurrentPages((pages) => pages.filter((_, index) => index !== pageIndex))} className="rounded p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"><Trash2 className="h-4 w-4" /></button></div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+              {(currentChapter.pages || []).length === 0 && <div className="mt-5 rounded-xl border-2 border-dashed border-slate-300 p-12 text-center text-sm text-slate-500">Add finished page images to this chapter. Filename order is preserved deterministically.</div>}
+            </section>
+            ) : (
             <section aria-labelledby="chapter-content-heading" className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-slate-950/20">
               <div className="mb-3">
                 <h2 id="chapter-content-heading" className="text-sm font-bold text-[#1E2B53] dark:text-white">Chapter Content</h2>
@@ -459,6 +581,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
               data-placeholder="Drafting continues..."
             />
             </section>
+            )}
           </div>
         </div>
       </div>

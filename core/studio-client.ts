@@ -30,7 +30,7 @@ export async function saveStudioProduct(
 export async function uploadStudioFile(
   assetId: string,
   file: File,
-  purpose: "source" | "mastered"
+  purpose: "source" | "mastered" | "illustrated_page"
 ): Promise<StudioUploadResult> {
   const ticket = await studioRequest("/api/studio/publications", {
     method: "POST",

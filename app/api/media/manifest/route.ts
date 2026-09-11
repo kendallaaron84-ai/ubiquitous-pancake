@@ -22,6 +22,19 @@ function cleanString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function illustratedSettings(value: unknown) {
+  const settings = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    spreadStart: cleanString(settings.spreadStart) === "left" ? "left" : "right",
+    allowSpreads: settings.allowSpreads !== false,
+    pageBackground: /^#[0-9a-f]{6}$/i.test(cleanString(settings.pageBackground))
+      ? cleanString(settings.pageBackground)
+      : "#111111",
+  };
+}
+
 function normalizeWebOrigin(value: unknown): string | null {
   const candidate = cleanString(value);
   if (!candidate) return null;
@@ -316,6 +329,10 @@ export async function GET(request: Request) {
       bgImage: cleanString(data.bgImageUrl || data.backgroundUrl),
       authorName: verifiedAuthorName,
       price: Number.isFinite(price) ? price : 0,
+      layoutMode: cleanString(data.layoutMode) === "illustrated_pages"
+        ? "illustrated_pages"
+        : "reflowable",
+      illustratedPageSettings: illustratedSettings(data.illustratedPageSettings),
       chapters,
     };
 

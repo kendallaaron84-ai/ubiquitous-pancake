@@ -375,6 +375,38 @@ export async function buildProtectedPublicationChapters(input: {
         safeChapter.mediaUrl = mediaUrl;
       }
 
+      if (input.publicationType === "ebook" && Array.isArray(chapterData.pages)) {
+        safeChapter.pages = await Promise.all(chapterData.pages.map(async (page) => {
+          if (!page || typeof page !== "object" || Array.isArray(page)) return {};
+          const pageData = page as Record<string, unknown>;
+          const {
+            assetId: rawPageAssetId,
+            storagePath: rawPageStoragePath,
+            url: _rawPageUrl,
+            previewUrl: _rawPreviewUrl,
+            ...safePage
+          } = pageData;
+          const pageStoragePath = text(rawPageAssetId || rawPageStoragePath);
+          if (!pageStoragePath || !pageStoragePath.startsWith(mediaPrefix)) {
+            throw new ReaderMediaAuthorizationError(
+              503,
+              READER_MEDIA_ERROR_CODES.manifestUnavailable,
+              "An illustrated page is not available from protected storage."
+            );
+          }
+          try {
+            safePage.url = await input.signStoragePath(pageStoragePath);
+          } catch {
+            throw new ReaderMediaAuthorizationError(
+              503,
+              READER_MEDIA_ERROR_CODES.manifestUnavailable,
+              "Protected illustrated pages are temporarily unavailable."
+            );
+          }
+          return safePage;
+        }));
+      }
+
       if (
         transcriptStoragePath &&
         transcriptStoragePath.startsWith(transcriptPrefix)

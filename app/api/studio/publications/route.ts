@@ -27,7 +27,8 @@ type RecordData = Record<string, unknown>;
 
 const ALLOWED_TOP_LEVEL_FIELDS = new Set(["action", "assetId", "payload"]);
 const CHAPTER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/;
-const MIME_PATTERN = /^(audio|video)\/[A-Za-z0-9.+-]{1,80}$/;
+const MEDIA_MIME_PATTERN = /^(audio|video)\/[A-Za-z0-9.+-]{1,80}$/;
+const PAGE_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/svg+xml"]);
 
 export async function GET(request: Request) {
   try {
@@ -35,7 +36,7 @@ export async function GET(request: Request) {
     const assetId = new URL(request.url).searchParams.get("assetId")?.trim() || "";
     if (assetId) {
       const publication = await loadOwnedStudioProduct(adminDb, context, assetId);
-      return success({ product: studioProductProjection(publication.assetId, publication.product) });
+      return success({ product: await studioProductWithPagePreviews(publication.assetId, publication.product) });
     }
     const publications = await listOwnedStudioProducts(adminDb, context);
     return success({
@@ -59,10 +60,18 @@ export async function POST(request: Request) {
     const payload = object(body.payload);
     assertNoAuthoritativeStudioFields(payload);
     const contentType = clean(payload.contentType).toLowerCase();
-    if (!MIME_PATTERN.test(contentType)) {
-      throw invalidRequest("Choose a supported audio or video file.");
+    const requestedPurpose = clean(payload.purpose);
+    const purpose = requestedPurpose === "illustrated_page"
+      ? "illustrated_page"
+      : requestedPurpose === "mastered" ? "mastered" : "source";
+    const validType = purpose === "illustrated_page"
+      ? PAGE_IMAGE_MIME_TYPES.has(contentType)
+      : MEDIA_MIME_PATTERN.test(contentType);
+    if (!validType) {
+      throw invalidRequest(purpose === "illustrated_page"
+        ? "Choose a JPEG, PNG, GIF, or SVG page image."
+        : "Choose a supported audio or video file.");
     }
-    const purpose = clean(payload.purpose) === "mastered" ? "mastered" : "source";
     const fileName = safeFileName(payload.fileName);
     if (!adminStorage) {
       throw new StudioPublicationAccessError(
@@ -133,7 +142,25 @@ export async function PATCH(request: Request) {
         chapters: payload.chapters,
         guardrails: payload.guardrails,
         currentProduct: publication.product,
+        layoutMode: payload.layoutMode,
+        illustratedPageSettings: payload.illustratedPageSettings,
+        studioKey: context.studioKey,
+        assetId: publication.assetId,
       });
+      if (patch.layoutMode === "illustrated_pages") {
+        const { bucket } = requireStorageBucket();
+        await assertUploadedObjectsExist(
+          bucket,
+          patch.chapters.flatMap((chapter) => {
+            const pages = Array.isArray((chapter as RecordData).pages)
+              ? (chapter as RecordData).pages as RecordData[]
+              : [];
+            return pages.map((page) => clean(page.assetId));
+          }),
+          publication.assetId,
+          context.studioKey
+        );
+      }
       await publication.reference.update({ ...patch, updatedAt: FieldValue.serverTimestamp() });
     } else if (action === "attach_mastered_audio") {
       const { bucketName, bucket } = requireStorageBucket();
@@ -170,10 +197,29 @@ export async function PATCH(request: Request) {
         "Publication workspace not found."
       );
     }
-    return success({ product: studioProductProjection(updated.id, product) });
+    return success({ product: await studioProductWithPagePreviews(updated.id, product) });
   } catch (error) {
     return failure(error);
   }
+}
+
+async function studioProductWithPagePreviews(assetId: string, product: RecordData) {
+  const projected = studioProductProjection(assetId, product);
+  if (projected.layoutMode !== "illustrated_pages" || !adminStorage) return projected;
+  const bucket = adminStorage.bucket(resolveFirebaseStorageBucketName());
+  const expires = Date.now() + 10 * 60 * 1000;
+  return {
+    ...projected,
+    chapters: await Promise.all(projected.chapters.map(async (chapter) => ({
+      ...chapter,
+      pages: await Promise.all((Array.isArray(chapter.pages) ? chapter.pages : []).map(async (page) => {
+        const assetIdValue = clean(page.assetId);
+        if (!assetIdValue.startsWith(`studio/${assetId}/`)) return page;
+        const [previewUrl] = await bucket.file(assetIdValue).getSignedUrl({ action: "read", expires });
+        return { ...page, previewUrl };
+      })),
+    }))),
+  };
 }
 
 async function readBody(request: Request): Promise<RecordData> {

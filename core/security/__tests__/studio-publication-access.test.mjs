@@ -140,6 +140,27 @@ test("Studio and Workbench projections never expose or accept apiKeys or ownersh
   assert.equal("apiKeys" in draft.guardrails, false);
 });
 
+test("illustrated page drafts preserve intrinsic geometry and tenant-bound durable asset identity", () => {
+  const assetId = "ebk_illustrated";
+  const assetPath = `studio/${assetId}/${SHARON_KEY}/illustrated_page/page-01.png`;
+  const draft = buildWorkbenchDraftPatch({
+    layoutMode: "illustrated_pages",
+    assetId,
+    studioKey: SHARON_KEY,
+    illustratedPageSettings: { spreadStart: "left", allowSpreads: true, pageBackground: "#222222" },
+    chapters: [{ id: "chapter_1", title: "One", pages: [{ id: "page_1", assetId: assetPath, width: 1200, height: 1800, aspectRatio: 999, facingIntent: "right", previewUrl: "https://signed.example.test/leak" }] }],
+    guardrails: {},
+  });
+  assert.equal(draft.layoutMode, "illustrated_pages");
+  assert.equal(draft.chapters[0].pages[0].assetId, assetPath);
+  assert.equal(draft.chapters[0].pages[0].aspectRatio, 2 / 3);
+  assert.equal("previewUrl" in draft.chapters[0].pages[0], false);
+  assert.throws(() => buildWorkbenchDraftPatch({
+    layoutMode: "illustrated_pages", assetId, studioKey: SHARON_KEY, guardrails: {},
+    chapters: [{ pages: [{ assetId: `studio/other/${SHARON_KEY}/illustrated_page/page.png`, width: 1, height: 1 }] }],
+  }), (error) => error.code === "STUDIO_UPLOAD_PATH_INVALID");
+});
+
 test("owner-owned assets use the same exact ownership model", () => {
   const ownerSession = session({
     uid: "firebase_kendall",

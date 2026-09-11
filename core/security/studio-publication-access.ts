@@ -2,6 +2,7 @@ const ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
 const MAX_CHAPTERS = 500;
 const MAX_TITLE_LENGTH = 240;
 const MAX_TEXT_LENGTH = 500_000;
+const MAX_ILLUSTRATED_PAGES = 2_000;
 
 type RecordData = Record<string, unknown>;
 
@@ -140,6 +141,9 @@ export async function listOwnedStudioProducts(
 }
 
 export function studioProductProjection(id: string, product: RecordData) {
+  const layoutMode = clean(product.layoutMode) === "illustrated_pages"
+    ? "illustrated_pages"
+    : "reflowable";
   return {
     id,
     assetKey: clean(product.assetKey) || id,
@@ -157,6 +161,8 @@ export function studioProductProjection(id: string, product: RecordData) {
     chapterCount: finiteNumber(product.chapterCount),
     trackCount: finiteNumber(product.trackCount),
     ebookPayload: stripSensitiveKeys(safeObject(product.ebookPayload)),
+    layoutMode,
+    illustratedPageSettings: sanitizeIllustratedPageSettings(product.illustratedPageSettings),
     guardrails: stripSensitiveKeys(safeObject(product.guardrails)),
     audioMap: stripSensitiveKeys(safeObject(product.audioMap)),
     transcriptionStatus: clean(product.transcriptionStatus) || "not_started",
@@ -191,8 +197,17 @@ export function buildWorkbenchDraftPatch(input: {
   chapters: unknown;
   guardrails: unknown;
   currentProduct?: RecordData;
+  layoutMode?: unknown;
+  illustratedPageSettings?: unknown;
+  studioKey?: string;
+  assetId?: string;
 }) {
-  const chapters = sanitizeChapters(input.chapters);
+  const layoutMode = clean(input.layoutMode) === "illustrated_pages"
+    ? "illustrated_pages"
+    : "reflowable";
+  const chapters = layoutMode === "illustrated_pages"
+    ? sanitizeIllustratedChapters(input.chapters, clean(input.assetId), clean(input.studioKey))
+    : sanitizeChapters(input.chapters);
   const guardrailsSource = safeObject(input.guardrails);
   const guardrails = {
     setting: boundedText(guardrailsSource.setting, 2_000),
@@ -201,6 +216,10 @@ export function buildWorkbenchDraftPatch(input: {
   };
   return {
     type: "ebook",
+    layoutMode,
+    illustratedPageSettings: layoutMode === "illustrated_pages"
+      ? sanitizeIllustratedPageSettings(input.illustratedPageSettings)
+      : {},
     chapters,
     ebookPayload: {
       fontPreference:
@@ -210,6 +229,56 @@ export function buildWorkbenchDraftPatch(input: {
     },
     guardrails,
   };
+}
+
+function sanitizeIllustratedPageSettings(value: unknown) {
+  const settings = safeObject(value);
+  const spreadStart = clean(settings.spreadStart).toLowerCase();
+  return {
+    spreadStart: spreadStart === "left" ? "left" : "right",
+    allowSpreads: settings.allowSpreads !== false,
+    pageBackground: /^#[0-9a-f]{6}$/i.test(clean(settings.pageBackground))
+      ? clean(settings.pageBackground)
+      : "#111111",
+  };
+}
+
+function sanitizeIllustratedChapters(value: unknown, assetId: string, studioKey: string) {
+  if (!assetId || !studioKey || !Array.isArray(value) || value.length === 0 || value.length > MAX_CHAPTERS) {
+    throw invalidPayload("The illustrated book must contain between 1 and 500 chapters.");
+  }
+  let pageCount = 0;
+  return value.map((raw, chapterIndex) => {
+    const chapter = safeObject(raw);
+    const pages = recordArray(chapter.pages).map((rawPage, pageIndex) => {
+      pageCount += 1;
+      if (pageCount > MAX_ILLUSTRATED_PAGES) throw invalidPayload("The illustrated book contains too many pages.");
+      const width = positiveInteger(rawPage.width);
+      const height = positiveInteger(rawPage.height);
+      if (!width || !height) throw invalidPayload("Every illustrated page requires intrinsic width and height.");
+      const assetIdentity = assertTenantBoundStoragePath(
+        rawPage.assetId || rawPage.storagePath,
+        assetId,
+        studioKey
+      );
+      const facing = clean(rawPage.facingIntent).toLowerCase();
+      return {
+        id: clean(rawPage.id) || `page_${chapterIndex + 1}_${pageIndex + 1}`,
+        assetId: assetIdentity,
+        width,
+        height,
+        aspectRatio: width / height,
+        facingIntent: facing === "left" || facing === "right" ? facing : "auto",
+        fileName: boundedText(rawPage.fileName, 260),
+        mimeType: boundedText(rawPage.mimeType, 120),
+      };
+    });
+    return {
+      id: clean(chapter.id) || `chapter_${chapterIndex + 1}`,
+      title: boundedText(chapter.title, MAX_TITLE_LENGTH) || `Chapter ${chapterIndex + 1}`,
+      pages,
+    };
+  });
 }
 
 export function assertTenantBoundStoragePath(
@@ -350,6 +419,11 @@ function recordArray(value: unknown): RecordData[] {
 function positiveNumber(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function positiveInteger(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 100_000 ? parsed : 0;
 }
 
 function finiteNumber(value: unknown): number {
