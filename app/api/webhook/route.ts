@@ -6,9 +6,6 @@ import fs from "fs";
 
 export const dynamic = "force-dynamic";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-});
-
 export async function POST(req: Request) {
   const payload = await req.text();
   const sig = req.headers.get("Stripe-Signature"); // Note: Stripe header verification casing fix
@@ -19,10 +16,12 @@ export async function POST(req: Request) {
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(payload, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    event = Stripe.webhooks.constructEvent(payload, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err: any) {
     return NextResponse.json({ error: `Webhook signature verification failed: ${err.message}` }, { status: 400 });
   }
+
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {});
 
   // 🔥 DYNAMIC RUNTIME IMPORT: Keeps Firebase isolated from the static build engine
   const admin = require("firebase-admin");
