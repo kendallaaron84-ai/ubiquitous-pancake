@@ -11,7 +11,11 @@ import { processCanonicalReaderFinancialEvent } from "@/core/security/reader-pla
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
+function requireStripe(): Stripe {
+  const secretKey = process.env.STRIPE_SECRET_KEY?.trim();
+  if (!secretKey) throw new Error("STRIPE_CONFIGURATION_MISSING");
+  return new Stripe(secretKey);
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown webhook failure.";
@@ -45,7 +49,7 @@ export async function POST(request: Request) {
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(
+    event = Stripe.webhooks.constructEvent(
       body,
       signature,
       endpointSecret
@@ -134,6 +138,7 @@ export async function POST(request: Request) {
 
   if (isListenerPurchase) {
     try {
+      const stripe = requireStripe();
       const result = await processCanonicalReaderPurchase(event, session, stripe);
       return NextResponse.json(
         {
@@ -168,6 +173,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    const stripe = requireStripe();
     const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
     const itemAnalysis: Array<Record<string, unknown>> = [];
     let hasAudiobookPlayer = false;
