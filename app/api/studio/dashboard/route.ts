@@ -4,9 +4,6 @@ import Stripe from "stripe";
 
 export const dynamic = "force-dynamic";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-});
-
 export async function POST(request: Request) {
   const payload = await request.text();
   const sig = request.headers.get("stripe-signature");
@@ -17,7 +14,7 @@ export async function POST(request: Request) {
     if (!sig) throw new Error("Missing stripe-signature header");
     
     // Verify that the event genuinely came from your Stripe account
-    event = stripe.webhooks.constructEvent(
+    event = Stripe.webhooks.constructEvent(
       payload,
       sig,
       process.env.STRIPE_WEBHOOK_SECRET!
