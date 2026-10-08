@@ -8,7 +8,8 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
+import { loadStudioProduct, loadStudioTranscriptionQuote, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
+import { STUDIO_AUDIO_ACCEPT, validateStudioAudioFile } from "@/core/studio-media";
 
 function readMediaDuration(file: File): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -78,9 +79,7 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
     let active = true;
     const refreshQuote = async () => {
       try {
-        const response = await fetch(`/api/studio/transcribe?assetId=${encodeURIComponent(assetId)}`);
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || "Transcription pricing is unavailable.");
+        const data = await loadStudioTranscriptionQuote(assetId);
         if (!active) return;
         setTranscriptionQuote(data.quote);
         setTranscriptionStatus(data.transcriptionStatus || "not_started");
@@ -324,11 +323,21 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
                             <input 
                               type="file"
                               id={`file-upload-injector-${track.id}`}
-                              accept={mediaType === 'audio' ? 'audio/*' : 'video/*'}
+                              accept={mediaType === 'audio' ? STUDIO_AUDIO_ACCEPT : 'video/*'}
                               className="hidden"
                               onChange={async (e) => {
                                 const selectedFile = e.target.files?.[0];
                                 if (!selectedFile) return;
+
+                                if (mediaType === "audio" && !validateStudioAudioFile(selectedFile.name, selectedFile.type).valid) {
+                                  e.target.value = "";
+                                  setTracks(prev => prev.map(t => t.id === track.id ? {
+                                    ...t,
+                                    uploadStatus: "empty",
+                                    fileName: "Unsupported audio format",
+                                  } : t));
+                                  return;
+                                }
 
                                 const durationSeconds = await readMediaDuration(selectedFile).catch(() => 0);
 
@@ -336,7 +345,12 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
                                 setTracks(prev => prev.map(t => t.id === track.id ? { ...t, uploadStatus: "uploading", fileName: "Streaming..." } : t));
 
                                 try {
-                                  const uploaded = await uploadStudioFile(assetId, selectedFile, "source");
+                                  const uploaded = await uploadStudioFile(
+                                    assetId,
+                                    selectedFile,
+                                    "source",
+                                    mediaType === "video" ? "video" : "audio"
+                                  );
                                   const updatedTracks = tracks.map(t => t.id === track.id ? {
                                     ...t,
                                     uploadStatus: "success",

@@ -1,4 +1,10 @@
 const ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
+const PLACEHOLDER_ASSET_IDS = new Set([
+  "abk_new-audiobook-draft",
+  "abk_new_audiobook_draft",
+  "ebk_new-ebook-draft",
+  "ebk_new_ebook_draft",
+]);
 const MAX_CHAPTERS = 500;
 const MAX_TITLE_LENGTH = 240;
 const MAX_TEXT_LENGTH = 500_000;
@@ -39,7 +45,7 @@ export class StudioPublicationAccessError extends Error {
 
 export function assertValidStudioAssetId(value: unknown): string {
   const assetId = clean(value);
-  if (!ASSET_ID_PATTERN.test(assetId)) {
+  if (!ASSET_ID_PATTERN.test(assetId) || PLACEHOLDER_ASSET_IDS.has(assetId.toLowerCase())) {
     throw new StudioPublicationAccessError(
       400,
       "STUDIO_ASSET_ID_INVALID",
@@ -138,6 +144,37 @@ export async function listOwnedStudioProducts(
     }
   }
   return [...found.entries()].map(([id, product]) => ({ id, product }));
+}
+
+export function buildNewStudioPublicationRecord(input: {
+  assetId: unknown;
+  type: unknown;
+  context: StudioAuthorContext;
+  timestamp: unknown;
+}) {
+  const assetId = assertValidStudioAssetId(input.assetId);
+  const type = clean(input.type).toLowerCase() === "ebook" ? "ebook" : "audiobook";
+  return {
+    id: assetId,
+    assetKey: assetId,
+    title: type === "ebook" ? "New E-Book Draft" : "New Audiobook Draft",
+    synopsis: "Draft workspace canvas.",
+    description: "Draft workspace canvas.",
+    type,
+    category: type === "ebook" ? "E-Books" : "Audiobooks",
+    price: 0,
+    currency: "usd",
+    status: "draft",
+    isPublished: false,
+    chapters: [],
+    studioTracks: [],
+    authorId: input.context.authorEmail,
+    authorEmail: input.context.authorEmail,
+    studioKey: input.context.studioKey,
+    wpStudioKey: input.context.studioKey,
+    createdAt: input.timestamp,
+    updatedAt: input.timestamp,
+  };
 }
 
 export function studioProductProjection(id: string, product: RecordData) {

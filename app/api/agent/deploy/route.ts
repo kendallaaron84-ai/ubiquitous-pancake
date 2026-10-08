@@ -29,6 +29,11 @@ import {
   resolveDashboardSessionSecret,
   verifyDashboardSession,
 } from "@/core/security/dashboard-session";
+import {
+  StudioPublicationAccessError,
+  assertOwnedStudioProduct,
+  assertValidStudioAssetId,
+} from "@/core/security/studio-publication-access";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -115,6 +120,7 @@ function resolveWordPressGatewayUrl(): string {
 }
 
 interface ProductBody {
+  assetId?: unknown;
   bookTitle?: unknown;
   synopsis?: unknown;
   coverUrl?: unknown;
@@ -168,10 +174,20 @@ export async function POST(request: Request) {
       session.email,
       clean(body?.authorIdentityId) || "primary"
     );
-    const assetKey = `${mediaType === "ebook" ? "ebk_" : "abk_"}${slug(title)}`;
+    const requestedAssetId = clean(body?.assetId);
+    const assetKey = requestedAssetId
+      ? assertValidStudioAssetId(requestedAssetId)
+      : `${mediaType === "ebook" ? "ebk_" : "abk_"}${slug(title)}`;
     const productRef = adminDb.collection("products").doc(assetKey);
     const existingSnapshot = await productRef.get();
     const existing = existingSnapshot.data() || {};
+    if (requestedAssetId) {
+      assertOwnedStudioProduct({
+        session,
+        studioKey: session.studioKey,
+        authorEmail: session.email.toLowerCase(),
+      }, existingSnapshot.exists ? existing : null);
+    }
     const existingWordPressDeployment =
       existing.wordpressDeployment &&
       typeof existing.wordpressDeployment === "object"
@@ -450,6 +466,9 @@ export async function POST(request: Request) {
       product: deployedProduct,
     });
   } catch (error) {
+    if (error instanceof StudioPublicationAccessError) {
+      return failure(error.status, error.publicMessage, error.code);
+    }
     if (error instanceof AuthorIdentityError) {
       return failure(error.status, error.publicMessage, error.code);
     }

@@ -10,6 +10,7 @@ import PaymentReadinessBanner from "@/components/section/dashboard/PaymentReadin
 import Link from "next/link"; 
 import { onAuthStateChanged } from "firebase/auth";
 import { Plus, X, UploadCloud, Save, Edit3, Trash2, Globe } from "lucide-react";
+import { createStudioPublication } from "@/core/studio-client";
 
 interface AuthorIdentityOption {
   id: string;
@@ -36,6 +37,7 @@ export default function ProductsPage() {
   const [products, setProducts] = useState<any[]>([]);
   const [editingProduct, setEditingProduct] = useState<any | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
   const [userProfile, setUserProfile] = useState<any | null>(null);
   const [websiteConnections, setWebsiteConnections] = useState<ProductWebsiteConnection[]>([]);
@@ -190,34 +192,44 @@ export default function ProductsPage() {
     return () => unsubscribe();
   }, [currentUserEmail]);
 
-  const handleCreateDraft = () => {
-    const generatedId = `abk_${Math.random().toString(36).substring(2, 9)}`;
-    const websiteConnectionId = chooseProductWebsiteConnectionId(
-      {},
-      websiteConnections,
-      storyWorlds
-    );
-    const selectedWebsite = websiteConnections.find((website) =>
-      website.websiteConnectionId === websiteConnectionId
-    );
-    setEditingProduct({
-      id: generatedId,
-      title: "New Audiobook Draft",
-      price: 0.00,
-      status: "draft",
-      type: "audiobook",
-      category: "Audiobooks",
-      coverArtUrl: "",
-      bgImageUrl: "",
-      synopsis: "Draft workspace canvas.",
-      authorIdentityId: authorIdentities[0]?.id || "primary",
-      studioKey: userProfile?.studioKey || "",
-      wpStudioKey: userProfile?.studioKey || "",
-      websiteConnectionId,
-      associatedWebsite: selectedWebsite?.wordpressOrigin || "",
-      _originalWebsiteConnectionId: "",
-      _originalAssociatedWebsite: "",
-    });
+  const handleCreateDraft = async () => {
+    if (isCreating) return;
+    setIsCreating(true);
+    try {
+      const created = await createStudioPublication("audiobook");
+      const canonicalProduct = created.product;
+      if (!canonicalProduct || canonicalProduct.id !== created.assetId) {
+        throw new Error("The publication workspace could not be confirmed.");
+      }
+      const websiteConnectionId = chooseProductWebsiteConnectionId(
+        {},
+        websiteConnections,
+        storyWorlds
+      );
+      const selectedWebsite = websiteConnections.find((website) =>
+        website.websiteConnectionId === websiteConnectionId
+      );
+      setEditingProduct({
+        ...canonicalProduct,
+        price: 0,
+        bgImageUrl: "",
+        authorIdentityId: authorIdentities[0]?.id || "primary",
+        studioKey: userProfile?.studioKey || "",
+        wpStudioKey: userProfile?.studioKey || "",
+        websiteConnectionId,
+        associatedWebsite: selectedWebsite?.wordpressOrigin || "",
+        _originalWebsiteConnectionId: "",
+        _originalAssociatedWebsite: "",
+      });
+    } catch (error) {
+      toast({
+        title: "Draft creation failed",
+        description: error instanceof Error ? error.message : "A publication workspace could not be created.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   const handleEditProduct = (product: any) => {
@@ -343,6 +355,7 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
     // Inside your handleSaveAndDeploy routine inside app/products/page.tsx
     const payload = {
       bookTitle: editingProduct.title,
+      assetId: editingProduct.id,
       synopsis: editingProduct.synopsis || editingProduct.description || "",
       coverUrl: editingProduct.coverArtUrl || "", 
       bgImageUrl: editingProduct.bgImageUrl || "", 
@@ -435,9 +448,10 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
           </div>
           <button 
             onClick={handleCreateDraft} 
+            disabled={isCreating}
             className="flex items-center gap-2 bg-[#8b4528] text-white hover:bg-[#723820] px-5 py-3 rounded-lg font-semibold shadow-lg transition-all"
           >
-            <Plus className="w-4 h-4" /> Add Product Asset
+            <Plus className="w-4 h-4" /> {isCreating ? "Creating Workspace..." : "Add Product Asset"}
           </button>
         </div>
 
@@ -592,15 +606,12 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
                         value={editingProduct.type || "audiobook"}
                         onChange={(e) => {
                           const newType = e.target.value;
-                          const newPrefix = newType === "ebook" ? "ebk_" : "abk_";
-                          const currentCleanId = editingProduct.id.replace(/^(abk_|ebk_)/, "");
                           const currentCategory = String(editingProduct.category || "").trim();
                           const defaultCategory = newType === "ebook" ? "E-Books" : "Audiobooks";
                           const previousDefault = newType === "ebook" ? "Audiobooks" : "E-Books";
                           setEditingProduct({
                             ...editingProduct, 
                             type: newType,
-                            id: `${newPrefix}${currentCleanId}`,
                             category:
                               !currentCategory || currentCategory === previousDefault
                                 ? defaultCategory

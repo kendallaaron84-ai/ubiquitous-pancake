@@ -53,7 +53,10 @@ export function NexusKnowledgePanel({ isOwner = false }: { isOwner?: boolean }) 
     try {
       const response = await fetch(path, { method, credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const payload = await response.json().catch(() => null) as { error?: string } | null;
-      if (!response.ok) throw new Error(payload?.error || "The request could not be completed.");
+      if (!response.ok) {
+        if (path === "/api/nexus/websites" && response.status === 404) await refresh();
+        throw new Error(payload?.error || "The request could not be completed.");
+      }
       setMessage(success); await refresh();
     } catch (error) { setMessage(error instanceof Error ? error.message : "The request could not be completed."); }
     finally { setBusy(false); }
@@ -114,7 +117,7 @@ export function NexusKnowledgePanel({ isOwner = false }: { isOwner?: boolean }) 
     <details className="rounded-lg border border-border p-3">
       <summary className="flex cursor-pointer items-center gap-2 text-sm font-bold text-foreground"><Globe2 className="h-4 w-4 text-emerald-400" />Connected Websites ({context.websites?.filter((item) => item.status === "active").length || 0}/2)</summary>
       <div className="mt-3 space-y-3">
-        {(context.websites || []).map((item) => <WebsiteEditor key={item.websiteConnectionId} website={item} worlds={context.storyWorlds || []} busy={busy} onSave={(patch) => submitJson("/api/nexus/websites", "PATCH", { websiteConnectionId: item.websiteConnectionId, ...patch }, "Website settings saved.")} />)}
+        {(context.websites || []).map((item) => <WebsiteEditor key={`${item.websiteConnectionId}:${item.contentRole}:${item.defaultUniverseId || ""}:${item.status}:${item.displayName}`} website={item} worlds={context.storyWorlds || []} busy={busy} onSave={(patch) => submitJson("/api/nexus/websites", "PATCH", { websiteConnectionId: item.websiteConnectionId, expectedOrigin: item.wordpressOrigin, ...patch }, "Website settings saved.")} />)}
         {(context.websites?.filter((item) => item.status === "active").length || 0) < 2 && <>
           <input className={inputClass} value={site.displayName} onChange={(e) => setSite({ ...site, displayName: e.target.value })} placeholder="Website label" />
           <input className={inputClass} value={site.targetWpOrigin} onChange={(e) => setSite({ ...site, targetWpOrigin: e.target.value })} placeholder="https://author-site.com" />

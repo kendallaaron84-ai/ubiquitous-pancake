@@ -337,6 +337,65 @@ test("replacement preserves the revoked grant and appends a replacement audit", 
   assert.equal(database.auditEvents().some((event) => event.action === "replacement"), true);
 });
 
+test("website lifecycle persists connect, role change, disable, replacement, and refresh", async () => {
+  const database = new FakeFirestore({ [licensePath]: activeLicense() });
+
+  await persistVerifiedPluginWebsite(database, verifiedInput({ contentRole: "both" }), options());
+  let refreshed = await listNexusWebsiteConnections(database, studioKey, authorId);
+  assert.deepEqual(
+    refreshed.map((website) => [website.websiteConnectionId, website.wordpressOrigin, website.status]),
+    [["primary", "https://audio.koba-i.com", "active"]]
+  );
+
+  await persistPluginWebsiteMetadata(database, {
+    studioKey,
+    authorId,
+    actorEmail,
+    firebaseProjectId: projectId,
+    websiteConnectionId: "primary",
+    expectedOrigin: "https://audio.koba-i.com",
+    contentRole: "business_brand",
+  }, options());
+  refreshed = await listNexusWebsiteConnections(database, studioKey, authorId);
+  assert.equal(refreshed[0].contentRole, "business_brand");
+
+  await persistPluginWebsiteMetadata(database, {
+    studioKey,
+    authorId,
+    actorEmail,
+    firebaseProjectId: projectId,
+    websiteConnectionId: "primary",
+    expectedOrigin: "https://audio.koba-i.com",
+    status: "disabled",
+  }, options());
+  refreshed = await listNexusWebsiteConnections(database, studioKey, authorId);
+  assert.equal(refreshed[0].status, "disabled");
+
+  await persistVerifiedPluginWebsite(database, verifiedInput({
+    wordpressOrigin: "https://shop.drsylvialove.com",
+    contentRole: "both",
+    displayName: "Dr. Sylvia Love",
+  }), options());
+  refreshed = await listNexusWebsiteConnections(database, studioKey, authorId);
+  assert.deepEqual(
+    refreshed.map((website) => [website.wordpressOrigin, website.contentRole, website.status]),
+    [["https://shop.drsylvialove.com", "both", "active"]]
+  );
+  assert.equal(database.auditEvents().some((event) => event.action === "replacement"), true);
+});
+
+test("both Nexus website-management clients send ID plus origin and refresh authoritative state", async () => {
+  const [setup, knowledge] = await Promise.all([
+    readFile(new URL("../../../components/section/billing/index.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../../../components/nexus-knowledge-panel.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(setup, /expectedOrigin: websites\.find\(/);
+  assert.match(setup, /response\.status === 404/);
+  assert.match(setup, /setReloadKey\(\(current\) => current \+ 1\)/);
+  assert.match(knowledge, /expectedOrigin: item\.wordpressOrigin/);
+  assert.match(knowledge, /path === "\/api\/nexus\/websites" && response\.status === 404/);
+});
+
 function productionLegacyAudio(overrides = {}) {
   return {
     studioKey,

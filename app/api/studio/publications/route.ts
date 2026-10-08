@@ -12,6 +12,7 @@ import {
   StudioPublicationAccessError,
   assertNoAuthoritativeStudioFields,
   assertTenantBoundStoragePath,
+  buildNewStudioPublicationRecord,
   buildStudioManifestPatch,
   buildWorkbenchDraftPatch,
   listOwnedStudioProducts,
@@ -19,6 +20,7 @@ import {
   studioProductProjection,
 } from "@/core/security/studio-publication-access";
 import { requireStudioAuthorContext } from "@/core/security/studio-publication-session";
+import { validateStudioAudioFile } from "@/core/studio-media";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -27,7 +29,7 @@ type RecordData = Record<string, unknown>;
 
 const ALLOWED_TOP_LEVEL_FIELDS = new Set(["action", "assetId", "payload"]);
 const CHAPTER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/;
-const MEDIA_MIME_PATTERN = /^(audio|video)\/[A-Za-z0-9.+-]{1,80}$/;
+const VIDEO_MIME_PATTERN = /^video\/[A-Za-z0-9.+-]{1,80}$/;
 const PAGE_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/svg+xml"]);
 
 export async function GET(request: Request) {
@@ -53,24 +55,53 @@ export async function POST(request: Request) {
     const body = await readBody(request);
     assertRequestShape(body);
     assertNoAuthoritativeStudioFields(body);
-    if (clean(body.action) !== "create_upload") {
+    const action = clean(body.action);
+    if (action === "create_publication") {
+      const payload = object(body.payload);
+      assertNoAuthoritativeStudioFields(payload);
+      const type = clean(payload.type).toLowerCase() === "ebook" ? "ebook" : "audiobook";
+      const prefix = type === "ebook" ? "ebk" : "abk";
+      const assetId = `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+      const timestamp = FieldValue.serverTimestamp();
+      const reference = adminDb.collection("products").doc(assetId);
+      await reference.create(buildNewStudioPublicationRecord({
+        assetId,
+        type,
+        context,
+        timestamp,
+      }));
+      const created = await reference.get();
+      return success({
+        assetId,
+        product: studioProductProjection(assetId, created.data() || {}),
+      }, 201);
+    }
+    if (action !== "create_upload") {
       throw invalidRequest("Choose a supported Studio operation.");
     }
     const publication = await loadOwnedStudioProduct(adminDb, context, body.assetId);
     const payload = object(body.payload);
     assertNoAuthoritativeStudioFields(payload);
-    const contentType = clean(payload.contentType).toLowerCase();
+    let contentType = clean(payload.contentType).toLowerCase();
     const requestedPurpose = clean(payload.purpose);
     const purpose = requestedPurpose === "illustrated_page"
       ? "illustrated_page"
       : requestedPurpose === "mastered" ? "mastered" : "source";
+    const audioValidation = validateStudioAudioFile(payload.fileName, contentType);
+    const mediaKind = clean(payload.mediaKind).toLowerCase();
+    const expectsAudio = purpose !== "illustrated_page" && mediaKind !== "video";
+    if (expectsAudio && audioValidation.valid) contentType = audioValidation.contentType;
     const validType = purpose === "illustrated_page"
       ? PAGE_IMAGE_MIME_TYPES.has(contentType)
-      : MEDIA_MIME_PATTERN.test(contentType);
+      : expectsAudio
+        ? audioValidation.valid
+        : VIDEO_MIME_PATTERN.test(contentType);
     if (!validType) {
       throw invalidRequest(purpose === "illustrated_page"
         ? "Choose a JPEG, PNG, GIF, or SVG page image."
-        : "Choose a supported audio or video file.");
+        : expectsAudio
+          ? "Choose an MP3, M4A, AAC, WAV, FLAC, or OGG audio file."
+          : "Choose a supported video file.");
     }
     const fileName = safeFileName(payload.fileName);
     if (!adminStorage) {
@@ -298,10 +329,10 @@ function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function success(payload: RecordData) {
+function success(payload: RecordData, status = 200) {
   return NextResponse.json(
     { success: true, ...payload },
-    { headers: { "Cache-Control": "private, no-store" } }
+    { status, headers: { "Cache-Control": "private, no-store" } }
   );
 }
 

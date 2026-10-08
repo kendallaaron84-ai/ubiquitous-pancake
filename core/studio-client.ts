@@ -1,7 +1,19 @@
+import { validateStudioAudioFile } from "./studio-media.ts";
+
 export interface StudioUploadResult {
   storagePath: string;
   canonicalUrl: string;
   contentType: string;
+}
+
+export async function createStudioPublication(
+  type: "audiobook" | "ebook" = "audiobook"
+) {
+  return studioRequest("/api/studio/publications", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "create_publication", payload: { type } }),
+  });
 }
 
 export async function loadStudioProducts() {
@@ -11,6 +23,13 @@ export async function loadStudioProducts() {
 export async function loadStudioProduct(assetId: string) {
   return studioRequest(
     `/api/studio/publications?assetId=${encodeURIComponent(assetId)}`,
+    { method: "GET" }
+  );
+}
+
+export async function loadStudioTranscriptionQuote(assetId: string) {
+  return studioRequest(
+    `/api/studio/transcribe?assetId=${encodeURIComponent(assetId)}`,
     { method: "GET" }
   );
 }
@@ -30,8 +49,15 @@ export async function saveStudioProduct(
 export async function uploadStudioFile(
   assetId: string,
   file: File,
-  purpose: "source" | "mastered" | "illustrated_page"
+  purpose: "source" | "mastered" | "illustrated_page",
+  mediaKind: "audio" | "video" = "audio"
 ): Promise<StudioUploadResult> {
+  const audio = (purpose === "source" || purpose === "mastered") && mediaKind === "audio"
+    ? validateStudioAudioFile(file.name, file.type)
+    : null;
+  if (audio && !audio.valid) {
+    throw new Error("Choose an MP3, M4A, AAC, WAV, FLAC, or OGG audio file.");
+  }
   const ticket = await studioRequest("/api/studio/publications", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -40,8 +66,9 @@ export async function uploadStudioFile(
       action: "create_upload",
       payload: {
         fileName: file.name,
-        contentType: file.type || "application/octet-stream",
+        contentType: audio?.contentType || file.type || "application/octet-stream",
         purpose,
+        mediaKind,
       },
     }),
   });
@@ -59,7 +86,7 @@ export async function uploadStudioFile(
     body: file,
   });
   if (!response.ok) {
-    throw new Error("The media file could not be uploaded securely.");
+    throw new Error(`The media file could not be uploaded securely (HTTP ${response.status}).`);
   }
   return {
     storagePath: upload.storagePath,

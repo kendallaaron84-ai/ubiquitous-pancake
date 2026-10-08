@@ -9,6 +9,7 @@ import {
   assertOwnedStudioProduct,
   assertTenantBoundStoragePath,
   assertValidStudioAssetId,
+  buildNewStudioPublicationRecord,
   buildStudioManifestPatch,
   buildWorkbenchDraftPatch,
   listOwnedStudioProducts,
@@ -82,9 +83,27 @@ test("Sharon can load her product while Kendall and forged IDs fail closed", () 
       (error) => error.status === 404 && error.code === "STUDIO_PUBLICATION_NOT_FOUND"
     );
   }
-  for (const value of ["", "../kendall", "x", "asset/foreign", "asset?admin=true"]) {
+  for (const value of ["", "../kendall", "x", "asset/foreign", "asset?admin=true", "abk_new-audiobook-draft"]) {
     assert.throws(() => assertValidStudioAssetId(value), StudioPublicationAccessError);
   }
+});
+
+test("new publication workspace is canonical and owned before later Studio operations", () => {
+  const timestamp = { serverTimestamp: true };
+  const record = buildNewStudioPublicationRecord({
+    assetId: "abk_1234567890abcdef",
+    type: "audiobook",
+    context: context(),
+    timestamp,
+  });
+  assert.equal(record.id, "abk_1234567890abcdef");
+  assert.equal(record.assetKey, record.id);
+  assert.equal(record.status, "draft");
+  assert.equal(record.isPublished, false);
+  assert.equal(record.studioKey, SHARON_KEY);
+  assert.equal(record.authorEmail, "sharon@example.com");
+  assert.deepEqual(record.studioTracks, []);
+  assert.equal(record.createdAt, timestamp);
 });
 
 test("server-side Studio listing filters both StudioKey and author ownership", async () => {
@@ -225,6 +244,35 @@ test("Studio and Workbench clients use only the server-owned API", async () => {
   assert.match(client, /\/api\/studio\/publications/);
   assert.match(client, /method: "PUT"/);
   assert.match(client, /credentials: "same-origin"/);
+});
+
+test("new audiobook creation is persisted before the editor exposes its canonical assetId", async () => {
+  const [productsPage, client, route, deploy] = await Promise.all([
+    readFile(new URL("app/products/page.tsx", ROOT), "utf8"),
+    readFile(new URL("core/studio-client.ts", ROOT), "utf8"),
+    readFile(new URL("app/api/studio/publications/route.ts", ROOT), "utf8"),
+    readFile(new URL("app/api/agent/deploy/route.ts", ROOT), "utf8"),
+  ]);
+  assert.match(productsPage, /await createStudioPublication\("audiobook"\)/);
+  assert.match(productsPage, /canonicalProduct\.id !== created\.assetId/);
+  assert.doesNotMatch(productsPage, /Math\.random\(\).*substring/);
+  assert.doesNotMatch(productsPage, /id: `\$\{newPrefix\}/);
+  assert.match(client, /action: "create_publication"/);
+  assert.match(route, /await reference\.create\(buildNewStudioPublicationRecord/);
+  assert.match(route, /return success\([\s\S]*assetId,[\s\S]*product:[\s\S]*201\)/);
+  assert.match(deploy, /assertOwnedStudioProduct/);
+  assert.match(productsPage, /assetId: editingProduct\.id/);
+});
+
+test("upload and transcription reject missing, placeholder, or unowned publication identities", async () => {
+  const [route, transcribe] = await Promise.all([
+    readFile(new URL("app/api/studio/publications/route.ts", ROOT), "utf8"),
+    readFile(new URL("app/api/studio/transcribe/route.ts", ROOT), "utf8"),
+  ]);
+  assert.match(route, /const publication = await loadOwnedStudioProduct\(adminDb, context, body\.assetId\)/);
+  assert.match(transcribe, /loadOwnedStudioProduct\(adminDb, context, assetId\)/);
+  assert.match(route, /requireStudioAuthorContext\(adminDb\)/);
+  assert.match(transcribe, /requireStudioAuthorContext\(adminDb\)/);
 });
 
 test("Vault and transcription share strict session, license, and product ownership", async () => {
