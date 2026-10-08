@@ -34,9 +34,20 @@ The authenticated Vercel project is `koba-i/bug-free-robot`, connected to `kenda
 
 ## Governance-branch publication state
 
-- Dashboard `codex/governance-release-gate` was pushed after Vercel production isolation was verified.
+- Dashboard `codex/governance-release-gate` was pushed at `5411b21f34c7d0ccf1622fb7968efba8fd70adc7` after Vercel production isolation was verified.
 - Plugin `codex/governance-release-gate` was not pushed.
 - No production branch, release, updater manifest, or production deployment was changed.
+
+## First remote CI result
+
+GitHub Actions run `37791826435` executed the Dashboard `KOBA-I release gate` from commit `5411b21...` and correctly returned **failure**:
+
+- Dashboard build and regression: failed.
+- Firestore tenant-isolation rules: failed.
+- WordPress gateway: passed.
+- Overall workflow: failed; no artifacts were published.
+
+The public, unauthenticated run view exposes only the failing job/step exit codes, not the complete logs. Exact diagnostic logs require Kendall to authenticate to GitHub. This failed run must not be configured as a passing required check.
 
 ## Manual actions required from Kendall
 
