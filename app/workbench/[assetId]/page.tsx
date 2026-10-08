@@ -6,9 +6,9 @@ import Link from "next/link";
 import { toast } from "@/components/ui/use-toast";
 import { ModeToggle } from "@/components/elements/mode-toggle";
 import { loadStudioMediaPreview, loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
+import { validateStudioImageFile } from "@/core/studio-image";
 
 const CHAPTER_TAGS = new Set(["A", "ABBR", "B", "BLOCKQUOTE", "BR", "CITE", "CODE", "DIV", "EM", "FIGCAPTION", "FIGURE", "H1", "H2", "H3", "H4", "H5", "H6", "HR", "I", "IMG", "LI", "OL", "P", "PRE", "SECTION", "SMALL", "SPAN", "STRONG", "SUB", "SUP", "UL"]);
-const PAGE_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/svg+xml"]);
 
 function imageDimensions(file: File): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
@@ -219,9 +219,8 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    const allowedTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/svg+xml"]);
-    if (!allowedTypes.has(file.type)) {
-      toast({ title: "Unsupported image", description: "Use JPEG, PNG, GIF, or SVG.", variant: "destructive" });
+    if (!validateStudioImageFile(file.name, file.type).valid) {
+      toast({ title: "Unsupported image", description: "Use JPEG, PNG, or GIF. SVG uploads are temporarily unavailable.", variant: "destructive" });
       return;
     }
     if (file.size > 12 * 1024 * 1024) {
@@ -294,8 +293,8 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   const uploadPageFiles = async (files: File[], replaceIndex: number | null = null) => {
     const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
     if (!sorted.length) return;
-    if (sorted.some((file) => !PAGE_IMAGE_TYPES.has(file.type))) {
-      toast({ title: "Unsupported page", description: "Use JPEG, PNG, GIF, or SVG page images.", variant: "destructive" });
+    if (sorted.some((file) => !validateStudioImageFile(file.name, file.type).valid)) {
+      toast({ title: "Unsupported page", description: "Use JPEG, PNG, or GIF page images. SVG uploads are temporarily unavailable.", variant: "destructive" });
       return;
     }
     setIsUploadingPages(true);
@@ -521,8 +520,8 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
                 <div><h2 id="illustrated-pages-heading" className="text-sm font-bold">Finished Page Plates</h2><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Upload complete pages. KOBA-I preserves every page as one indivisible composition.</p></div>
                 <button type="button" disabled={isUploadingPages} onClick={() => pageInputRef.current?.click()} className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50"><ImagePlus className="h-4 w-4" />{isUploadingPages ? "Uploading…" : "+ Add Pages"}</button>
               </div>
-              <input ref={pageInputRef} type="file" multiple accept="image/jpeg,image/png,image/gif,image/svg+xml" className="hidden" onChange={(event) => { const files = [...(event.target.files || [])]; event.target.value = ""; void uploadPageFiles(files); }} />
-              <input ref={replacePageInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/svg+xml" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void uploadPageFiles([file], replacePageIndexRef.current); }} />
+              <input ref={pageInputRef} type="file" multiple accept="image/jpeg,image/png,image/gif" className="hidden" onChange={(event) => { const files = [...(event.target.files || [])]; event.target.value = ""; void uploadPageFiles(files); }} />
+              <input ref={replacePageInputRef} type="file" accept="image/jpeg,image/png,image/gif" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void uploadPageFiles([file], replacePageIndexRef.current); }} />
               <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {(currentChapter.pages || []).map((page: any, pageIndex: number) => {
                   const referenceRatio = Number((currentChapter.pages || [])[0]?.aspectRatio || 0);
@@ -550,14 +549,14 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
                 <p className="mt-1 text-xs text-slate-500">Choose an Add Image Here position inside the chapter.</p>
               </div>
               <div className="flex flex-wrap items-center gap-2 border-y border-slate-200 py-3 dark:border-white/10">
-              <input ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/svg+xml" className="hidden" onChange={handleIllustrationUpload} />
+              <input ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/gif" className="hidden" onChange={handleIllustrationUpload} />
               {isUploadingImage && <span className="flex items-center gap-2 text-sm font-bold text-emerald-700"><ImagePlus className="h-4 w-4" /> Uploading illustration…</span>}
               {hasSelectedIllustration && (
                 <button type="button" onClick={removeSelectedImage} className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30">
                   <Trash2 className="h-4 w-4" /> Remove Image
                 </button>
               )}
-              <span className="text-[11px] text-slate-500">JPEG, PNG, GIF, or safely stored SVG · 12 MB max</span>
+              <span className="text-[11px] text-slate-500">JPEG, PNG, or GIF · 12 MB max</span>
             </div>
             <div
               key={bookData.chapters[activeChapterIndex]?.id}

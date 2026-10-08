@@ -1,3 +1,5 @@
+import { protectedChapterImagePaths } from "./protected-chapter-images.ts";
+
 const MAX_PATH_LENGTH = 2_000;
 
 function text(value: unknown): string {
@@ -22,12 +24,13 @@ export class PublicationAssetIntegrityError extends Error {
 
 export function requiredProtectedPublicationPaths(input: {
   assetId: string;
+  studioKey: string;
   publicationType: "audiobook" | "ebook";
   chapters: unknown[];
   ebookPayload?: unknown;
   requireAsset?: boolean;
 }): string[] {
-  const prefix = `studio/${input.assetId}/`;
+  const prefix = `studio/${input.assetId}/${input.studioKey}/`;
   const ebookPayload = record(input.ebookPayload);
   const ebookChapters = Array.isArray(ebookPayload?.chapters)
     ? ebookPayload.chapters
@@ -50,14 +53,26 @@ export function requiredProtectedPublicationPaths(input: {
   } else {
     for (const chapter of ebookChapters) {
       const chapterData = record(chapter);
-      if (!chapterData || !Array.isArray(chapterData.pages)) continue;
-      for (const page of chapterData.pages) {
-        const pageData = record(page);
-        if (!pageData) continue;
-        const storagePath = text(pageData.assetId || pageData.storagePath);
-        if (!storagePath || !storagePath.startsWith(prefix)) {
+      if (!chapterData) continue;
+      if (Array.isArray(chapterData.pages)) {
+        for (const page of chapterData.pages) {
+          const pageData = record(page);
+          if (!pageData) continue;
+          const storagePath = text(pageData.assetId || pageData.storagePath);
+          if (!storagePath || !storagePath.startsWith(prefix)) {
+            throw new PublicationAssetIntegrityError(
+              "An illustrated page is not available from this publication's protected storage."
+            );
+          }
+          paths.push(storagePath);
+        }
+      }
+      const chapterHtmlValue = chapterData.textContent || chapterData.content;
+      const chapterHtml = typeof chapterHtmlValue === "string" ? chapterHtmlValue : "";
+      for (const storagePath of protectedChapterImagePaths(chapterHtml)) {
+        if (!storagePath.startsWith(prefix)) {
           throw new PublicationAssetIntegrityError(
-            "An illustrated page is not available from this publication's protected storage."
+            "An inline illustration is outside this publication's protected storage namespace."
           );
         }
         paths.push(storagePath);
@@ -76,6 +91,7 @@ export function requiredProtectedPublicationPaths(input: {
 
 export async function assertProtectedPublicationAssets(input: {
   assetId: string;
+  studioKey: string;
   publicationType: "audiobook" | "ebook";
   chapters: unknown[];
   ebookPayload?: unknown;

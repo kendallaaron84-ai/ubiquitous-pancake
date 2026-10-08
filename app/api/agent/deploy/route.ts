@@ -288,6 +288,7 @@ export async function POST(request: Request) {
 
     await assertProtectedPublicationAssets({
       assetId: assetKey,
+      studioKey: session.studioKey,
       publicationType: mediaType,
       chapters,
       ebookPayload: body?.ebookPayload ?? existing.ebookPayload ?? null,

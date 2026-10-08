@@ -21,6 +21,7 @@ import {
 } from "@/core/security/studio-publication-access";
 import { requireStudioAuthorContext } from "@/core/security/studio-publication-session";
 import { validateStudioAudioFile } from "@/core/studio-media";
+import { validateStudioImageFile } from "@/core/studio-image";
 import {
   attachProtectedChapterImageUrls,
   protectedChapterImagePaths,
@@ -34,7 +35,6 @@ type RecordData = Record<string, unknown>;
 const ALLOWED_TOP_LEVEL_FIELDS = new Set(["action", "assetId", "payload"]);
 const CHAPTER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/;
 const VIDEO_MIME_PATTERN = /^video\/[A-Za-z0-9.+-]{1,80}$/;
-const PAGE_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/svg+xml"]);
 
 export async function GET(request: Request) {
   try {
@@ -115,18 +115,20 @@ export async function POST(request: Request) {
       ? requestedPurpose
       : requestedPurpose === "mastered" ? "mastered" : "source";
     const audioValidation = validateStudioAudioFile(payload.fileName, contentType);
+    const imageValidation = validateStudioImageFile(payload.fileName, contentType);
     const mediaKind = clean(payload.mediaKind).toLowerCase();
     const expectsImage = purpose === "illustrated_page" || purpose === "illustration";
     const expectsAudio = !expectsImage && mediaKind !== "video";
+    if (expectsImage && imageValidation.valid) contentType = imageValidation.contentType;
     if (expectsAudio && audioValidation.valid) contentType = audioValidation.contentType;
     const validType = expectsImage
-      ? PAGE_IMAGE_MIME_TYPES.has(contentType)
+      ? imageValidation.valid
       : expectsAudio
         ? audioValidation.valid
         : VIDEO_MIME_PATTERN.test(contentType);
     if (!validType) {
       throw invalidRequest(expectsImage
-        ? "Choose a JPEG, PNG, GIF, or SVG page image."
+        ? "Choose a JPEG, PNG, or GIF image. SVG uploads are temporarily unavailable."
         : expectsAudio
           ? "Choose an MP3, M4A, AAC, WAV, FLAC, or OGG audio file."
           : "Choose a supported video file.");
