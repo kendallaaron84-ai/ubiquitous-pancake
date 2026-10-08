@@ -3,6 +3,10 @@ import { createCorsHeaders } from "@/core/security/cors";
 import { verifyReaderToken } from "@/core/security/reader-token";
 import { requireAuthorizedAuthorIdentity } from "@/core/security/author-identity";
 import {
+  LegacyPublicationAccessError,
+  resolveLegacyPublicationAuthorName,
+} from "@/core/security/legacy-publication-access";
+import {
   authorizeAnonymousFreeMedia,
   authorizeReaderMedia,
   buildProtectedPublicationChapters,
@@ -192,13 +196,26 @@ export async function GET(request: Request) {
       );
       verifiedAuthorName = authorIdentity.displayName;
     } else {
-      if (activeLicense.exists && activeLicense.data()?.status === "active") {
-        return NextResponse.json(
-          { success: false, error: "This publication must be assigned to a registered author name." },
-          { status: 403, headers }
-        );
+      try {
+        verifiedAuthorName = resolveLegacyPublicationAuthorName({
+          publicationAuthorEmail: authorEmail,
+          publicationAuthorName: data.authorName,
+          activeLicenseExists: activeLicense.exists,
+          license: licenseData,
+        });
+      } catch (error) {
+        if (error instanceof LegacyPublicationAccessError) {
+          return NextResponse.json(
+            { success: false, code: error.code, error: error.publicMessage },
+            { status: error.status, headers }
+          );
+        }
+        throw error;
       }
-      console.warn("Serving a legacy publication without an identity registry link.", { assetKey, tenantKey });
+      console.warn("Serving an ownership-verified legacy publication without an identity registry link.", {
+        assetKey,
+        tenantKey,
+      });
     }
     const price = Number(data.price ?? data.unitPrice ?? 0);
     const authorization = request.headers.get("authorization") || "";
