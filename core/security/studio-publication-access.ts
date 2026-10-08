@@ -1,3 +1,5 @@
+import { canonicalizeProtectedChapterImages } from "./protected-chapter-images.ts";
+
 const ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
 const PLACEHOLDER_ASSET_IDS = new Set([
   "abk_new-audiobook-draft",
@@ -244,7 +246,7 @@ export function buildWorkbenchDraftPatch(input: {
     : "reflowable";
   const chapters = layoutMode === "illustrated_pages"
     ? sanitizeIllustratedChapters(input.chapters, clean(input.assetId), clean(input.studioKey))
-    : sanitizeChapters(input.chapters);
+    : sanitizeChapters(input.chapters, clean(input.assetId), clean(input.studioKey));
   const guardrailsSource = safeObject(input.guardrails);
   const guardrails = {
     setting: boundedText(guardrailsSource.setting, 2_000),
@@ -409,16 +411,20 @@ function sanitizeStudioTracks(input: {
   });
 }
 
-function sanitizeChapters(value: unknown) {
+function sanitizeChapters(value: unknown, assetId: string, studioKey: string) {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_CHAPTERS) {
     throw invalidPayload("The e-book must contain between 1 and 500 chapters.");
   }
   return value.map((raw, index) => {
     const chapter = safeObject(raw);
+    const protectedContent = canonicalizeProtectedChapterImages(
+      boundedText(chapter.textContent || chapter.content, MAX_TEXT_LENGTH),
+      (path) => assertTenantBoundStoragePath(path, assetId, studioKey)
+    );
     return {
       id: clean(chapter.id) || `chapter_${index + 1}`,
       title: boundedText(chapter.title, MAX_TITLE_LENGTH) || `Chapter ${index + 1}`,
-      textContent: boundedText(chapter.textContent || chapter.content, MAX_TEXT_LENGTH),
+      textContent: protectedContent.html,
     };
   });
 }

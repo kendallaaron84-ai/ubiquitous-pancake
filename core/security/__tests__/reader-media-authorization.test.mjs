@@ -259,6 +259,23 @@ test("complete chapter manifest uses only namespaced signed URLs and never raw p
   ].sort());
 });
 
+test("reflowable chapter illustrations resolve canonical paths only after reader authorization", async () => {
+  const storagePath = "studio/ebk_protected/studio_a/illustration/tree.png";
+  const [chapter] = await buildProtectedPublicationChapters({
+    chapters: [{
+      id: "chapter_one",
+      textContent: `<p>Before</p><img src="" data-koba-storage-path="${storagePath}" alt="Tree"><p>After</p>`,
+    }],
+    tenantId: "studio_a",
+    assetId: "ebk_protected",
+    publicationType: "ebook",
+    signStoragePath: async (path) => `https://signed.example/reader/${encodeURIComponent(path)}`,
+  });
+  assert.match(chapter.textContent, /https:\/\/signed\.example\/reader/);
+  assert.match(chapter.textContent, /data-koba-storage-path=/);
+  assert.doesNotMatch(chapter.textContent, /src=""/);
+});
+
 test("missing or cross-namespace protected media pointers fail closed", async () => {
   for (const storagePath of ["", "studio/other_asset/chapter.mp3"]) {
     await assert.rejects(

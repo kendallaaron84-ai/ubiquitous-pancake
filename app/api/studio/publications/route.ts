@@ -21,6 +21,10 @@ import {
 } from "@/core/security/studio-publication-access";
 import { requireStudioAuthorContext } from "@/core/security/studio-publication-session";
 import { validateStudioAudioFile } from "@/core/studio-media";
+import {
+  attachProtectedChapterImageUrls,
+  protectedChapterImagePaths,
+} from "@/core/security/protected-chapter-images";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -76,28 +80,52 @@ export async function POST(request: Request) {
         product: studioProductProjection(assetId, created.data() || {}),
       }, 201);
     }
-    if (action !== "create_upload") {
+    if (action !== "create_upload" && action !== "create_preview") {
       throw invalidRequest("Choose a supported Studio operation.");
     }
     const publication = await loadOwnedStudioProduct(adminDb, context, body.assetId);
     const payload = object(body.payload);
     assertNoAuthoritativeStudioFields(payload);
+    if (action === "create_preview") {
+      const { bucket } = requireStorageBucket();
+      const storagePath = assertTenantBoundStoragePath(
+        payload.storagePath,
+        publication.assetId,
+        context.studioKey
+      );
+      const file = bucket.file(storagePath);
+      const [exists] = await file.exists();
+      if (!exists) {
+        throw new StudioPublicationAccessError(
+          404,
+          "STUDIO_UPLOAD_NOT_FOUND",
+          "The uploaded media could not be found."
+        );
+      }
+      const [url] = await file.getSignedUrl({
+        version: "v4",
+        action: "read",
+        expires: Date.now() + 10 * 60 * 1000,
+      });
+      return success({ preview: { url, storagePath, expiresInSeconds: 600 } });
+    }
     let contentType = clean(payload.contentType).toLowerCase();
     const requestedPurpose = clean(payload.purpose);
-    const purpose = requestedPurpose === "illustrated_page"
-      ? "illustrated_page"
+    const purpose = requestedPurpose === "illustrated_page" || requestedPurpose === "illustration"
+      ? requestedPurpose
       : requestedPurpose === "mastered" ? "mastered" : "source";
     const audioValidation = validateStudioAudioFile(payload.fileName, contentType);
     const mediaKind = clean(payload.mediaKind).toLowerCase();
-    const expectsAudio = purpose !== "illustrated_page" && mediaKind !== "video";
+    const expectsImage = purpose === "illustrated_page" || purpose === "illustration";
+    const expectsAudio = !expectsImage && mediaKind !== "video";
     if (expectsAudio && audioValidation.valid) contentType = audioValidation.contentType;
-    const validType = purpose === "illustrated_page"
+    const validType = expectsImage
       ? PAGE_IMAGE_MIME_TYPES.has(contentType)
       : expectsAudio
         ? audioValidation.valid
         : VIDEO_MIME_PATTERN.test(contentType);
     if (!validType) {
-      throw invalidRequest(purpose === "illustrated_page"
+      throw invalidRequest(expectsImage
         ? "Choose a JPEG, PNG, GIF, or SVG page image."
         : expectsAudio
           ? "Choose an MP3, M4A, AAC, WAV, FLAC, or OGG audio file."
@@ -178,16 +206,21 @@ export async function PATCH(request: Request) {
         studioKey: context.studioKey,
         assetId: publication.assetId,
       });
-      if (patch.layoutMode === "illustrated_pages") {
+      const protectedPaths = patch.layoutMode === "illustrated_pages"
+        ? patch.chapters.flatMap((chapter) => {
+          const pages = Array.isArray((chapter as RecordData).pages)
+            ? (chapter as RecordData).pages as RecordData[]
+            : [];
+          return pages.map((page) => clean(page.assetId));
+        })
+        : patch.chapters.flatMap((chapter) =>
+          protectedChapterImagePaths(clean((chapter as RecordData).textContent))
+        );
+      if (protectedPaths.length) {
         const { bucket } = requireStorageBucket();
         await assertUploadedObjectsExist(
           bucket,
-          patch.chapters.flatMap((chapter) => {
-            const pages = Array.isArray((chapter as RecordData).pages)
-              ? (chapter as RecordData).pages as RecordData[]
-              : [];
-            return pages.map((page) => clean(page.assetId));
-          }),
+          protectedPaths,
           publication.assetId,
           context.studioKey
         );
@@ -236,9 +269,26 @@ export async function PATCH(request: Request) {
 
 async function studioProductWithPagePreviews(assetId: string, product: RecordData) {
   const projected = studioProductProjection(assetId, product);
-  if (projected.layoutMode !== "illustrated_pages" || !adminStorage) return projected;
+  if (!adminStorage) return projected;
   const bucket = adminStorage.bucket(resolveFirebaseStorageBucketName());
   const expires = Date.now() + 10 * 60 * 1000;
+  const studioKey = clean(product.studioKey || product.wpStudioKey);
+  if (projected.layoutMode !== "illustrated_pages") {
+    return {
+      ...projected,
+      chapters: await Promise.all(projected.chapters.map(async (chapter) => ({
+        ...chapter,
+        textContent: await attachProtectedChapterImageUrls(
+          clean(chapter.textContent),
+          (path) => assertTenantBoundStoragePath(path, assetId, studioKey),
+          async (path) => {
+            const [url] = await bucket.file(path).getSignedUrl({ action: "read", expires });
+            return url;
+          }
+        ),
+      }))),
+    };
+  }
   return {
     ...projected,
     chapters: await Promise.all(projected.chapters.map(async (chapter) => ({

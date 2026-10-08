@@ -3,10 +3,9 @@
 import React, { useState, useEffect, use, useRef } from "react";
 import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, ImagePlus, Trash2, GripVertical, Replace } from "lucide-react";
 import Link from "next/link";
-import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
 import { toast } from "@/components/ui/use-toast";
 import { ModeToggle } from "@/components/elements/mode-toggle";
-import { loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
+import { loadStudioMediaPreview, loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
 
 const CHAPTER_TAGS = new Set(["A", "ABBR", "B", "BLOCKQUOTE", "BR", "CITE", "CODE", "DIV", "EM", "FIGCAPTION", "FIGURE", "H1", "H2", "H3", "H4", "H5", "H6", "HR", "I", "IMG", "LI", "OL", "P", "PRE", "SECTION", "SMALL", "SPAN", "STRONG", "SUB", "SUP", "UL"]);
 const PAGE_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/svg+xml"]);
@@ -34,9 +33,15 @@ function sanitizeChapterHtml(value: string): string {
     if (!CHAPTER_TAGS.has(node.tagName)) { node.replaceWith(...node.childNodes); return; }
     [...node.attributes].forEach((attribute) => {
       const name = attribute.name.toLowerCase();
-      if (name.startsWith("on") || !["href", "src", "alt", "title", "class", "role", "aria-label", "loading"].includes(name)) node.removeAttribute(attribute.name);
+      if (name.startsWith("on") || !["href", "src", "alt", "title", "class", "role", "aria-label", "loading", "data-koba-storage-path"].includes(name)) node.removeAttribute(attribute.name);
     });
     if (node instanceof HTMLImageElement) {
+      const protectedPath = node.dataset.kobaStoragePath?.trim().replace(/^\/+/, "") || "";
+      if (protectedPath) {
+        if (!protectedPath.startsWith("studio/") || protectedPath.includes("..") || protectedPath.includes("\\")) node.remove();
+        node.alt = node.getAttribute("alt") || "Illustration";
+        return;
+      }
       try {
         const source = new URL(node.getAttribute("src") || "");
         if (!/^https?:$/.test(source.protocol) || !/\.(?:jpe?g|png|gif|svg)$/i.test(source.pathname)) node.remove();
@@ -155,6 +160,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     if (!editorRef.current) return "";
     const copy = editorRef.current.cloneNode(true) as HTMLElement;
     copy.querySelectorAll("[data-koba-image-slot]").forEach((slot) => slot.remove());
+    copy.querySelectorAll<HTMLImageElement>("img[data-koba-storage-path]").forEach((image) => image.setAttribute("src", ""));
     return copy.innerHTML;
   };
 
@@ -186,7 +192,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     return () => window.cancelAnimationFrame(frame);
   }, [activeChapterIndex, bookData?.chapters?.[activeChapterIndex]?.id]);
 
-  const insertImageAtSelectedPosition = (url: string, alt: string) => {
+  const insertImageAtSelectedPosition = (url: string, storagePath: string, alt: string) => {
     const editor = editorRef.current;
     const slot = pendingInsertionSlotRef.current;
     if (!editor || !slot || !editor.contains(slot)) {
@@ -197,6 +203,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     figure.className = "koba-illustration";
     const image = document.createElement("img");
     image.src = url;
+    image.dataset.kobaStoragePath = storagePath;
     image.alt = alt;
     image.loading = "lazy";
     figure.appendChild(image);
@@ -223,15 +230,9 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     }
     setIsUploadingImage(true);
     try {
-      const extension = file.name.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") || "image";
-      const chapterId = bookData.chapters[activeChapterIndex]?.id || `chapter-${activeChapterIndex + 1}`;
-      const storagePath = `studio/${assetId}/illustrations/${chapterId}/${crypto.randomUUID()}.${extension}`;
-      const storageReference = ref(getStorage(), storagePath);
-      const snapshot = await new Promise<any>((resolve, reject) => {
-        const task = uploadBytesResumable(storageReference, file, { contentType: file.type });
-        task.on("state_changed", undefined, reject, () => resolve(task.snapshot));
-      });
-      insertImageAtSelectedPosition(await getDownloadURL(snapshot.ref), file.name.replace(/\.[^.]+$/, ""));
+      const uploaded = await uploadStudioFile(assetId, file, "illustration", "image");
+      const preview = await loadStudioMediaPreview(assetId, uploaded.storagePath);
+      insertImageAtSelectedPosition(preview.url, uploaded.storagePath, file.name.replace(/\.[^.]+$/, ""));
       toast({ title: "Image inserted", description: "Save Draft to preserve it in this chapter." });
     } catch (error: any) {
       toast({ title: "Image upload failed", description: error?.message || "Please try again.", variant: "destructive" });

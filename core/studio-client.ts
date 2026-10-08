@@ -6,6 +6,22 @@ export interface StudioUploadResult {
   contentType: string;
 }
 
+export async function loadStudioMediaPreview(assetId: string, storagePath: string) {
+  const response = await studioRequest("/api/studio/publications", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      assetId,
+      action: "create_preview",
+      payload: { storagePath },
+    }),
+  });
+  if (!response.preview || typeof response.preview.url !== "string") {
+    throw new Error("Secure media preview could not be authorized.");
+  }
+  return response.preview as { url: string; storagePath: string; expiresInSeconds: number };
+}
+
 export async function createStudioPublication(
   type: "audiobook" | "ebook" = "audiobook"
 ) {
@@ -49,8 +65,8 @@ export async function saveStudioProduct(
 export async function uploadStudioFile(
   assetId: string,
   file: File,
-  purpose: "source" | "mastered" | "illustrated_page",
-  mediaKind: "audio" | "video" = "audio"
+  purpose: "source" | "mastered" | "illustrated_page" | "illustration",
+  mediaKind: "audio" | "video" | "image" = "audio"
 ): Promise<StudioUploadResult> {
   const audio = (purpose === "source" || purpose === "mastered") && mediaKind === "audio"
     ? validateStudioAudioFile(file.name, file.type)

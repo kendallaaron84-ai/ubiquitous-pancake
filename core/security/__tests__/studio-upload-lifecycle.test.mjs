@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createStudioPublication,
   loadStudioProduct,
+  loadStudioMediaPreview,
   loadStudioTranscriptionQuote,
   uploadStudioFile,
 } from "../../studio-client.ts";
@@ -117,6 +118,57 @@ test("a signed storage rejection retains its HTTP status for independent diagnos
       () => uploadStudioFile(CANONICAL_ASSET_ID, file, "source", "audio"),
       /HTTP 403/
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("illustration upload uses the server ticket and an authenticated preview request", async () => {
+  const originalFetch = globalThis.fetch;
+  const storagePath = `studio/${CANONICAL_ASSET_ID}/studio_test/illustration/tree.png`;
+  const requests = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const body = typeof init.body === "string" ? JSON.parse(init.body) : null;
+    requests.push({ url, init, body });
+    if (url === "/api/studio/publications" && body?.action === "create_upload") {
+      assert.equal(body.payload.purpose, "illustration");
+      assert.equal(body.payload.mediaKind, "image");
+      return json({ success: true, upload: {
+        uploadUrl: "https://storage.googleapis.test/signed-illustration-upload",
+        storagePath,
+        canonicalUrl: "https://storage.googleapis.test/canonical/tree.png",
+        contentType: "image/png",
+      } });
+    }
+    if (url === "https://storage.googleapis.test/signed-illustration-upload") {
+      assert.equal(init.method, "PUT");
+      return new Response(null, { status: 200 });
+    }
+    if (url === "/api/studio/publications" && body?.action === "create_preview") {
+      assert.equal(body.assetId, CANONICAL_ASSET_ID);
+      assert.equal(body.payload.storagePath, storagePath);
+      return json({ success: true, preview: {
+        url: "https://storage.googleapis.test/signed-preview",
+        storagePath,
+        expiresInSeconds: 600,
+      } });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+  try {
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "tree.png", { type: "image/png" });
+    const uploaded = await uploadStudioFile(CANONICAL_ASSET_ID, file, "illustration", "image");
+    const preview = await loadStudioMediaPreview(CANONICAL_ASSET_ID, uploaded.storagePath);
+    assert.equal(preview.url, "https://storage.googleapis.test/signed-preview");
+    assert.deepEqual(requests.map(({ url }) => url), [
+      "/api/studio/publications",
+      "https://storage.googleapis.test/signed-illustration-upload",
+      "/api/studio/publications",
+    ]);
+    for (const request of requests.filter(({ url }) => url === "/api/studio/publications")) {
+      assert.equal(request.init.credentials, "same-origin");
+    }
   } finally {
     globalThis.fetch = originalFetch;
   }
