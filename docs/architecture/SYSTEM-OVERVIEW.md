@@ -6,7 +6,7 @@ Status: implementation snapshot for stabilization RC1. This document describes s
 
 KOBA-I is maintained in two known Git repositories.
 
-1. The private Dashboard monorepo (`kendallaaron84-ai/ubiquitous-pancake`) contains the Next.js Dashboard, Studio, Workbench, Nexus, reader and commerce APIs, Firebase/Firestore configuration, security services, and the WordPress egress gateway under `services/wordpress-egress-gateway`.
+1. The Dashboard monorepo (`kendallaaron84-ai/ubiquitous-pancake`) contains the Next.js Dashboard, Studio, Workbench, Nexus, reader and commerce APIs, Firebase/Firestore configuration, security services, and the WordPress egress gateway under `services/wordpress-egress-gateway`. GitHub reported this repository as **public** on 2026-10-08. The intended private, least-privilege review configuration has not yet been restored or approved unambiguously.
 2. The WordPress plugin repository (`kendallaaron84-ai/koba-i-audio-updated-07.16.2026`) contains the KOBA-I Audio plugin, WordPress publication/storefront integration, and packaged Bloom/ebook reader code.
 
 No independently versioned Bloom Player, entitlement, licensing, Stripe, or Firebase-security repository was found in the verified local source. Those components are part of one of the two repositories above. The Python content/transcription worker is referenced by the monorepo, but its authoritative repository has not been identified and is therefore a governance blocker.
