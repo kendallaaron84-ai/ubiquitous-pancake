@@ -28,9 +28,9 @@ The authenticated Vercel project is `koba-i/bug-free-robot`, connected to `kenda
 - The Dashboard repository was public at the time of inspection.
 - The connected Codex GitHub session authenticates as repository owner `kendallaaron84-ai`, not as a demonstrably read-only reviewer identity.
 - The connector reports no manageable GitHub App installations and cannot inspect collaborator permissions with its current integration permission.
-- ChatGPT private-repository access has not been independently tested from this session.
-- Gemma's exact GitHub account or GitHub App identity has not been provided and therefore cannot be granted or tested.
-- Private least-privilege access is not established for all three reviewers, so repository visibility must not yet be changed.
+- ChatGPT's local app policy permits GitHub actions, but this does not establish the GitHub OAuth/App repository scope. Installed-repository discovery returned no repository, and private-repository access remains unverified.
+- Gemma/AntiG uses Antigravity against the workstation's authorized local checkouts. Authenticated remote fetches succeeded for both repositories, and the exact required Dashboard and plugin commit objects are present locally. It requires no GitHub account, App installation, password, or token.
+- Private access remains unverified only for ChatGPT, so the Dashboard repository must remain public until that integration reads the repository after privacy is restored and the same pinned commits are reverified.
 
 ## Governance-branch publication state
 
@@ -47,13 +47,12 @@ GitHub Actions run `37791826435` executed the Dashboard `KOBA-I release gate` fr
 - WordPress gateway: passed.
 - Overall workflow: failed; no artifacts were published.
 
-The public, unauthenticated run view exposes only the failing job/step exit codes, not the complete logs. Exact diagnostic logs require Kendall to authenticate to GitHub. This failed run must not be configured as a passing required check.
+Authenticated job logs established two independent failures. The Dashboard security suite passed 269 of 270 tests and rejected a direct `firebase/storage` import in `app/dashboard/workbench/[assetId]/page.tsx`, violating the server-owned Studio API boundary. The Firestore job never executed a rules assertion because the root `firebase.json` caused Firebase CLI to validate framework-aware Hosting while running a Firestore-only emulator command; `webframeworks` was not enabled. The WordPress gateway job passed. This failed run must not be configured as a passing required check.
 
 ## Manual actions required from Kendall
 
-1. Sign in to GitHub in the controlled browser session so installed GitHub Apps and repository access settings can be inspected.
-2. Identify the exact ChatGPT and Gemma GitHub App installations or GitHub usernames. A name such as “ChatGPT” or “Gemma” is not sufficient to grant repository access safely.
-3. If read-only access must be enforced, use selected-repository GitHub Apps with `Contents`, `Metadata`, `Pull requests`, `Checks`, and `Actions` read permissions, or an organization team with a read role. A personal-repository collaborator should not be treated as read-only without proof of its granted role.
-4. After all three identities retrieve an exact private commit and required branch, change repository visibility to private and repeat the retrieval tests.
+1. Sign in to GitHub in the controlled browser session, or reauthorize the existing ChatGPT GitHub integration, so its selected-repository/private-repository scope can be inspected.
+2. Grant the ChatGPT integration only the read access required for repository contents, metadata, pull requests, Actions and checks. Do not create a GitHub identity or credential for Gemma/AntiG.
+3. After ChatGPT private access is configured, restore the Dashboard repository to private and immediately test the integration against the pinned production and review commits, a source file and workflow run. Keep the repository public if that test cannot be completed.
 
 The Release Gate remains **not enforced** until branch/ruleset protections, required checks, independent review, staging evidence, and founder-controlled promotion are demonstrably active.
