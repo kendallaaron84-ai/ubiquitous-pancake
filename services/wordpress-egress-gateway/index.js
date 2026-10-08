@@ -474,6 +474,8 @@ function normalizePublicationPayload(value) {
   const type = clean(value.type).toLowerCase();
   const status = clean(value.status).toLowerCase();
   const price = Number(value.price ?? 0);
+  const expectedPublicationId = Number(value.expectedPublicationId ?? 0);
+  const expectedPageId = Number(value.expectedPageId ?? 0);
 
   if (!/^(?:abk|ebk)_[a-z0-9][a-z0-9_-]{0,139}$/.test(assetKey)) {
     throw new GatewayError(
@@ -505,6 +507,14 @@ function normalizePublicationPayload(value) {
       "The publication price is invalid."
     );
   }
+  for (const expectedId of [expectedPublicationId, expectedPageId]) {
+    if (!Number.isInteger(expectedId) || expectedId < 0) {
+      throw new GatewayError(
+        "INVALID_PUBLICATION_PAYLOAD",
+        "The existing WordPress publication identity is invalid."
+      );
+    }
+  }
 
   return {
     ...value,
@@ -527,6 +537,8 @@ function normalizePublicationPayload(value) {
         ? value.chapters
         : [],
     ebookPayload: value.ebookPayload ?? null,
+    expectedPublicationId,
+    expectedPageId,
   };
 }
 
@@ -584,7 +596,7 @@ async function forwardPublicationToWordPress({
       "WORDPRESS_DEPLOYMENT_FAILED",
       clean(payload?.message) ||
         `WordPress rejected the publication deployment (HTTP ${wordpressResponse.status}).`,
-      502
+      wordpressResponse.status === 409 ? 409 : 502
     );
   }
 

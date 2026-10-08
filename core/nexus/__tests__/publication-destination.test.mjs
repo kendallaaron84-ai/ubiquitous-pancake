@@ -262,6 +262,19 @@ test("Save & Sync uses the guarded deploy response without a blocked follow-up P
   assert.match(saveFlow, /const updatedProduct = cloudData\.product/);
   assert.doesNotMatch(saveFlow, /fetch\(`\/api\/products\//);
   assert.doesNotMatch(saveFlow, /method:\s*"PATCH"/);
+  assert.match(saveFlow, /assetId: editingProduct\.id/);
+});
+
+test("WordPress deployment preserves immutable post identity across rename and retry", async () => {
+  const [route, gateway] = await Promise.all([
+    readFile(new URL("app/api/agent/deploy/route.ts", ROOT), "utf8"),
+    readFile(new URL("services/wordpress-egress-gateway/index.js", ROOT), "utf8"),
+  ]);
+  assert.match(route, /expectedPublicationId: destinationChanged[\s\S]*?existingWordPressDeployment\.publicationId/);
+  assert.match(route, /expectedPageId: destinationChanged[\s\S]*?existingWordPressDeployment\.pageId/);
+  assert.match(gateway, /expectedPublicationId/);
+  assert.match(gateway, /expectedPageId/);
+  assert.match(gateway, /wordpressResponse\.status === 409 \? 409 : 502/);
 });
 
 test("publication deployment remains independent of Nexus entitlement", async () => {

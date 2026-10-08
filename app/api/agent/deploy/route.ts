@@ -3,7 +3,11 @@ import { GoogleAuth } from "google-auth-library";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
-import { adminDb } from "@/core/firebase-admin";
+import {
+  adminDb,
+  adminStorage,
+  resolveFirebaseStorageBucketName,
+} from "@/core/firebase-admin";
 import {
   PublicationDestinationError,
   assertConfirmedPublicationOrigin,
@@ -34,6 +38,10 @@ import {
   assertOwnedStudioProduct,
   assertValidStudioAssetId,
 } from "@/core/security/studio-publication-access";
+import {
+  PublicationAssetIntegrityError,
+  assertProtectedPublicationAssets,
+} from "@/core/security/publication-deployment-integrity";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -278,6 +286,28 @@ export async function POST(request: Request) {
           ? existing.chapters
           : [];
 
+    await assertProtectedPublicationAssets({
+      assetId: assetKey,
+      publicationType: mediaType,
+      chapters,
+      ebookPayload: body?.ebookPayload ?? existing.ebookPayload ?? null,
+      requireAsset: status === "published" && (
+        mediaType === "audiobook" ||
+        clean((body?.ebookPayload as Record<string, unknown> | null)?.layoutMode ||
+          (existing.ebookPayload as Record<string, unknown> | null)?.layoutMode) === "illustrated_pages"
+      ),
+      exists: async (storagePath) => {
+        if (!adminStorage) {
+          throw new PublicationAssetIntegrityError(
+            "Protected publication storage is unavailable."
+          );
+        }
+        const protectedBucket = adminStorage.bucket(resolveFirebaseStorageBucketName());
+        const [exists] = await protectedBucket.file(storagePath).exists();
+        return exists;
+      },
+    });
+
     const timestamp = FieldValue.serverTimestamp();
     await productRef.set({
       id: assetKey,
@@ -342,6 +372,12 @@ export async function POST(request: Request) {
         status,
         chapters,
         ebookPayload: body?.ebookPayload ?? existing.ebookPayload ?? null,
+        expectedPublicationId: destinationChanged
+          ? 0
+          : positiveInteger(existingWordPressDeployment.publicationId),
+        expectedPageId: destinationChanged
+          ? 0
+          : positiveInteger(existingWordPressDeployment.pageId),
       });
     } catch (error) {
       const classified = classifyDeploymentError(error);
@@ -466,6 +502,9 @@ export async function POST(request: Request) {
       product: deployedProduct,
     });
   } catch (error) {
+    if (error instanceof PublicationAssetIntegrityError) {
+      return failure(error.status, error.message, error.code);
+    }
     if (error instanceof StudioPublicationAccessError) {
       return failure(error.status, error.publicMessage, error.code);
     }
@@ -498,6 +537,8 @@ interface WordPressDeploymentInput {
   status: string;
   chapters: unknown[];
   ebookPayload: unknown;
+  expectedPublicationId: number;
+  expectedPageId: number;
 }
 
 interface WordPressDeploymentResult {
@@ -550,6 +591,8 @@ async function deployPublicationToWordPress(
             chapters: input.chapters,
             studioTracks: input.chapters,
             ebookPayload: input.ebookPayload,
+            expectedPublicationId: input.expectedPublicationId,
+            expectedPageId: input.expectedPageId,
           },
         },
         timeout: 25_000,
