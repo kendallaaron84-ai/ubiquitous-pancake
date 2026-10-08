@@ -40,3 +40,5 @@ The Cloud Tasks Python transcription/content worker is referenced by environment
 - Dashboard production commit `a229e164...` and plugin remote commit `5db01fd6...` are retrievable through the connected GitHub integration.
 - Local RC commits `ab8f833...` and `d08ec56...` are not pushed and therefore are not independently retrievable from GitHub.
 - Vercel deployment isolation could not be inspected because the Vercel session requires Kendall's manual two-factor authentication. Governance branches must remain local until this is verified.
+
+Superseding verification later on 2026-10-08: the authenticated Vercel project `koba-i/bug-free-robot` tracks only `feature/content-engine-rehearsal` for production, has no deploy hooks, and serves `dashboard.koba-i.com`. Dashboard `codex/governance-release-gate` was subsequently pushed and is isolated from production branch tracking. The plugin governance branch remains local.
