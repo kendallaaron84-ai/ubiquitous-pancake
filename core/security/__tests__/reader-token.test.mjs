@@ -77,6 +77,51 @@ test("anonymous free token cannot be issued without exact resource scope", async
   );
 });
 
+test("local acceptance may scope an anonymous token to the exact KOBA-Dev origin", async () => {
+  const localEnvironment = {
+    ...environment,
+    NODE_ENV: "development",
+    KOBA_LOCAL_ACCEPTANCE: "true",
+  };
+  const token = await signReaderToken(
+    {
+      ...tokenInput,
+      principalType: "anonymous_free",
+      assetId: "ebk_local",
+      origin: "http://koba-dev.local",
+    },
+    localEnvironment
+  );
+  const claims = await verifyReaderToken(token, localEnvironment);
+  assert.equal(claims.origin, "http://koba-dev.local");
+  assert.equal(claims.assetId, "ebk_local");
+});
+
+test("local anonymous origin exception fails closed outside the exact acceptance boundary", async () => {
+  const input = {
+    ...tokenInput,
+    principalType: "anonymous_free",
+    assetId: "ebk_local",
+    origin: "http://koba-dev.local",
+  };
+  await assert.rejects(
+    () => signReaderToken(input, { ...environment, NODE_ENV: "production", KOBA_LOCAL_ACCEPTANCE: "true" }),
+    /HTTPS origin is required/
+  );
+  await assert.rejects(
+    () => signReaderToken(input, { ...environment, NODE_ENV: "development", KOBA_LOCAL_ACCEPTANCE: "false" }),
+    /HTTPS origin is required/
+  );
+  await assert.rejects(
+    () => signReaderToken({ ...input, origin: "http://localhost:3000" }, { ...environment, NODE_ENV: "development", KOBA_LOCAL_ACCEPTANCE: "true" }),
+    /HTTPS origin is required/
+  );
+  await assert.rejects(
+    () => signReaderToken({ ...input, origin: "http://koba-dev.local:8080" }, { ...environment, NODE_ENV: "development", KOBA_LOCAL_ACCEPTANCE: "true" }),
+    /HTTPS origin is required/
+  );
+});
+
 test("rejects a tampered reader token", async () => {
   const token = await signReaderToken(tokenInput, environment);
   const [header, payload, signature] = token.split(".");

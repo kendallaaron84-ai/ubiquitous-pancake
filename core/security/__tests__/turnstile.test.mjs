@@ -54,3 +54,51 @@ test("missing configuration and provider failure use stable unavailable codes", 
     (error) => error.code === TURNSTILE_ERROR_CODES.unavailable && error.status === 503
   );
 });
+
+test("Cloudflare testing metadata is accepted only by the isolated non-production runtime", async () => {
+  const testingPayload = {
+    success: true,
+    hostname: "example.com",
+    metadata: { result_with_testing_key: true },
+  };
+  const localEnvironment = {
+    NODE_ENV: "development",
+    KOBA_LOCAL_ACCEPTANCE: "true",
+    TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
+    TURNSTILE_EXPECTED_HOSTNAME: "localhost",
+  };
+
+  await verifyFreePublicationHuman({
+    token: "XXXX.DUMMY.TOKEN.XXXX",
+    assetId: "ebk_local_acceptance",
+    source: localEnvironment,
+    fetchImpl: async () => response(testingPayload),
+  });
+
+  for (const source of [
+    { ...localEnvironment, NODE_ENV: "production" },
+    { ...localEnvironment, KOBA_LOCAL_ACCEPTANCE: "false" },
+    { ...localEnvironment, TURNSTILE_SECRET_KEY: "not-the-cloudflare-test-secret" },
+    { ...localEnvironment, TURNSTILE_EXPECTED_HOSTNAME: "dashboard.koba-i.com" },
+  ]) {
+    await assert.rejects(
+      () => verifyFreePublicationHuman({
+        token: "XXXX.DUMMY.TOKEN.XXXX",
+        assetId: "ebk_local_acceptance",
+        source,
+        fetchImpl: async () => response(testingPayload),
+      }),
+      (error) => error.code === TURNSTILE_ERROR_CODES.failed && error.status === 403
+    );
+  }
+
+  await assert.rejects(
+    () => verifyFreePublicationHuman({
+      token: "XXXX.DUMMY.TOKEN.XXXX",
+      assetId: "ebk_local_acceptance",
+      source: localEnvironment,
+      fetchImpl: async () => response({ success: true, hostname: "example.com" }),
+    }),
+    (error) => error.code === TURNSTILE_ERROR_CODES.failed && error.status === 403
+  );
+});

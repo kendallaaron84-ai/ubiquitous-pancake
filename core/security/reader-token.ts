@@ -26,7 +26,7 @@ export async function signReaderToken(
   source: NodeJS.ProcessEnv = process.env,
   now: Date = new Date()
 ): Promise<string> {
-  validateInput(input);
+  validateInput(input, source);
   const configuration = resolveReaderTokenConfiguration(source);
   const signingKey = await importPKCS8(
     configuration.privateKey,
@@ -89,10 +89,7 @@ export async function verifyReaderToken(
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/.test(String(payload.assetId || ""))) {
       throw new Error("Reader token anonymous asset claim is malformed.");
     }
-    try {
-      const parsed = new URL(String(payload.origin || ""));
-      if (parsed.protocol !== "https:" || parsed.origin !== payload.origin) throw new Error();
-    } catch {
+    if (!isAcceptedAnonymousOrigin(String(payload.origin || ""), source)) {
       throw new Error("Reader token anonymous origin claim is malformed.");
     }
   } else if (payload.assetId !== undefined || payload.origin !== undefined) {
@@ -128,7 +125,7 @@ function resolveReaderTokenConfiguration(source: NodeJS.ProcessEnv) {
   };
 }
 
-function validateInput(input: ReaderTokenInput): void {
+function validateInput(input: ReaderTokenInput, source: NodeJS.ProcessEnv): void {
   for (const [name, value] of Object.entries({
     principalId: input.principalId,
     tenantId: input.tenantId,
@@ -148,14 +145,31 @@ function validateInput(input: ReaderTokenInput): void {
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/.test(input.assetId || "")) {
       throw new TypeError("Reader token assetId is required for anonymous free access.");
     }
-    try {
-      const parsed = new URL(input.origin || "");
-      if (parsed.protocol !== "https:" || parsed.origin !== input.origin) throw new Error();
-    } catch {
+    if (!isAcceptedAnonymousOrigin(input.origin || "", source)) {
       throw new TypeError("Reader token HTTPS origin is required for anonymous free access.");
     }
   } else if (input.assetId !== undefined || input.origin !== undefined) {
     throw new TypeError("Reader token resource claims are reserved for anonymous free access.");
+  }
+}
+
+function isAcceptedAnonymousOrigin(
+  value: string,
+  source: NodeJS.ProcessEnv
+): boolean {
+  try {
+    const parsed = new URL(value);
+    if (parsed.origin !== value) return false;
+    if (parsed.protocol === "https:") return true;
+    return (
+      source.NODE_ENV !== "production" &&
+      source.KOBA_LOCAL_ACCEPTANCE === "true" &&
+      parsed.protocol === "http:" &&
+      parsed.hostname === "koba-dev.local" &&
+      parsed.port === ""
+    );
+  } catch {
+    return false;
   }
 }
 

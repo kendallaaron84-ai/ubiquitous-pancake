@@ -1,6 +1,8 @@
 const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 const TOKEN_MAX_LENGTH = 2_048;
 const VERIFY_TIMEOUT_MS = 5_000;
+const CLOUDFLARE_ALWAYS_PASS_TEST_SECRET =
+  "1x0000000000000000000000000000000AA";
 
 export const TURNSTILE_ERROR_CODES = {
   tokenRequired: "HUMAN_VERIFICATION_REQUIRED",
@@ -29,6 +31,25 @@ interface SiteverifyResponse {
   hostname?: string;
   action?: string;
   cdata?: string;
+  metadata?: {
+    result_with_testing_key?: boolean;
+  };
+}
+
+function isIsolatedCloudflareTestResult(
+  payload: SiteverifyResponse,
+  source: NodeJS.ProcessEnv,
+  secret: string,
+  expectedHostname: string | undefined
+): boolean {
+  return (
+    source.NODE_ENV !== "production" &&
+    source.KOBA_LOCAL_ACCEPTANCE === "true" &&
+    secret === CLOUDFLARE_ALWAYS_PASS_TEST_SECRET &&
+    expectedHostname === "localhost" &&
+    payload.success === true &&
+    payload.metadata?.result_with_testing_key === true
+  );
 }
 
 export async function verifyFreePublicationHuman(input: {
@@ -83,6 +104,14 @@ export async function verifyFreePublicationHuman(input: {
     );
   } finally {
     clearTimeout(timeout);
+  }
+
+  // Cloudflare's documented dummy keys intentionally return a synthetic
+  // hostname and omit action/cdata. Accept that response only inside the
+  // explicitly isolated, non-production emulator runtime. Production and all
+  // ordinary deployments retain the exact hostname/action/cdata contract.
+  if (isIsolatedCloudflareTestResult(payload, source, secret, expectedHostname)) {
+    return;
   }
 
   if (
