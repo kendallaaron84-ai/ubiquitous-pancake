@@ -93,7 +93,11 @@ export async function uploadStudioFile(
     throw new Error("Secure media upload could not be authorized.");
   }
   const target = new URL(upload.uploadUrl);
-  if (target.protocol !== "https:") {
+  const localAcceptanceUpload =
+    process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "true" &&
+    target.protocol === "http:" &&
+    (target.hostname === "127.0.0.1" || target.hostname === "localhost");
+  if (target.protocol !== "https:" && !localAcceptanceUpload) {
     throw new Error("Secure media upload returned an invalid destination.");
   }
   const response = await fetch(target.toString(), {

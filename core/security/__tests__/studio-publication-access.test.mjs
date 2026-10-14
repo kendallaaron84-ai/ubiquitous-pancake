@@ -246,14 +246,19 @@ test("Studio and Workbench clients use only the server-owned API", async () => {
   assert.match(client, /credentials: "same-origin"/);
 });
 
-test("new audiobook creation is persisted before the editor exposes its canonical assetId", async () => {
+test("new audiobook and ebook creation persist the selected canonical identity before the editor opens", async () => {
   const [productsPage, client, route, deploy] = await Promise.all([
     readFile(new URL("app/products/page.tsx", ROOT), "utf8"),
     readFile(new URL("core/studio-client.ts", ROOT), "utf8"),
     readFile(new URL("app/api/studio/publications/route.ts", ROOT), "utf8"),
     readFile(new URL("app/api/agent/deploy/route.ts", ROOT), "utf8"),
   ]);
-  assert.match(productsPage, /await createStudioPublication\("audiobook"\)/);
+  assert.match(productsPage, /handleCreateDraft = async \(publicationType: "audiobook" \| "ebook"\)/);
+  assert.match(productsPage, /await createStudioPublication\(publicationType\)/);
+  assert.match(productsPage, /handleCreateDraft\("audiobook"\)/);
+  assert.match(productsPage, /handleCreateDraft\("ebook"\)/);
+  assert.match(productsPage, /New Audiobook/);
+  assert.match(productsPage, /New E-Book/);
   assert.match(productsPage, /canonicalProduct\.id !== created\.assetId/);
   assert.doesNotMatch(productsPage, /Math\.random\(\).*substring/);
   assert.doesNotMatch(productsPage, /id: `\$\{newPrefix\}/);
@@ -262,6 +267,15 @@ test("new audiobook creation is persisted before the editor exposes its canonica
   assert.match(route, /return success\([\s\S]*assetId,[\s\S]*product:[\s\S]*201\)/);
   assert.match(deploy, /assertOwnedStudioProduct/);
   assert.match(productsPage, /assetId: editingProduct\.id/);
+});
+
+test("Workbench image insertion survives the upload-state rerender by resolving a stable slot index", async () => {
+  const workbench = await readFile(new URL("app/workbench/[assetId]/page.tsx", ROOT), "utf8");
+  assert.match(workbench, /pendingInsertionIndexRef = useRef<number \| null>/);
+  assert.match(workbench, /slot\.dataset\.kobaImageSlot/);
+  assert.match(workbench, /querySelector<HTMLElement>\(`\[data-koba-image-slot=/);
+  assert.match(workbench, /editor\.insertBefore\(figure, contentBlocks\[insertionIndex\] \|\| null\)/);
+  assert.doesNotMatch(workbench, /pendingInsertionSlotRef/);
 });
 
 test("upload and transcription reject missing, placeholder, or unowned publication identities", async () => {

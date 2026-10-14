@@ -81,7 +81,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
   const editorRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const pendingInsertionSlotRef = useRef<HTMLElement | null>(null);
+  const pendingInsertionIndexRef = useRef<number | null>(null);
   const selectedFigureRef = useRef<HTMLElement | null>(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [hasSelectedIllustration, setHasSelectedIllustration] = useState(false);
@@ -182,7 +182,8 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   };
 
   const chooseImageForSlot = (slot: HTMLElement) => {
-    pendingInsertionSlotRef.current = slot;
+    const insertionIndex = Number(slot.dataset.kobaImageSlot);
+    pendingInsertionIndexRef.current = Number.isInteger(insertionIndex) ? insertionIndex : null;
     imageInputRef.current?.click();
   };
 
@@ -194,8 +195,14 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
 
   const insertImageAtSelectedPosition = (url: string, storagePath: string, alt: string) => {
     const editor = editorRef.current;
-    const slot = pendingInsertionSlotRef.current;
-    if (!editor || !slot || !editor.contains(slot)) {
+    const insertionIndex = pendingInsertionIndexRef.current;
+    const slot = editor && insertionIndex !== null
+      ? editor.querySelector<HTMLElement>(`[data-koba-image-slot="${insertionIndex}"]`)
+      : null;
+    const contentBlocks = editor
+      ? [...editor.children].filter((child) => !(child instanceof HTMLElement && child.dataset.kobaImageSlot !== undefined))
+      : [];
+    if (!editor || insertionIndex === null || insertionIndex < 0 || insertionIndex > contentBlocks.length) {
       toast({ title: "Choose an insertion point", description: "Select Add Image Here where the illustration should appear.", variant: "destructive" });
       return;
     }
@@ -207,8 +214,9 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     image.alt = alt;
     image.loading = "lazy";
     figure.appendChild(image);
-    slot.replaceWith(figure);
-    pendingInsertionSlotRef.current = null;
+    if (slot) slot.replaceWith(figure);
+    else editor.insertBefore(figure, contentBlocks[insertionIndex] || null);
+    pendingInsertionIndexRef.current = null;
     selectedFigureRef.current = figure;
     setHasSelectedIllustration(true);
     updateActiveChapterHtml(serializedEditorHtml());

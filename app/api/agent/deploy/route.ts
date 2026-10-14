@@ -107,8 +107,13 @@ function resolveWordPressGatewayUrl(): string {
 
   try {
     const parsed = new URL(configured);
+    const localAcceptanceGateway =
+      process.env.NODE_ENV !== "production" &&
+      process.env.KOBA_LOCAL_ACCEPTANCE === "true" &&
+      parsed.protocol === "http:" &&
+      (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost");
     if (
-      parsed.protocol !== "https:" ||
+      (!localAcceptanceGateway && parsed.protocol !== "https:") ||
       parsed.username ||
       parsed.password ||
       parsed.search ||
@@ -124,6 +129,26 @@ function resolveWordPressGatewayUrl(): string {
       "The secure WordPress deployment service is misconfigured.",
       "dashboard_configuration"
     );
+  }
+}
+
+function resolveLocalMediaGateway(): string {
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.KOBA_LOCAL_ACCEPTANCE !== "true"
+  ) return "";
+  const configured = process.env.KOBA_LOCAL_MEDIA_GATEWAY_URL?.trim() || "";
+  if (!configured) return "";
+  try {
+    const parsed = new URL(configured);
+    if (
+      parsed.protocol !== "http:" ||
+      (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") ||
+      parsed.username || parsed.password || parsed.search || parsed.hash
+    ) return "";
+    return parsed.origin;
+  } catch {
+    return "";
   }
 }
 
@@ -278,6 +303,7 @@ export async function POST(request: Request) {
       resolvedTargetOrigin: destination.targetWpOrigin,
       destinationChanged,
     });
+    const localMediaGateway = resolveLocalMediaGateway();
     const chapters = Array.isArray(body?.chapters)
       ? body.chapters
       : Array.isArray(body?.studioTracks)
@@ -298,6 +324,13 @@ export async function POST(request: Request) {
           (existing.ebookPayload as Record<string, unknown> | null)?.layoutMode) === "illustrated_pages"
       ),
       exists: async (storagePath) => {
+        if (localMediaGateway) {
+          const response = await fetch(
+            `${localMediaGateway}/storage-preview?path=${encodeURIComponent(storagePath)}`,
+            { method: "GET", cache: "no-store" }
+          );
+          return response.ok;
+        }
         if (!adminStorage) {
           throw new PublicationAssetIntegrityError(
             "Protected publication storage is unavailable."
@@ -382,6 +415,16 @@ export async function POST(request: Request) {
       });
     } catch (error) {
       const classified = classifyDeploymentError(error);
+      if (
+        process.env.NODE_ENV !== "production" &&
+        process.env.KOBA_LOCAL_ACCEPTANCE === "true"
+      ) {
+        console.error("[Local Acceptance] WordPress deployment detail.", {
+          name: error instanceof Error ? error.name : "UnknownError",
+          message: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+      }
       console.error("[Publication Deployment] Deployment failed.", {
         assetKey,
         selectedWebsiteConnectionId: destination.websiteConnectionId,
@@ -564,38 +607,30 @@ async function deployPublicationToWordPress(
     data: WordPressGatewayDeploymentResponse;
   };
   try {
+    if (
+      process.env.NODE_ENV !== "production" &&
+      process.env.KOBA_LOCAL_ACCEPTANCE === "true" &&
+      new URL(gatewayUrl).protocol === "http:"
+    ) {
+      const response = await fetch(`${gatewayUrl}/publish-vault`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(buildGatewayDeploymentPayload(input)),
+        signal: AbortSignal.timeout(25_000),
+        cache: "no-store",
+      });
+      gatewayResponse = {
+        status: response.status,
+        data: (await response.json().catch(() => ({}))) as WordPressGatewayDeploymentResponse,
+      };
+    } else {
     const authenticatedClient =
       await getGatewayAuthClient().getIdTokenClient(gatewayUrl);
     const response =
       await authenticatedClient.request<WordPressGatewayDeploymentResponse>({
         url: `${gatewayUrl}/publish-vault`,
         method: "POST",
-        data: {
-          studioKey: input.studioKey,
-          websiteConnectionId: input.destination.websiteConnectionId,
-          secretCredentialRef: input.destination.secretCredentialRef,
-          targetWpOrigin,
-          wpUsername,
-          publication: {
-            assetKey: input.assetKey,
-            bookTitle: input.title,
-            bookSlug: input.assetKey,
-            authorSlug: slug(input.authorName),
-            authorName: input.authorName,
-            synopsis: input.synopsis,
-            coverUrl: input.coverUrl,
-            bgImageUrl: input.bgImageUrl,
-            type: input.mediaType,
-            category: input.category,
-            price: input.price,
-            status: input.status,
-            chapters: input.chapters,
-            studioTracks: input.chapters,
-            ebookPayload: input.ebookPayload,
-            expectedPublicationId: input.expectedPublicationId,
-            expectedPageId: input.expectedPageId,
-          },
-        },
+        data: buildGatewayDeploymentPayload(input),
         timeout: 25_000,
         validateStatus: () => true,
       });
@@ -603,6 +638,7 @@ async function deployPublicationToWordPress(
       status: response.status,
       data: response.data || {},
     };
+    }
   } catch (error) {
     console.error("WordPress publication gateway request failed.", {
       assetKey: input.assetKey,
@@ -638,6 +674,15 @@ async function deployPublicationToWordPress(
     );
   }
 
+  if (
+    process.env.NODE_ENV !== "production" &&
+    process.env.KOBA_LOCAL_ACCEPTANCE === "true"
+  ) {
+    console.info("[Local Acceptance] WordPress destination confirmation.", {
+      expected: targetWpOrigin,
+      confirmed: payload.targetWpOrigin,
+    });
+  }
   const confirmedOrigin = assertConfirmedPublicationOrigin(
     targetWpOrigin,
     payload.targetWpOrigin
@@ -670,6 +715,35 @@ async function deployPublicationToWordPress(
     bookshelfPageId,
     publicationUrl,
     bookshelfUrl,
+  };
+}
+
+function buildGatewayDeploymentPayload(input: WordPressDeploymentInput) {
+  return {
+    studioKey: input.studioKey,
+    websiteConnectionId: input.destination.websiteConnectionId,
+    secretCredentialRef: input.destination.secretCredentialRef,
+    targetWpOrigin: input.destination.targetWpOrigin,
+    wpUsername: input.destination.wpUsername,
+    publication: {
+      assetKey: input.assetKey,
+      bookTitle: input.title,
+      bookSlug: input.assetKey,
+      authorSlug: slug(input.authorName),
+      authorName: input.authorName,
+      synopsis: input.synopsis,
+      coverUrl: input.coverUrl,
+      bgImageUrl: input.bgImageUrl,
+      type: input.mediaType,
+      category: input.category,
+      price: input.price,
+      status: input.status,
+      chapters: input.chapters,
+      studioTracks: input.chapters,
+      ebookPayload: input.ebookPayload,
+      expectedPublicationId: input.expectedPublicationId,
+      expectedPageId: input.expectedPageId,
+    },
   };
 }
 

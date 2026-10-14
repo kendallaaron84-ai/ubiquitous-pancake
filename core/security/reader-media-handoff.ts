@@ -7,6 +7,7 @@ import { consumeAnonymousFreeHandoff, createAnonymousFreeHandoff, isAnonymousFre
 import { consumeAuthorSiteReaderSession, createReaderSession } from "./services/reader-session-service.ts";
 import type { ReaderPlatformDb } from "./services/service-support.ts";
 import { TurnstileVerificationError } from "./turnstile.ts";
+import { exactReaderOrigin } from "./reader-origin-policy.ts";
 
 const ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
 const HANDOFF_PATTERN = /^([a-f0-9]{64})\.([A-Za-z0-9_-]{32,128})$/;
@@ -47,15 +48,6 @@ function safeFreeBody(value: unknown): { assetId: string; turnstileToken: string
     : null;
 }
 
-function exactHttpsOrigin(value: string | null): string | null {
-  try {
-    const parsed = new URL(value || "");
-    return parsed.protocol === "https:" ? parsed.origin : null;
-  } catch {
-    return null;
-  }
-}
-
 async function authoritativeTenant(db: ReaderPlatformDb, assetId: string): Promise<string> {
   const snapshot = await db.collection("products").doc(assetId).get();
   const data = snapshot.data() || {};
@@ -81,7 +73,7 @@ export function createAnonymousFreeMediaHandoffHandler(dependencies: ReaderMedia
     try {
       await dependencies.verifyHuman({ token: body.turnstileToken, assetId: body.assetId });
       const authorized = await authorizeAnonymousFreeMedia(dependencies.db, { assetId: body.assetId });
-      const publicationOrigin = exactHttpsOrigin(authorized.publicationUrl);
+      const publicationOrigin = exactReaderOrigin(authorized.publicationUrl);
       if (!publicationOrigin) throw new Error("READER_HANDOFF_DESTINATION_INVALID");
       const handoff = await createAnonymousFreeHandoff(dependencies.db, {
         assetId: body.assetId,
@@ -106,7 +98,7 @@ export function createReaderMediaHandoffHandler(dependencies: ReaderMediaHandoff
       const reader = await resolveReaderIdentitySession(dependencies.db, readReaderSessionCookie(request.headers.get("cookie")));
       const tenantId = await authoritativeTenant(dependencies.db, assetId);
       const authorized = await authorizeReaderMedia(dependencies.db, { readerUid: reader.readerUid, tenantId, assetId });
-      const publicationOrigin = exactHttpsOrigin(authorized.publicationUrl);
+      const publicationOrigin = exactReaderOrigin(authorized.publicationUrl);
       if (!publicationOrigin || !authorized.publicationUrl) throw new Error("READER_HANDOFF_DESTINATION_INVALID");
       const handoff = await createReaderSession(dependencies.db, { readerUid: reader.readerUid, siteId: publicationOrigin, resourceId: assetId, scope: "author_site", ttlMs: HANDOFF_TTL_MS, correlationId: crypto.randomUUID() });
       const launchUrl = new URL(authorized.publicationUrl);
@@ -120,7 +112,7 @@ export function createReaderMediaHandoffHandler(dependencies: ReaderMediaHandoff
 
 export function createReaderMediaHandoffExchangeHandler(dependencies: ReaderMediaHandoffDependencies) {
   return async (request: Request): Promise<Response> => {
-    const origin = exactHttpsOrigin(request.headers.get("origin"));
+    const origin = exactReaderOrigin(request.headers.get("origin"));
     const body = await request.json().catch(() => null) as Record<string, unknown> | null;
     const assetId = body && Object.keys(body).every((key) => key === "assetId" || key === "handoff") ? String(body.assetId || "").trim() : "";
     const credential = body && typeof body.handoff === "string" ? body.handoff.trim() : "";

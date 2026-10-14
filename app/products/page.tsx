@@ -192,11 +192,11 @@ export default function ProductsPage() {
     return () => unsubscribe();
   }, [currentUserEmail]);
 
-  const handleCreateDraft = async () => {
+  const handleCreateDraft = async (publicationType: "audiobook" | "ebook") => {
     if (isCreating) return;
     setIsCreating(true);
     try {
-      const created = await createStudioPublication("audiobook");
+      const created = await createStudioPublication(publicationType);
       const canonicalProduct = created.product;
       if (!canonicalProduct || canonicalProduct.id !== created.assetId) {
         throw new Error("The publication workspace could not be confirmed.");
@@ -446,13 +446,24 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
             <h1 className="text-3xl font-black tracking-tight text-white">Product Catalog</h1>
             <p className="text-sm text-slate-300 mt-1">Manage, update, and deploy physical and digital audio distribution streams.</p>
           </div>
-          <button 
-            onClick={handleCreateDraft} 
-            disabled={isCreating}
-            className="flex items-center gap-2 bg-[#8b4528] text-white hover:bg-[#723820] px-5 py-3 rounded-lg font-semibold shadow-lg transition-all"
-          >
-            <Plus className="w-4 h-4" /> {isCreating ? "Creating Workspace..." : "Add Product Asset"}
-          </button>
+          <div className="flex flex-wrap items-center gap-2" aria-label="Create publication workspace">
+            <button
+              type="button"
+              onClick={() => handleCreateDraft("audiobook")}
+              disabled={isCreating}
+              className="flex items-center gap-2 bg-[#8b4528] text-white hover:bg-[#723820] disabled:cursor-wait disabled:opacity-70 px-5 py-3 rounded-lg font-semibold shadow-lg transition-all"
+            >
+              <Plus className="w-4 h-4" /> {isCreating ? "Creating Workspace..." : "New Audiobook"}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleCreateDraft("ebook")}
+              disabled={isCreating}
+              className="flex items-center gap-2 border border-[#8b4528] bg-slate-950/40 text-white hover:bg-[#8b4528]/20 disabled:cursor-wait disabled:opacity-70 px-5 py-3 rounded-lg font-semibold shadow-lg transition-all"
+            >
+              <Plus className="w-4 h-4" /> {isCreating ? "Creating Workspace..." : "New E-Book"}
+            </button>
+          </div>
         </div>
 
         {userProfile && (

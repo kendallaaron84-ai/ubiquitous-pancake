@@ -113,6 +113,7 @@ async function attachProtectedChapterUrls(
   const bucketName =
     process.env.FIREBASE_STORAGE_BUCKET?.trim() ||
     process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET?.trim();
+  const localMediaGateway = resolveLocalMediaGateway();
   const signedUrlExpiration = Date.now() + 60 * 60 * 1000;
   return buildProtectedPublicationChapters({
     chapters,
@@ -120,6 +121,10 @@ async function attachProtectedChapterUrls(
     assetId: assetKey,
     publicationType,
     signStoragePath: async (storagePath) => {
+      if (localMediaGateway) {
+        const fileName = storagePath.split("/").pop() || "illustration.jpg";
+        return `${localMediaGateway}/storage-preview/${encodeURIComponent(fileName)}?path=${encodeURIComponent(storagePath)}`;
+      }
       if (!bucketName) throw new Error("MEDIA_STORAGE_NOT_CONFIGURED");
       const [url] = await adminStorage
         .bucket(bucketName)
@@ -128,6 +133,26 @@ async function attachProtectedChapterUrls(
       return url;
     },
   });
+}
+
+function resolveLocalMediaGateway(): string {
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.KOBA_LOCAL_ACCEPTANCE !== "true"
+  ) return "";
+  const configured = process.env.KOBA_LOCAL_MEDIA_GATEWAY_URL?.trim() || "";
+  if (!configured) return "";
+  try {
+    const parsed = new URL(configured);
+    if (
+      parsed.protocol !== "http:" ||
+      (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") ||
+      parsed.username || parsed.password || parsed.search || parsed.hash
+    ) return "";
+    return parsed.origin;
+  } catch {
+    return "";
+  }
 }
 
 export async function OPTIONS(request: Request) {

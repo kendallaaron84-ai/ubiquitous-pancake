@@ -5,6 +5,7 @@ import {
 import { requireActiveVerifiedReader } from "./services/reader-profile-service.ts";
 import { isExplicitlyFreePublication } from "./reader-free-acquisition.ts";
 import { attachProtectedChapterImageUrls } from "./protected-chapter-images.ts";
+import { exactReaderOrigin, exactReaderUrl } from "./reader-origin-policy.ts";
 
 const ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
 const TENANT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
@@ -64,28 +65,6 @@ function text(value: unknown, maximum = 2_000): string {
   return typeof value === "string" ? value.trim().slice(0, maximum) : "";
 }
 
-function exactHttpsOrigin(value: unknown): string | null {
-  const candidate = text(value);
-  if (!candidate) return null;
-  try {
-    const parsed = new URL(candidate);
-    return parsed.protocol === "https:" ? parsed.origin : null;
-  } catch {
-    return null;
-  }
-}
-
-function exactHttpsUrl(value: unknown): string | null {
-  const candidate = text(value);
-  if (!candidate) return null;
-  try {
-    const parsed = new URL(candidate);
-    return parsed.protocol === "https:" ? parsed.toString() : null;
-  } catch {
-    return null;
-  }
-}
-
 function publicationEvidence(product: Record<string, unknown>) {
   const deployment =
     product.wordpressDeployment &&
@@ -96,7 +75,7 @@ function publicationEvidence(product: Record<string, unknown>) {
   const status = text(product.status, 40).toLowerCase();
   const isPublished =
     product.isPublished === true || ["active", "publish", "published"].includes(status);
-  const publicationUrl = exactHttpsUrl(
+  const publicationUrl = exactReaderUrl(
     deployment.publicationUrl || product.publicationUrl || product.wordpressUrl
   );
   const origins = new Set<string>();
@@ -106,7 +85,7 @@ function publicationEvidence(product: Record<string, unknown>) {
     product.associatedWebsite,
     publicationUrl,
   ]) {
-    const origin = exactHttpsOrigin(value);
+    const origin = exactReaderOrigin(value);
     if (origin) origins.add(origin);
   }
   return {
@@ -198,7 +177,7 @@ export async function authorizeReaderMedia(
       );
     }
     const requestedOrigin = input.requestOrigin
-      ? exactHttpsOrigin(input.requestOrigin)
+      ? exactReaderOrigin(input.requestOrigin)
       : null;
     if (input.requestOrigin && (!requestedOrigin || !evidence.origins.includes(requestedOrigin))) {
       throw new ReaderMediaAuthorizationError(
@@ -291,7 +270,7 @@ export async function authorizeAnonymousFreeMedia(
     );
   }
   const requestedOrigin = input.requestOrigin
-    ? exactHttpsOrigin(input.requestOrigin)
+    ? exactReaderOrigin(input.requestOrigin)
     : null;
   if (input.requestOrigin && (!requestedOrigin || !evidence.origins.includes(requestedOrigin))) {
     throw new ReaderMediaAuthorizationError(

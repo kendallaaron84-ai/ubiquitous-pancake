@@ -87,12 +87,22 @@ export async function POST(request: Request) {
     const payload = object(body.payload);
     assertNoAuthoritativeStudioFields(payload);
     if (action === "create_preview") {
-      const { bucket } = requireStorageBucket();
       const storagePath = assertTenantBoundStoragePath(
         payload.storagePath,
         publication.assetId,
         context.studioKey
       );
+      const localMediaGateway = resolveLocalMediaGateway();
+      if (localMediaGateway) {
+        return success({
+          preview: {
+            url: `${localMediaGateway}/storage-preview?path=${encodeURIComponent(storagePath)}`,
+            storagePath,
+            expiresInSeconds: 600,
+          },
+        });
+      }
+      const { bucket } = requireStorageBucket();
       const file = bucket.file(storagePath);
       const [exists] = await file.exists();
       if (!exists) {
@@ -151,6 +161,18 @@ export async function POST(request: Request) {
       `${crypto.randomUUID()}-${fileName}`,
     ].join("/");
     assertTenantBoundStoragePath(storagePath, publication.assetId, context.studioKey);
+    const localMediaGateway = resolveLocalMediaGateway();
+    if (localMediaGateway) {
+      return success({
+        upload: {
+          uploadUrl: `${localMediaGateway}/storage-upload?path=${encodeURIComponent(storagePath)}`,
+          storagePath,
+          canonicalUrl: canonicalStorageUrl(bucketName, storagePath),
+          contentType,
+          expiresInSeconds: 600,
+        },
+      });
+    }
     const [uploadUrl] = await bucket.file(storagePath).getSignedUrl({
       version: "v4",
       action: "write",
@@ -168,6 +190,26 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     return failure(error);
+  }
+}
+
+function resolveLocalMediaGateway(): string {
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.KOBA_LOCAL_ACCEPTANCE !== "true"
+  ) return "";
+  const configured = process.env.KOBA_LOCAL_MEDIA_GATEWAY_URL?.trim() || "";
+  if (!configured) return "";
+  try {
+    const parsed = new URL(configured);
+    if (
+      parsed.protocol !== "http:" ||
+      (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") ||
+      parsed.username || parsed.password || parsed.search || parsed.hash
+    ) return "";
+    return parsed.origin;
+  } catch {
+    return "";
   }
 }
 
@@ -219,13 +261,23 @@ export async function PATCH(request: Request) {
           protectedChapterImagePaths(clean((chapter as RecordData).textContent))
         );
       if (protectedPaths.length) {
-        const { bucket } = requireStorageBucket();
-        await assertUploadedObjectsExist(
-          bucket,
-          protectedPaths,
-          publication.assetId,
-          context.studioKey
-        );
+        const localMediaGateway = resolveLocalMediaGateway();
+        if (localMediaGateway) {
+          await assertLocalUploadedObjectsExist(
+            localMediaGateway,
+            protectedPaths,
+            publication.assetId,
+            context.studioKey
+          );
+        } else {
+          const { bucket } = requireStorageBucket();
+          await assertUploadedObjectsExist(
+            bucket,
+            protectedPaths,
+            publication.assetId,
+            context.studioKey
+          );
+        }
       }
       await publication.reference.update({ ...patch, updatedAt: FieldValue.serverTimestamp() });
     } else if (action === "attach_mastered_audio") {
@@ -271,10 +323,18 @@ export async function PATCH(request: Request) {
 
 async function studioProductWithPagePreviews(assetId: string, product: RecordData) {
   const projected = studioProductProjection(assetId, product);
-  if (!adminStorage) return projected;
-  const bucket = adminStorage.bucket(resolveFirebaseStorageBucketName());
+  const localMediaGateway = resolveLocalMediaGateway();
+  if (!adminStorage && !localMediaGateway) return projected;
+  const bucket = localMediaGateway ? null : adminStorage!.bucket(resolveFirebaseStorageBucketName());
   const expires = Date.now() + 10 * 60 * 1000;
   const studioKey = clean(product.studioKey || product.wpStudioKey);
+  const previewUrl = async (path: string) => {
+    if (localMediaGateway) {
+      return `${localMediaGateway}/storage-preview?path=${encodeURIComponent(path)}`;
+    }
+    const [url] = await bucket!.file(path).getSignedUrl({ action: "read", expires });
+    return url;
+  };
   if (projected.layoutMode !== "illustrated_pages") {
     return {
       ...projected,
@@ -283,10 +343,7 @@ async function studioProductWithPagePreviews(assetId: string, product: RecordDat
         textContent: await attachProtectedChapterImageUrls(
           clean(chapter.textContent),
           (path) => assertTenantBoundStoragePath(path, assetId, studioKey),
-          async (path) => {
-            const [url] = await bucket.file(path).getSignedUrl({ action: "read", expires });
-            return url;
-          }
+          previewUrl
         ),
       }))),
     };
@@ -298,8 +355,7 @@ async function studioProductWithPagePreviews(assetId: string, product: RecordDat
       pages: await Promise.all((Array.isArray(chapter.pages) ? chapter.pages : []).map(async (page) => {
         const assetIdValue = clean(page.assetId);
         if (!assetIdValue.startsWith(`studio/${assetId}/`)) return page;
-        const [previewUrl] = await bucket.file(assetIdValue).getSignedUrl({ action: "read", expires });
-        return { ...page, previewUrl };
+        return { ...page, previewUrl: await previewUrl(assetIdValue) };
       })),
     }))),
   };
@@ -334,6 +390,32 @@ async function assertUploadedObjectsExist(
     assertTenantBoundStoragePath(path, assetId, studioKey);
     const [exists] = await bucket.file(path).exists();
     return exists;
+  }));
+  if (results.some((exists) => !exists)) {
+    throw new StudioPublicationAccessError(
+      400,
+      "STUDIO_UPLOAD_NOT_FOUND",
+      "One or more uploaded media files could not be confirmed."
+    );
+  }
+}
+
+async function assertLocalUploadedObjectsExist(
+  gateway: string,
+  paths: string[],
+  assetId: string,
+  studioKey: string
+) {
+  const tenantPaths = [...new Set(paths.filter((path) =>
+    path.startsWith(`studio/${assetId}/${studioKey}/`)
+  ))];
+  const results = await Promise.all(tenantPaths.map(async (path) => {
+    assertTenantBoundStoragePath(path, assetId, studioKey);
+    const response = await fetch(`${gateway}/storage-preview?path=${encodeURIComponent(path)}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    return response.ok;
   }));
   if (results.some((exists) => !exists)) {
     throw new StudioPublicationAccessError(

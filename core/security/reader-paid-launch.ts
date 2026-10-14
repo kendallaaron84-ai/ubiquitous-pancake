@@ -1,6 +1,7 @@
 const ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
 const CHECKOUT_SESSION_PATTERN = /^cs_[A-Za-z0-9_]{12,}$/;
 const CONTINUATION_ORIGIN = "https://reader.koba-i.invalid";
+import { exactReaderUrl } from "./reader-origin-policy.ts";
 
 export const READER_PAID_LAUNCH_ERROR_CODES = {
   requestInvalid: "READER_PAID_LAUNCH_REQUEST_INVALID",
@@ -119,7 +120,7 @@ export function createPaidReaderLaunchHandler(
 
     try {
       const launchUrl = new URL(payload?.launchUrl || "");
-      if (launchUrl.protocol !== "https:") throw new Error("invalid launch URL");
+      if (!exactReaderUrl(launchUrl.toString())) throw new Error("invalid launch URL");
       return Response.redirect(launchUrl, 303);
     } catch {
       return failure(

@@ -31,6 +31,10 @@ export interface FirebaseAdminEnvironment {
   FIREBASE_PRIVATE_KEY?: string;
   FIREBASE_STORAGE_BUCKET?: string;
   NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET?: string;
+  NODE_ENV?: string;
+  KOBA_LOCAL_ACCEPTANCE?: string;
+  FIREBASE_AUTH_EMULATOR_HOST?: string;
+  FIRESTORE_EMULATOR_HOST?: string;
 }
 
 export interface FirebaseAdminServices {
@@ -132,6 +136,19 @@ export function createFirebaseAdminServices(
     const app =
       existingApp ??
       (() => {
+        if (isLocalAcceptanceEmulatorEnvironment(environment)) {
+          const projectId = normalizeEnvironmentValue(
+            environment.FIREBASE_PROJECT_ID
+          );
+          const storageBucket = normalizeEnvironmentValue(
+            environment.FIREBASE_STORAGE_BUCKET ??
+              environment.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+          );
+          return dependencies.initializeApp({
+            projectId,
+            ...(storageBucket ? { storageBucket } : {}),
+          });
+        }
         const configuration = loadFirebaseAdminConfiguration(environment);
         return dependencies.initializeApp({
           credential: dependencies.cert(configuration),
@@ -163,6 +180,22 @@ export function createFirebaseAdminServices(
       "Firebase Admin could not initialize from the configured server credentials."
     );
   }
+}
+
+export function isLocalAcceptanceEmulatorEnvironment(
+  environment: FirebaseAdminEnvironment = process.env
+): boolean {
+  return (
+    normalizeEnvironmentValue(environment.NODE_ENV) !== "production" &&
+    normalizeEnvironmentValue(environment.KOBA_LOCAL_ACCEPTANCE) === "true" &&
+    normalizeEnvironmentValue(environment.FIREBASE_PROJECT_ID) !== "" &&
+    /^(127\.0\.0\.1|localhost):\d+$/.test(
+      normalizeEnvironmentValue(environment.FIREBASE_AUTH_EMULATOR_HOST)
+    ) &&
+    /^(127\.0\.0\.1|localhost):\d+$/.test(
+      normalizeEnvironmentValue(environment.FIRESTORE_EMULATOR_HOST)
+    )
+  );
 }
 
 export function getFirebaseAdminServices(): FirebaseAdminServices {
