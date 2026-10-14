@@ -104,6 +104,7 @@ recordDeployment(third);
 for (const result of [second, third]) {
   assert.equal(Number(result.publication_id), Number(first.publication_id), "repeated sync preserves the publication ID");
   assert.equal(Number(result.page_id), Number(first.page_id), "repeated sync preserves the reader page ID");
+  assert.equal(Number(result.bookshelf_page_id), Number(first.bookshelf_page_id), "repeated sync preserves the shared bookstore page ID");
 }
 
 const finalState = await wordpressState();
@@ -112,7 +113,14 @@ assert.equal(products.size, 1);
 assert.equal(finalRecords.length, 2, "repeated Save & Sync does not create duplicate WordPress records");
 assert.deepEqual(finalRecords.map(record => record.id).sort((a, b) => a - b), firstRecords.map(record => record.id).sort((a, b) => a - b));
 assert.ok(finalRecords.every(record => record.title.includes("Disposable Ebook Renamed")), "rename updates the existing WordPress records");
-assert.equal(finalState.length, baseline.length + 2, "only the intended publication and reader page are added");
+const baselineBookstoreCount = baseline.filter(record => record.type === "page" && record.slug === "bookshelf").length;
+const finalBookstores = finalState.filter(record => record.type === "page" && record.slug === "bookshelf");
+assert.equal(finalBookstores.length, 1, "Save & Sync maintains exactly one shared bookstore page");
+assert.equal(
+  finalState.length,
+  baseline.length + 2 + (baselineBookstoreCount === 0 ? 1 : 0),
+  "only the intended publication, reader page, and one shared bookstore page may be added"
+);
 
 console.log(JSON.stringify({
   result: "PASS",
@@ -123,6 +131,7 @@ console.log(JSON.stringify({
   wordpressAddedRecordCount: finalState.length - baseline.length,
   publicationId: Number(first.publication_id),
   pageId: Number(first.page_id),
+  bookshelfPageId: Number(first.bookshelf_page_id),
   saveAndSyncOperations: 3,
   stableIds: true,
   duplicateRecords: 0,
