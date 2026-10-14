@@ -267,22 +267,26 @@ test("Preview cleanup preserves over-limit legacy values for Cancel, Revert, Sav
   assert.doesNotMatch(saved, /Preview only/);
 });
 
-test("editor-local locator rebinds a React-replaced figure and restores only its existing authorized preview", () => {
+test("editor-local locators rebind React-replaced figures and restore their existing authorized previews", () => {
   const first = new FakeFigure({ source: "https://signed.example/first" });
   const selected = new FakeFigure({ source: PREVIEW_URL });
   const editor = new FakeEditor([first, selected]);
+  const firstLocator = captureProtectedIllustrationLocator(editor, first);
   const locator = captureProtectedIllustrationLocator(editor, selected);
+  assert.deepEqual(firstLocator, { figureIndex: 0, storagePath: STORAGE_PATH, source: "https://signed.example/first" });
   assert.deepEqual(locator, { figureIndex: 1, storagePath: STORAGE_PATH, source: PREVIEW_URL });
 
   const replacementFirst = new FakeFigure({ source: "" });
   const replacementSelected = new FakeFigure({ source: "" });
   editor.figures = [replacementFirst, replacementSelected];
+  const reboundFirst = rebindProtectedIllustration(editor, firstLocator);
   const rebound = rebindProtectedIllustration(editor, locator);
 
+  assert.equal(reboundFirst, replacementFirst);
   assert.equal(rebound, replacementSelected);
   assert.notEqual(rebound, replacementFirst);
   assert.equal(replacementSelected.image.getAttribute("src"), PREVIEW_URL);
-  assert.equal(replacementFirst.image.getAttribute("src"), "");
+  assert.equal(replacementFirst.image.getAttribute("src"), "https://signed.example/first");
   assert.equal(replacementSelected.image.getAttribute("data-koba-storage-path"), STORAGE_PATH);
 
   const unexpectedSource = new FakeFigure({ source: "https://unexpected.example/other" });
@@ -371,6 +375,7 @@ test("Workbench exposes separate Preview, Accept, Revert, and Cancel controls th
   assert.match(source, /restorePendingIllustrationPreview\(\)/);
   assert.match(source, /restoreProtectedIllustrationSnapshot\(figure, metadata\.accepted\)/);
   assert.match(source, /rebindProtectedIllustration\(editor, locator\)/);
+  assert.match(source, /pendingRebind\.figures\.forEach\(\(locator\) => rebindProtectedIllustration\(editor, locator\)\)/);
   assert.match(source, /if \(!clearIllustrationSelection\(\)\)/);
   const insertionBody = source.slice(
     source.indexOf("const insertImageAtSelectedPosition"),
@@ -402,4 +407,65 @@ test("Workbench exposes separate Preview, Accept, Revert, and Cancel controls th
   );
   assert.doesNotMatch(metadataActions, /uploadStudioFile|loadStudioMediaPreview|delete|replaceImage/);
   assert.doesNotMatch(source, /OCR|generateIllustration|replaceImagePixels/);
+});
+
+test("Workbench memoizes chapter innerHTML across metadata-only renders", async () => {
+  const source = await readFile(new URL("app/workbench/[assetId]/page.tsx", ROOT), "utf8");
+
+  assert.match(source, /import React, \{[^}]*\buseMemo\b[^}]*\} from "react"/);
+  assert.match(
+    source,
+    /const activeChapterSourceHtml = bookData\?\.chapters\?\.\[activeChapterIndex\]\?\.textContent[\s\S]*?const activeChapterEditorMarkup = useMemo\(/
+  );
+  assert.match(
+    source,
+    /useMemo\(\s*\(\) => \(\{ __html: editorHtml\(activeChapterSourceHtml\) \}\),\s*\[activeChapterSourceHtml\]\s*\)/
+  );
+  assert.match(source, /dangerouslySetInnerHTML=\{activeChapterEditorMarkup\}/);
+  assert.doesNotMatch(source, /dangerouslySetInnerHTML=\{\{\s*__html:/);
+
+  const inputBindings = source.slice(
+    source.indexOf('aria-label="Illustration details"'),
+    source.indexOf('dangerouslySetInnerHTML={activeChapterEditorMarkup}')
+  );
+  assert.match(inputBindings, /draft: \{ \.\.\.illustrationMetadata\.draft, altText: event\.target\.value \}/);
+  assert.match(inputBindings, /draft: \{ \.\.\.illustrationMetadata\.draft, caption: event\.target\.value \}/);
+
+  const previewToCancel = source.slice(
+    source.indexOf("const previewIllustrationMetadata"),
+    source.indexOf("const revertIllustrationMetadata")
+  );
+  assert.match(previewToCancel, /applyProtectedIllustrationMetadata\(figure, illustrationMetadata\.draft\)/);
+  assert.match(previewToCancel, /restoreProtectedIllustrationSnapshot\(figure, illustrationMetadata\.accepted\)/);
+  assert.match(previewToCancel, /clearIllustrationSelection\(false\)/);
+});
+
+test("Workbench re-resolves an insertion position after blur refreshes slot elements", async () => {
+  const source = await readFile(new URL("app/workbench/[assetId]/page.tsx", ROOT), "utf8");
+  const chooseSlotBody = source.slice(
+    source.indexOf("const chooseImageForSlot"),
+    source.indexOf("useEffect(() =>", source.indexOf("const chooseImageForSlot"))
+  );
+  const insertionBody = source.slice(
+    source.indexOf("const insertImageAtSelectedPosition"),
+    source.indexOf("const activeSelectedIllustration")
+  );
+
+  assert.match(source, /type PendingIllustrationInsertion = \{/);
+  assert.match(source, /chapterId: string;/);
+  assert.match(source, /chapterIndex: number;/);
+  assert.match(source, /slotIndex: number;/);
+  assert.match(chooseSlotBody, /slotIndex = Number\(slot\.dataset\.kobaImageSlot\)/);
+  assert.match(chooseSlotBody, /chapterId: String\(chapter\.id \|\| ""\)/);
+  assert.doesNotMatch(chooseSlotBody, /pendingInsertionSlotRef\.current = slot;/);
+  assert.match(insertionBody, /querySelectorAll<HTMLElement>\("\[data-koba-image-slot\]"\)/);
+  assert.match(insertionBody, /candidate\.dataset\.kobaImageSlot === String\(pendingInsertion\.slotIndex\)/);
+  assert.match(insertionBody, /pendingInsertion\.chapterIndex === activeChapterIndex/);
+  assert.match(insertionBody, /pendingInsertion\.chapterId === String\(chapter\.id \|\| ""\)/);
+  assert.match(insertionBody, /slot\.blur\(\);\s*slot = resolveInsertionSlot\(\);/);
+  assert.ok(
+    insertionBody.indexOf("slot = resolveInsertionSlot()", insertionBody.indexOf("slot.blur()"))
+      < insertionBody.indexOf("slot.replaceWith(figure)"),
+    "The current slot must be resolved again after blur handlers refresh insertion controls."
+  );
 });

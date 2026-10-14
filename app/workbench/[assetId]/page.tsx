@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useLayoutEffect, use, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, use, useRef } from "react";
 import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, ImagePlus, Trash2, GripVertical, Replace, Eye, Check, RotateCcw, X } from "lucide-react";
 import Link from "next/link";
 import { toast } from "@/components/ui/use-toast";
@@ -28,6 +28,17 @@ type IllustrationMetadataEditor = {
   draft: IllustrationMetadata;
   previewing: boolean;
   storagePath: string;
+};
+
+type PendingIllustrationInsertion = {
+  chapterId: string;
+  chapterIndex: number;
+  slotIndex: number;
+};
+
+type PendingIllustrationRebind = {
+  figures: ProtectedIllustrationLocator[];
+  selected: ProtectedIllustrationLocator;
 };
 
 function imageDimensions(file: File): Promise<{ width: number; height: number }> {
@@ -101,19 +112,26 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
   const editorRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const pendingInsertionIndexRef = useRef<number | null>(null);
+  const pendingInsertionSlotRef = useRef<PendingIllustrationInsertion | null>(null);
   const selectedFigureRef = useRef<HTMLElement | null>(null);
   const illustrationAltTextInputRef = useRef<HTMLInputElement>(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [hasSelectedIllustration, setHasSelectedIllustration] = useState(false);
   const [illustrationMetadata, setIllustrationMetadata] = useState<IllustrationMetadataEditor | null>(null);
   const illustrationMetadataRef = useRef<IllustrationMetadataEditor | null>(null);
-  const pendingIllustrationRebindRef = useRef<ProtectedIllustrationLocator | null>(null);
+  const pendingIllustrationRebindRef = useRef<PendingIllustrationRebind | null>(null);
   const pageInputRef = useRef<HTMLInputElement>(null);
   const replacePageInputRef = useRef<HTMLInputElement>(null);
   const replacePageIndexRef = useRef<number | null>(null);
   const dragPageIndexRef = useRef<number | null>(null);
   const [isUploadingPages, setIsUploadingPages] = useState(false);
+  const activeChapterSourceHtml = bookData?.chapters?.[activeChapterIndex]?.textContent
+    || bookData?.chapters?.[activeChapterIndex]?.content
+    || "";
+  const activeChapterEditorMarkup = useMemo(
+    () => ({ __html: editorHtml(activeChapterSourceHtml) }),
+    [activeChapterSourceHtml]
+  );
   
   // 🛡️ Style Guardrails State
   const [guardrails, setGuardrails] = useState({
@@ -226,13 +244,23 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   };
 
   const chooseImageForSlot = (slot: HTMLElement) => {
+    const chapter = bookData?.chapters?.[activeChapterIndex];
+    const slotIndex = Number(slot.dataset.kobaImageSlot);
+    if (!chapter || !Number.isSafeInteger(slotIndex) || slotIndex < 0) {
+      pendingInsertionSlotRef.current = null;
+      toast({ title: "Choose an insertion point", description: "Select Add Image Here where the illustration should appear.", variant: "destructive" });
+      return;
+    }
     if (!clearIllustrationSelection()) {
-      pendingInsertionIndexRef.current = null;
+      pendingInsertionSlotRef.current = null;
       toast({ title: "Image insertion paused", description: "The current illustration preview could not be restored safely.", variant: "destructive" });
       return;
     }
-    const insertionIndex = Number(slot.dataset.kobaImageSlot);
-    pendingInsertionIndexRef.current = Number.isInteger(insertionIndex) ? insertionIndex : null;
+    pendingInsertionSlotRef.current = {
+      chapterId: String(chapter.id || ""),
+      chapterIndex: activeChapterIndex,
+      slotIndex,
+    };
     imageInputRef.current?.click();
   };
 
@@ -244,20 +272,30 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
 
   const insertImageAtSelectedPosition = (url: string, storagePath: string, alt: string) => {
     const editor = editorRef.current;
-    const insertionIndex = pendingInsertionIndexRef.current;
-    const slot = editor && insertionIndex !== null
-      ? editor.querySelector<HTMLElement>(`[data-koba-image-slot="${insertionIndex}"]`)
-      : null;
-    const contentBlocks = editor
-      ? [...editor.children].filter((child) => !(child instanceof HTMLElement && child.dataset.kobaImageSlot !== undefined))
-      : [];
-    if (!editor || insertionIndex === null || insertionIndex < 0 || insertionIndex > contentBlocks.length) {
+    const pendingInsertion = pendingInsertionSlotRef.current;
+    const chapter = bookData?.chapters?.[activeChapterIndex];
+    const resolveInsertionSlot = (): HTMLElement | null => editor && pendingInsertion && chapter
+        && pendingInsertion.chapterIndex === activeChapterIndex
+        && pendingInsertion.chapterId === String(chapter.id || "")
+        ? [...editor.querySelectorAll<HTMLElement>("[data-koba-image-slot]")]
+          .find((candidate) => candidate.dataset.kobaImageSlot === String(pendingInsertion.slotIndex)) || null
+        : null;
+    let slot = resolveInsertionSlot();
+    if (!editor || !slot) {
+      pendingInsertionSlotRef.current = null;
       toast({ title: "Choose an insertion point", description: "Select Add Image Here where the illustration should appear.", variant: "destructive" });
       return;
     }
     if (!clearIllustrationSelection()) {
       pendingInsertionSlotRef.current = null;
       toast({ title: "Image insertion paused", description: "The current illustration preview could not be restored safely.", variant: "destructive" });
+      return;
+    }
+    slot.blur();
+    slot = resolveInsertionSlot();
+    if (!slot) {
+      pendingInsertionSlotRef.current = null;
+      toast({ title: "Choose an insertion point", description: "Select Add Image Here where the illustration should appear.", variant: "destructive" });
       return;
     }
     const figure = document.createElement("figure");
@@ -372,10 +410,17 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     if (!editor) return false;
     const locator = captureProtectedIllustrationLocator(editor, figure);
     if (!locator) return false;
+    const protectedLocators: ProtectedIllustrationLocator[] = [];
+    for (const candidate of editor.querySelectorAll<HTMLElement>("figure.koba-illustration")) {
+      if (!candidate.querySelector("img[data-koba-storage-path]")) continue;
+      const candidateLocator = captureProtectedIllustrationLocator(editor, candidate);
+      if (!candidateLocator) return false;
+      protectedLocators.push(candidateLocator);
+    }
     const html = serializedEditorHtml();
     const currentHtml = String(bookData?.chapters?.[activeChapterIndex]?.textContent || "");
     if (html !== currentHtml) {
-      pendingIllustrationRebindRef.current = locator;
+      pendingIllustrationRebindRef.current = { figures: protectedLocators, selected: locator };
       updateActiveChapterHtml(html);
     }
     return true;
@@ -443,11 +488,12 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   }, []);
 
   useLayoutEffect(() => {
-    const locator = pendingIllustrationRebindRef.current;
+    const pendingRebind = pendingIllustrationRebindRef.current;
     const editor = editorRef.current;
-    if (!locator || !editor) return;
+    if (!pendingRebind || !editor) return;
     pendingIllustrationRebindRef.current = null;
-    const figure = rebindProtectedIllustration(editor, locator);
+    pendingRebind.figures.forEach((locator) => rebindProtectedIllustration(editor, locator));
+    const figure = rebindProtectedIllustration(editor, pendingRebind.selected);
     if (!figure) {
       selectedFigureRef.current = null;
       setHasSelectedIllustration(false);
@@ -462,12 +508,17 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   const handleIllustrationUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (!file) return;
+    if (!file) {
+      pendingInsertionSlotRef.current = null;
+      return;
+    }
     if (!validateStudioImageFile(file.name, file.type).valid) {
+      pendingInsertionSlotRef.current = null;
       toast({ title: "Unsupported image", description: "Use JPEG, PNG, or GIF. SVG uploads are temporarily unavailable.", variant: "destructive" });
       return;
     }
     if (file.size > 12 * 1024 * 1024) {
+      pendingInsertionSlotRef.current = null;
       toast({ title: "Image too large", description: "Images must be 12 MB or smaller.", variant: "destructive" });
       return;
     }
@@ -890,7 +941,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
                   selectIllustration(figure, true);
                 }
               }}
-              dangerouslySetInnerHTML={{ __html: editorHtml(bookData.chapters[activeChapterIndex]?.textContent || bookData.chapters[activeChapterIndex]?.content || "") }}
+              dangerouslySetInnerHTML={activeChapterEditorMarkup}
               className="koba-chapter-editor w-full min-h-[60vh] bg-transparent text-lg text-[#293A71] dark:text-white border-none outline-none leading-relaxed font-serif transition-colors [&_.koba-image-insertion-slot]:my-2 [&_.koba-image-insertion-slot]:block [&_.koba-image-insertion-slot]:w-full [&_.koba-image-insertion-slot]:rounded-lg [&_.koba-image-insertion-slot]:border [&_.koba-image-insertion-slot]:border-dashed [&_.koba-image-insertion-slot]:border-emerald-400 [&_.koba-image-insertion-slot]:bg-emerald-50 [&_.koba-image-insertion-slot]:px-3 [&_.koba-image-insertion-slot]:py-2 [&_.koba-image-insertion-slot]:font-sans [&_.koba-image-insertion-slot]:text-sm [&_.koba-image-insertion-slot]:font-bold [&_.koba-image-insertion-slot]:text-emerald-700 [&_.koba-image-insertion-slot]:transition-colors hover:[&_.koba-image-insertion-slot]:bg-emerald-100 focus:[&_.koba-image-insertion-slot]:outline-none focus:[&_.koba-image-insertion-slot]:ring-2 focus:[&_.koba-image-insertion-slot]:ring-emerald-500 [&_figure]:my-6 [&_figure]:max-w-full [&_img]:block [&_img]:h-auto [&_img]:max-w-full [&_img]:rounded-lg [&_figcaption]:mt-2 [&_figcaption]:text-center [&_figcaption]:text-sm [&_figcaption]:text-slate-500"
               data-placeholder="Drafting continues..."
             />
