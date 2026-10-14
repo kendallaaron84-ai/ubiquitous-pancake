@@ -1,14 +1,34 @@
 "use client";
 
-import React, { useState, useEffect, use, useRef } from "react";
-import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, ImagePlus, Trash2, GripVertical, Replace } from "lucide-react";
+import React, { useState, useEffect, useLayoutEffect, use, useRef } from "react";
+import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, ImagePlus, Trash2, GripVertical, Replace, Eye, Check, RotateCcw, X } from "lucide-react";
 import Link from "next/link";
 import { toast } from "@/components/ui/use-toast";
 import { ModeToggle } from "@/components/elements/mode-toggle";
 import { loadStudioMediaPreview, loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
 import { validateStudioImageFile } from "@/core/studio-image";
+import {
+  applyProtectedIllustrationMetadata,
+  captureProtectedIllustrationLocator,
+  ILLUSTRATION_ALT_TEXT_MAX_LENGTH,
+  ILLUSTRATION_CAPTION_MAX_LENGTH,
+  rebindProtectedIllustration,
+  readProtectedIllustrationMetadata,
+  restoreProtectedIllustrationSnapshot,
+  type IllustrationMetadata,
+  type ProtectedIllustrationLocator,
+  type ProtectedIllustrationSnapshot,
+} from "@/core/studio-illustration-metadata";
 
 const CHAPTER_TAGS = new Set(["A", "ABBR", "B", "BLOCKQUOTE", "BR", "CITE", "CODE", "DIV", "EM", "FIGCAPTION", "FIGURE", "H1", "H2", "H3", "H4", "H5", "H6", "HR", "I", "IMG", "LI", "OL", "P", "PRE", "SECTION", "SMALL", "SPAN", "STRONG", "SUB", "SUP", "UL"]);
+
+type IllustrationMetadataEditor = {
+  original: ProtectedIllustrationSnapshot;
+  accepted: ProtectedIllustrationSnapshot;
+  draft: IllustrationMetadata;
+  previewing: boolean;
+  storagePath: string;
+};
 
 function imageDimensions(file: File): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
@@ -83,8 +103,12 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   const imageInputRef = useRef<HTMLInputElement>(null);
   const pendingInsertionIndexRef = useRef<number | null>(null);
   const selectedFigureRef = useRef<HTMLElement | null>(null);
+  const illustrationAltTextInputRef = useRef<HTMLInputElement>(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [hasSelectedIllustration, setHasSelectedIllustration] = useState(false);
+  const [illustrationMetadata, setIllustrationMetadata] = useState<IllustrationMetadataEditor | null>(null);
+  const illustrationMetadataRef = useRef<IllustrationMetadataEditor | null>(null);
+  const pendingIllustrationRebindRef = useRef<ProtectedIllustrationLocator | null>(null);
   const pageInputRef = useRef<HTMLInputElement>(null);
   const replacePageInputRef = useRef<HTMLInputElement>(null);
   const replacePageIndexRef = useRef<number | null>(null);
@@ -156,10 +180,22 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     });
   };
 
+  const updateIllustrationMetadataEditor = (value: IllustrationMetadataEditor | null) => {
+    illustrationMetadataRef.current = value;
+    setIllustrationMetadata(value);
+  };
+
   const serializedEditorHtml = () => {
     if (!editorRef.current) return "";
     const copy = editorRef.current.cloneNode(true) as HTMLElement;
     copy.querySelectorAll("[data-koba-image-slot]").forEach((slot) => slot.remove());
+    copy.querySelectorAll<HTMLElement>("[data-koba-editor-figure]").forEach((figure) => {
+      figure.removeAttribute("data-koba-editor-figure");
+      figure.removeAttribute("tabindex");
+      figure.removeAttribute("aria-label");
+      figure.removeAttribute("role");
+      figure.removeAttribute("contenteditable");
+    });
     copy.querySelectorAll<HTMLImageElement>("img[data-koba-storage-path]").forEach((image) => image.setAttribute("src", ""));
     return copy.innerHTML;
   };
@@ -168,6 +204,14 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     const editor = editorRef.current;
     if (!editor) return;
     editor.querySelectorAll("[data-koba-image-slot]").forEach((slot) => slot.remove());
+    editor.querySelectorAll<HTMLElement>("figure.koba-illustration").forEach((figure) => {
+      if (!figure.querySelector("img[data-koba-storage-path]")) return;
+      figure.dataset.kobaEditorFigure = "true";
+      figure.tabIndex = 0;
+      figure.contentEditable = "false";
+      figure.setAttribute("role", "button");
+      figure.setAttribute("aria-label", "Edit illustration details");
+    });
     const blocks = [...editor.children];
     for (let index = blocks.length; index >= 0; index -= 1) {
       const slot = document.createElement("button");
@@ -182,6 +226,11 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   };
 
   const chooseImageForSlot = (slot: HTMLElement) => {
+    if (!clearIllustrationSelection()) {
+      pendingInsertionIndexRef.current = null;
+      toast({ title: "Image insertion paused", description: "The current illustration preview could not be restored safely.", variant: "destructive" });
+      return;
+    }
     const insertionIndex = Number(slot.dataset.kobaImageSlot);
     pendingInsertionIndexRef.current = Number.isInteger(insertionIndex) ? insertionIndex : null;
     imageInputRef.current?.click();
@@ -206,6 +255,11 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
       toast({ title: "Choose an insertion point", description: "Select Add Image Here where the illustration should appear.", variant: "destructive" });
       return;
     }
+    if (!clearIllustrationSelection()) {
+      pendingInsertionSlotRef.current = null;
+      toast({ title: "Image insertion paused", description: "The current illustration preview could not be restored safely.", variant: "destructive" });
+      return;
+    }
     const figure = document.createElement("figure");
     figure.className = "koba-illustration";
     const image = document.createElement("img");
@@ -219,9 +273,191 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     pendingInsertionIndexRef.current = null;
     selectedFigureRef.current = figure;
     setHasSelectedIllustration(true);
-    updateActiveChapterHtml(serializedEditorHtml());
+    const snapshot = readProtectedIllustrationMetadata(figure);
+    if (!snapshot) throw new Error("The inserted protected illustration could not be selected.");
+    const metadata = { altText: snapshot.altText, caption: snapshot.caption };
+    updateIllustrationMetadataEditor({ original: snapshot, accepted: snapshot, draft: metadata, previewing: false, storagePath });
+    if (!queueIllustrationHtmlCommit(figure)) {
+      figure.remove();
+      clearIllustrationSelection(false);
+      throw new Error("The inserted illustration could not be added to the active chapter draft.");
+    }
     refreshImageInsertionSlots();
   };
+
+  const activeSelectedIllustration = () => {
+    const figure = selectedFigureRef.current;
+    const metadata = illustrationMetadataRef.current;
+    const snapshot = figure && editorRef.current?.contains(figure)
+      ? readProtectedIllustrationMetadata(figure)
+      : null;
+    if (!figure || !snapshot || (metadata && snapshot.storagePath !== metadata.storagePath)) {
+      selectedFigureRef.current = null;
+      setHasSelectedIllustration(false);
+      updateIllustrationMetadataEditor(null);
+      return null;
+    }
+    return figure;
+  };
+
+  const restorePendingIllustrationPreview = () => {
+    const metadata = illustrationMetadataRef.current;
+    if (!metadata?.previewing) return true;
+    const figure = activeSelectedIllustration();
+    if (!figure) return false;
+    try {
+      restoreProtectedIllustrationSnapshot(figure, metadata.accepted);
+      updateIllustrationMetadataEditor({
+        ...metadata,
+        draft: { altText: metadata.accepted.altText, caption: metadata.accepted.caption },
+        previewing: false,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const clearIllustrationSelection = (restorePreview = true) => {
+    if (restorePreview && !restorePendingIllustrationPreview()) return false;
+    selectedFigureRef.current = null;
+    setHasSelectedIllustration(false);
+    updateIllustrationMetadataEditor(null);
+    pendingIllustrationRebindRef.current = null;
+    return true;
+  };
+
+  const selectIllustration = (figure: HTMLElement | null, focusMetadataEditor = false) => {
+    if (!restorePendingIllustrationPreview()) {
+      toast({ title: "Selection paused", description: "The current illustration changed. Save is blocked until it is selected again.", variant: "destructive" });
+      return;
+    }
+    selectedFigureRef.current = figure;
+    setHasSelectedIllustration(Boolean(figure));
+    if (!figure || !editorRef.current?.contains(figure)) {
+      clearIllustrationSelection(false);
+      return;
+    }
+    const snapshot = readProtectedIllustrationMetadata(figure);
+    if (!snapshot) {
+      clearIllustrationSelection(false);
+      return;
+    }
+    const metadata = { altText: snapshot.altText, caption: snapshot.caption };
+    updateIllustrationMetadataEditor({
+      original: snapshot,
+      accepted: snapshot,
+      draft: metadata,
+      previewing: false,
+      storagePath: snapshot.storagePath,
+    });
+    if (focusMetadataEditor) {
+      window.requestAnimationFrame(() => illustrationAltTextInputRef.current?.focus());
+    }
+  };
+
+  const previewIllustrationMetadata = () => {
+    const figure = activeSelectedIllustration();
+    if (!figure || !illustrationMetadata) return;
+    try {
+      applyProtectedIllustrationMetadata(figure, illustrationMetadata.draft);
+      updateIllustrationMetadataEditor({ ...illustrationMetadata, previewing: true });
+    } catch (error) {
+      toast({ title: "Metadata preview failed", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" });
+    }
+  };
+
+  function queueIllustrationHtmlCommit(figure: HTMLElement) {
+    const editor = editorRef.current;
+    if (!editor) return false;
+    const locator = captureProtectedIllustrationLocator(editor, figure);
+    if (!locator) return false;
+    const html = serializedEditorHtml();
+    const currentHtml = String(bookData?.chapters?.[activeChapterIndex]?.textContent || "");
+    if (html !== currentHtml) {
+      pendingIllustrationRebindRef.current = locator;
+      updateActiveChapterHtml(html);
+    }
+    return true;
+  }
+
+  const acceptIllustrationMetadata = () => {
+    const figure = activeSelectedIllustration();
+    if (!figure || !illustrationMetadata) return;
+    try {
+      const applied = applyProtectedIllustrationMetadata(figure, illustrationMetadata.draft);
+      if (!queueIllustrationHtmlCommit(figure)) throw new Error("The selected illustration is no longer in the active chapter.");
+      updateIllustrationMetadataEditor({
+        ...illustrationMetadata,
+        accepted: applied,
+        draft: { altText: applied.altText, caption: applied.caption },
+        previewing: false,
+      });
+      toast({ title: "Illustration details accepted", description: "Save Draft to preserve the alt text and caption." });
+    } catch (error) {
+      try { restoreProtectedIllustrationSnapshot(figure, illustrationMetadata.accepted); } catch { /* Save remains blocked by identity validation. */ }
+      toast({ title: "Metadata update failed", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" });
+    }
+  };
+
+  const cancelIllustrationMetadata = () => {
+    const figure = activeSelectedIllustration();
+    if (!figure || !illustrationMetadata) return;
+    try {
+      restoreProtectedIllustrationSnapshot(figure, illustrationMetadata.accepted);
+      clearIllustrationSelection(false);
+      window.requestAnimationFrame(() => figure.focus());
+    } catch (error) {
+      toast({ title: "Cancel paused", description: error instanceof Error ? error.message : "The illustration changed unexpectedly.", variant: "destructive" });
+    }
+  };
+
+  const revertIllustrationMetadata = () => {
+    const figure = activeSelectedIllustration();
+    if (!figure || !illustrationMetadata) return;
+    try {
+      const restored = restoreProtectedIllustrationSnapshot(figure, illustrationMetadata.original);
+      if (!queueIllustrationHtmlCommit(figure)) throw new Error("The selected illustration is no longer in the active chapter.");
+      updateIllustrationMetadataEditor({
+        ...illustrationMetadata,
+        accepted: restored,
+        draft: { altText: restored.altText, caption: restored.caption },
+        previewing: false,
+      });
+      toast({ title: "Illustration details reverted", description: "The original alt text and caption are restored in this draft." });
+    } catch (error) {
+      try { restoreProtectedIllustrationSnapshot(figure, illustrationMetadata.accepted); } catch { /* Save remains blocked by identity validation. */ }
+      toast({ title: "Metadata revert failed", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" });
+    }
+  };
+
+  useEffect(() => () => {
+    const metadata = illustrationMetadataRef.current;
+    const figure = selectedFigureRef.current;
+    if (metadata?.previewing && figure && editorRef.current?.contains(figure)) {
+      try { restoreProtectedIllustrationSnapshot(figure, metadata.accepted); } catch { /* DOM is being discarded without persistence. */ }
+    }
+    selectedFigureRef.current = null;
+    illustrationMetadataRef.current = null;
+    pendingIllustrationRebindRef.current = null;
+  }, []);
+
+  useLayoutEffect(() => {
+    const locator = pendingIllustrationRebindRef.current;
+    const editor = editorRef.current;
+    if (!locator || !editor) return;
+    pendingIllustrationRebindRef.current = null;
+    const figure = rebindProtectedIllustration(editor, locator);
+    if (!figure) {
+      selectedFigureRef.current = null;
+      setHasSelectedIllustration(false);
+      updateIllustrationMetadataEditor(null);
+      refreshImageInsertionSlots();
+      return;
+    }
+    selectedFigureRef.current = figure;
+    refreshImageInsertionSlots();
+  }, [activeChapterIndex, bookData?.chapters?.[activeChapterIndex]?.textContent]);
 
   const handleIllustrationUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -253,20 +489,23 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     const element = selection?.anchorNode instanceof Element
       ? selection.anchorNode
       : selection?.anchorNode?.parentElement;
-    const figure = selectedFigureRef.current || element?.closest("figure.koba-illustration");
+    const figure = activeSelectedIllustration() || element?.closest("figure.koba-illustration");
     if (!figure || !editorRef.current?.contains(figure)) {
       toast({ title: "Select an image", description: "Click an inserted image, then choose Remove Image." });
       return;
     }
     figure.remove();
-    selectedFigureRef.current = null;
-    setHasSelectedIllustration(false);
+    clearIllustrationSelection(false);
     updateActiveChapterHtml(serializedEditorHtml());
     refreshImageInsertionSlots();
   };
 
   const handleSave = async () => {
   if (!bookData) return;
+  if (!restorePendingIllustrationPreview()) {
+    toast({ title: "Save paused", description: "The selected illustration changed. Select it again before saving.", variant: "destructive" });
+    return;
+  }
   setIsSaving(true);
   try {
     const sourceChapters = Array.isArray(bookData.chapters) ? bookData.chapters : [];
@@ -286,6 +525,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
       ...current,
       ...payload.product,
     }));
+    clearIllustrationSelection(false);
 
     console.log("💾 Workbench manuscript saved to products collection.", {
       assetId,
@@ -357,6 +597,10 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
 
   const addChapter = () => {
       if(!bookData) return;
+      if (!clearIllustrationSelection()) {
+        toast({ title: "Chapter change paused", description: "The illustration preview could not be restored safely.", variant: "destructive" });
+        return;
+      }
       const newChapters = [...bookData.chapters];
       newChapters.push({
           id: `ch_${Date.now()}_${assetId}`,
@@ -450,7 +694,14 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
           {bookData.chapters.map((chapter: any, index: number) => (
             <button
               key={chapter.id}
-              onClick={() => setActiveChapterIndex(index)}
+              onClick={() => {
+                if (index === activeChapterIndex) return;
+                if (!clearIllustrationSelection()) {
+                  toast({ title: "Chapter change paused", description: "The illustration preview could not be restored safely.", variant: "destructive" });
+                  return;
+                }
+                setActiveChapterIndex(index);
+              }}
               className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
                 activeChapterIndex === index 
                   ? "bg-emerald-50 dark:bg-[#7C2B22] text-emerald-700 dark:text-[#F9B437] border border-emerald-200 dark:border-[#F9B437]/30 shadow-sm" 
@@ -566,12 +817,60 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
               )}
               <span className="text-[11px] text-slate-500">JPEG, PNG, or GIF · 12 MB max</span>
             </div>
+            {illustrationMetadata && (
+              <aside aria-label="Illustration details" className="my-3 rounded-xl border border-emerald-200 bg-white p-4 shadow-sm dark:border-emerald-900/60 dark:bg-slate-900">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-[#1E2B53] dark:text-white">Illustration Details</h3>
+                    <p className="mt-1 text-xs text-slate-500">Edit descriptive text only. The protected image and its chapter position will not change.</p>
+                  </div>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">Protected illustration</span>
+                </div>
+                <div className="mt-4 grid gap-4">
+                  <label className="grid gap-1 text-xs font-bold text-slate-700 dark:text-slate-200">
+                    Alt Text
+                    <input
+                      ref={illustrationAltTextInputRef}
+                      type="text"
+                      maxLength={ILLUSTRATION_ALT_TEXT_MAX_LENGTH}
+                      value={illustrationMetadata.draft.altText}
+                      onChange={(event) => updateIllustrationMetadataEditor({ ...illustrationMetadata, draft: { ...illustrationMetadata.draft, altText: event.target.value } })}
+                      required
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-white/20 dark:bg-slate-950 dark:text-white"
+                      placeholder="Describe the illustration for readers who cannot see it"
+                    />
+                  </label>
+                  <label className="grid gap-1 text-xs font-bold text-slate-700 dark:text-slate-200">
+                    Caption
+                    <textarea
+                      maxLength={ILLUSTRATION_CAPTION_MAX_LENGTH}
+                      value={illustrationMetadata.draft.caption}
+                      onChange={(event) => updateIllustrationMetadataEditor({ ...illustrationMetadata, draft: { ...illustrationMetadata.draft, caption: event.target.value } })}
+                      className="min-h-20 resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-white/20 dark:bg-slate-950 dark:text-white"
+                      placeholder="Optional caption shown with the illustration"
+                    />
+                  </label>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button type="button" title="Temporarily show these details without adding them to the draft" onClick={previewIllustrationMetadata} className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50 dark:border-white/20 dark:hover:bg-white/10"><Eye className="h-4 w-4" /> Preview</button>
+                  <button type="button" title="Accept these details in the unsaved draft" onClick={acceptIllustrationMetadata} className="flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700"><Check className="h-4 w-4" /> Accept</button>
+                  <button type="button" title="Restore the details present when this editor was opened" onClick={revertIllustrationMetadata} className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50 dark:border-white/20 dark:hover:bg-white/10"><RotateCcw className="h-4 w-4" /> Revert</button>
+                  <button type="button" title="Discard preview-only changes and close this editor" onClick={cancelIllustrationMetadata} className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/10"><X className="h-4 w-4" /> Cancel</button>
+                </div>
+              </aside>
+            )}
             <div
               key={bookData.chapters[activeChapterIndex]?.id}
               ref={editorRef}
               contentEditable
               suppressContentEditableWarning
-              onInput={() => updateActiveChapterHtml(serializedEditorHtml())}
+              onInput={() => {
+                if (!restorePendingIllustrationPreview()) {
+                  toast({ title: "Edit paused", description: "The illustration preview could not be restored safely.", variant: "destructive" });
+                  return;
+                }
+                updateActiveChapterHtml(serializedEditorHtml());
+              }}
               onBlur={refreshImageInsertionSlots}
               onClick={(event) => {
                 const target = event.target as Element;
@@ -581,8 +880,15 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
                   chooseImageForSlot(slot);
                   return;
                 }
-                selectedFigureRef.current = target.closest("figure.koba-illustration") as HTMLElement | null;
-                setHasSelectedIllustration(Boolean(selectedFigureRef.current));
+                selectIllustration(target.closest("figure.koba-illustration") as HTMLElement | null);
+              }}
+              onKeyDown={(event) => {
+                const target = event.target as HTMLElement;
+                const figure = target.closest("figure[data-koba-editor-figure]") as HTMLElement | null;
+                if (figure && (event.key === "Enter" || event.key === " ")) {
+                  event.preventDefault();
+                  selectIllustration(figure, true);
+                }
               }}
               dangerouslySetInnerHTML={{ __html: editorHtml(bookData.chapters[activeChapterIndex]?.textContent || bookData.chapters[activeChapterIndex]?.content || "") }}
               className="koba-chapter-editor w-full min-h-[60vh] bg-transparent text-lg text-[#293A71] dark:text-white border-none outline-none leading-relaxed font-serif transition-colors [&_.koba-image-insertion-slot]:my-2 [&_.koba-image-insertion-slot]:block [&_.koba-image-insertion-slot]:w-full [&_.koba-image-insertion-slot]:rounded-lg [&_.koba-image-insertion-slot]:border [&_.koba-image-insertion-slot]:border-dashed [&_.koba-image-insertion-slot]:border-emerald-400 [&_.koba-image-insertion-slot]:bg-emerald-50 [&_.koba-image-insertion-slot]:px-3 [&_.koba-image-insertion-slot]:py-2 [&_.koba-image-insertion-slot]:font-sans [&_.koba-image-insertion-slot]:text-sm [&_.koba-image-insertion-slot]:font-bold [&_.koba-image-insertion-slot]:text-emerald-700 [&_.koba-image-insertion-slot]:transition-colors hover:[&_.koba-image-insertion-slot]:bg-emerald-100 focus:[&_.koba-image-insertion-slot]:outline-none focus:[&_.koba-image-insertion-slot]:ring-2 focus:[&_.koba-image-insertion-slot]:ring-emerald-500 [&_figure]:my-6 [&_figure]:max-w-full [&_img]:block [&_img]:h-auto [&_img]:max-w-full [&_img]:rounded-lg [&_figcaption]:mt-2 [&_figcaption]:text-center [&_figcaption]:text-sm [&_figcaption]:text-slate-500"
