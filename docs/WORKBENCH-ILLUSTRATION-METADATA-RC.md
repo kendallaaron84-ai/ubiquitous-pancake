@@ -32,6 +32,7 @@ The editor accepts only figures containing `img[data-koba-storage-path]`. It nev
 - Accept, Revert, and new-image insertion capture editor-local `{ figureIndex, storagePath, source }` locators for every protected figure plus the selected figure before an intentional canonical HTML update. After React replaces the contentEditable DOM, every existing authorized preview source is restored DOM-only and the selected figure is re-resolved. Locators are never serialized.
 - The index disambiguates repeated uses of the same protected path; a mismatched index/path fails closed instead of selecting another figure.
 - Image insertion stores a chapter-bound slot index instead of retaining a disposable slot element. After picker blur refreshes the insertion controls, the current slot is resolved again; a focused slot is blurred and resolved once more before replacement so the blur handler cannot detach it during `replaceWith`.
+- Async insertion validates that locator against the live mounted editor's chapter ID and index after upload and preview requests finish. Switching chapters while an upload is pending aborts without changing either chapter or reporting a successful insertion.
 - Chapter switch, editor input, Save Draft, selection change, and unmount discard active preview-only state. Preview never silently becomes accepted or persisted.
 - Choosing an Add Image Here position restores and clears any active preview before the file picker opens; insertion repeats that check before serializing the chapter, so metadata previewed on another figure cannot be promoted into the draft.
 - Historical metadata that exceeds the new 500/2,000 author-input limits is retained as an immutable trusted snapshot. Cancel, Revert, Save cleanup, selection cleanup, chapter cleanup, and unmount restore that snapshot exactly without treating legacy text as new input. New author-entered values remain capped.
@@ -46,7 +47,7 @@ The editor accepts only figures containing `img[data-koba-storage-path]`. It nev
 
 - 38 tests passed, 0 failed.
 - Covers plain-text/XSS behavior; Preview/Accept/Cancel/Revert; preview exclusion from Save Draft; save/refresh/reader signing; direct caption normalization; exact protected source/path preservation; placement/order; metadata limits; upload security; SVG rejection; canonical publication ownership; and authenticated preview routing.
-- Includes over-limit legacy restoration for Preview to Cancel/Revert/Save/chapter switch/selection change/unmount, Preview-to-new-image isolation, same-path source-mismatch failure, duplicate-path index disambiguation, all-figure authorized-preview rebinding after a simulated React DOM replacement, memoized editor markup, and durable insertion-slot re-resolution after blur.
+- Includes over-limit legacy restoration for Preview to Cancel/Revert/Save/chapter switch/selection change/unmount, Preview-to-new-image isolation, same-path source-mismatch failure, duplicate-path index disambiguation, all-figure authorized-preview rebinding after a simulated React DOM replacement, memoized editor markup, durable insertion-slot re-resolution after blur, and live chapter identity enforcement after async upload.
 
 ### Mounted local Chromium acceptance
 
@@ -55,9 +56,10 @@ The actual Next.js Workbench component was mounted from a local disposable check
 - Selected figure remained the same connected DOM node through selection, Alt Text input, Caption input, Preview, and Cancel; Cancel restored focus, original metadata, and the original authorized preview source without a PATCH.
 - Preview-to-picker cancellation restored preview-only metadata before opening the chooser.
 - Preview-to-completed insertion retained the original figure, resolved the refreshed chapter-bound slot, uploaded once, requested one preview, and selected the inserted protected figure.
+- A separately delayed upload begun in Chapter One was released only after switching to Chapter Two; insertion aborted, neither chapter changed, no PATCH was sent, and no success toast appeared.
 - Accept intentionally replaced the editor DOM, restored every existing authorized preview source, and rebound the selected figure. Revert and Cancel then restored the original accepted snapshot.
 - Save emitted one canonical PATCH with blank `src` values, durable storage paths, accepted metadata, and stable figure order. Reload emitted a second GET and rehydrated fresh preview URLs.
-- Result: PASS. API sequence was GET, `create_upload`, `create_preview`, PATCH `save_workbench_draft`, GET. `blockedExternal=[]`, `pageErrors=[]`, and `consoleErrors=[]`.
+- Result: PASS. API sequence was GET, delayed `create_upload`, delayed-upload `create_preview`, completed-insertion `create_upload`, completed-insertion `create_preview`, PATCH `save_workbench_draft`, GET. `blockedExternal=[]`, `pageErrors=[]`, and `consoleErrors=[]`.
 
 ### Environment-limited gates
 

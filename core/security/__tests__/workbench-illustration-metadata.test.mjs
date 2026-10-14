@@ -440,7 +440,7 @@ test("Workbench memoizes chapter innerHTML across metadata-only renders", async 
   assert.match(previewToCancel, /clearIllustrationSelection\(false\)/);
 });
 
-test("Workbench re-resolves an insertion position after blur refreshes slot elements", async () => {
+test("Workbench re-resolves an insertion position after blur and rejects stale cross-chapter uploads", async () => {
   const source = await readFile(new URL("app/workbench/[assetId]/page.tsx", ROOT), "utf8");
   const chooseSlotBody = source.slice(
     source.indexOf("const chooseImageForSlot"),
@@ -460,12 +460,18 @@ test("Workbench re-resolves an insertion position after blur refreshes slot elem
   assert.doesNotMatch(chooseSlotBody, /pendingInsertionSlotRef\.current = slot;/);
   assert.match(insertionBody, /querySelectorAll<HTMLElement>\("\[data-koba-image-slot\]"\)/);
   assert.match(insertionBody, /candidate\.dataset\.kobaImageSlot === String\(pendingInsertion\.slotIndex\)/);
-  assert.match(insertionBody, /pendingInsertion\.chapterIndex === activeChapterIndex/);
-  assert.match(insertionBody, /pendingInsertion\.chapterId === String\(chapter\.id \|\| ""\)/);
+  assert.match(insertionBody, /pendingInsertion\.chapterIndex === Number\(editor\.dataset\.kobaChapterIndex\)/);
+  assert.match(insertionBody, /pendingInsertion\.chapterId === String\(editor\.dataset\.kobaChapterId \|\| ""\)/);
+  assert.doesNotMatch(insertionBody, /pendingInsertion\.chapterIndex === activeChapterIndex/);
   assert.match(insertionBody, /slot\.blur\(\);\s*slot = resolveInsertionSlot\(\);/);
   assert.ok(
     insertionBody.indexOf("slot = resolveInsertionSlot()", insertionBody.indexOf("slot.blur()"))
       < insertionBody.indexOf("slot.replaceWith(figure)"),
     "The current slot must be resolved again after blur handlers refresh insertion controls."
   );
+  assert.match(insertionBody, /const insertImageAtSelectedPosition = \([^)]*\): boolean =>/);
+  assert.match(insertionBody, /return true;/);
+  assert.match(source, /if \(!insertImageAtSelectedPosition\([^;]+\)\) return;\s*toast\(\{ title: "Image inserted"/);
+  assert.match(source, /data-koba-chapter-id=\{String\(bookData\.chapters\[activeChapterIndex\]\?\.id \|\| ""\)\}/);
+  assert.match(source, /data-koba-chapter-index=\{activeChapterIndex\}/);
 });

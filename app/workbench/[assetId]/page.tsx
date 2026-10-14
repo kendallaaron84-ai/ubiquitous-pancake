@@ -270,13 +270,12 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     return () => window.cancelAnimationFrame(frame);
   }, [activeChapterIndex, bookData?.chapters?.[activeChapterIndex]?.id]);
 
-  const insertImageAtSelectedPosition = (url: string, storagePath: string, alt: string) => {
+  const insertImageAtSelectedPosition = (url: string, storagePath: string, alt: string): boolean => {
     const editor = editorRef.current;
     const pendingInsertion = pendingInsertionSlotRef.current;
-    const chapter = bookData?.chapters?.[activeChapterIndex];
-    const resolveInsertionSlot = (): HTMLElement | null => editor && pendingInsertion && chapter
-        && pendingInsertion.chapterIndex === activeChapterIndex
-        && pendingInsertion.chapterId === String(chapter.id || "")
+    const resolveInsertionSlot = (): HTMLElement | null => editor && pendingInsertion
+        && pendingInsertion.chapterIndex === Number(editor.dataset.kobaChapterIndex)
+        && pendingInsertion.chapterId === String(editor.dataset.kobaChapterId || "")
         ? [...editor.querySelectorAll<HTMLElement>("[data-koba-image-slot]")]
           .find((candidate) => candidate.dataset.kobaImageSlot === String(pendingInsertion.slotIndex)) || null
         : null;
@@ -284,19 +283,19 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     if (!editor || !slot) {
       pendingInsertionSlotRef.current = null;
       toast({ title: "Choose an insertion point", description: "Select Add Image Here where the illustration should appear.", variant: "destructive" });
-      return;
+      return false;
     }
     if (!clearIllustrationSelection()) {
       pendingInsertionSlotRef.current = null;
       toast({ title: "Image insertion paused", description: "The current illustration preview could not be restored safely.", variant: "destructive" });
-      return;
+      return false;
     }
     slot.blur();
     slot = resolveInsertionSlot();
     if (!slot) {
       pendingInsertionSlotRef.current = null;
       toast({ title: "Choose an insertion point", description: "Select Add Image Here where the illustration should appear.", variant: "destructive" });
-      return;
+      return false;
     }
     const figure = document.createElement("figure");
     figure.className = "koba-illustration";
@@ -321,6 +320,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
       throw new Error("The inserted illustration could not be added to the active chapter draft.");
     }
     refreshImageInsertionSlots();
+    return true;
   };
 
   const activeSelectedIllustration = () => {
@@ -526,7 +526,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     try {
       const uploaded = await uploadStudioFile(assetId, file, "illustration", "image");
       const preview = await loadStudioMediaPreview(assetId, uploaded.storagePath);
-      insertImageAtSelectedPosition(preview.url, uploaded.storagePath, file.name.replace(/\.[^.]+$/, ""));
+      if (!insertImageAtSelectedPosition(preview.url, uploaded.storagePath, file.name.replace(/\.[^.]+$/, ""))) return;
       toast({ title: "Image inserted", description: "Save Draft to preserve it in this chapter." });
     } catch (error: any) {
       toast({ title: "Image upload failed", description: error?.message || "Please try again.", variant: "destructive" });
@@ -913,6 +913,8 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
             <div
               key={bookData.chapters[activeChapterIndex]?.id}
               ref={editorRef}
+              data-koba-chapter-id={String(bookData.chapters[activeChapterIndex]?.id || "")}
+              data-koba-chapter-index={activeChapterIndex}
               contentEditable
               suppressContentEditableWarning
               onInput={() => {
