@@ -364,7 +364,9 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
         editingProduct.category ||
         ((editingProduct.type || "audiobook") === "ebook" ? "E-Books" : "Audiobooks"),
       price: numericPrice,
-      status: editingProduct.status || "published", 
+      // Fail closed: a missing client-side status must never publish a book.
+      // The author must explicitly select published before WordPress receives it.
+      status: editingProduct.status || "draft",
       authorIdentityId: editingProduct.authorIdentityId || authorIdentities[0]?.id || "primary",
       websiteConnectionId: selectedWebsite.websiteConnectionId,
       universeId: editingProduct.universeId || editingProduct.storyWorldId || null,
