@@ -35,6 +35,7 @@ import {
 } from "@/core/security/dashboard-session";
 import {
   StudioPublicationAccessError,
+  assertCanonicalPublicationType,
   assertOwnedStudioProduct,
   assertValidStudioAssetId,
 } from "@/core/security/studio-publication-access";
@@ -211,6 +212,9 @@ export async function POST(request: Request) {
     const assetKey = requestedAssetId
       ? assertValidStudioAssetId(requestedAssetId)
       : `${mediaType === "ebook" ? "ebk_" : "abk_"}${slug(title)}`;
+    if (requestedAssetId) {
+      assertCanonicalPublicationType(requestedAssetId, mediaType);
+    }
     const productRef = adminDb.collection("products").doc(assetKey);
     const existingSnapshot = await productRef.get();
     const existing = existingSnapshot.data() || {};

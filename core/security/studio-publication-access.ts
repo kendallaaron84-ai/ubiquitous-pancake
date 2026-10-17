@@ -57,6 +57,27 @@ export function assertValidStudioAssetId(value: unknown): string {
   return assetId;
 }
 
+export function assertCanonicalPublicationType(
+  assetIdValue: unknown,
+  typeValue: unknown
+): "audiobook" | "ebook" {
+  const assetId = assertValidStudioAssetId(assetIdValue).toLowerCase();
+  const type = clean(typeValue).toLowerCase() === "ebook" ? "ebook" : "audiobook";
+  const expectedType = assetId.startsWith("ebk_")
+    ? "ebook"
+    : assetId.startsWith("abk_")
+      ? "audiobook"
+      : null;
+  if (expectedType && type !== expectedType) {
+    throw new StudioPublicationAccessError(
+      409,
+      "STUDIO_PUBLICATION_TYPE_IMMUTABLE",
+      "This publication's media type is fixed by its canonical asset ID. Create a new workspace for the other format."
+    );
+  }
+  return type;
+}
+
 export function assertActiveStudioLicense(
   session: StudioSessionIdentity,
   licenseDocumentId: unknown,

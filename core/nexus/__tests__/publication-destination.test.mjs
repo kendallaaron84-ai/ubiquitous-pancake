@@ -265,6 +265,19 @@ test("Save & Sync uses the guarded deploy response without a blocked follow-up P
   assert.match(saveFlow, /assetId: editingProduct\.id/);
 });
 
+test("new publication creation preserves canonical media type through Save & Sync", async () => {
+  const [productPage, route] = await Promise.all([
+    readFile(new URL("app/products/page.tsx", ROOT), "utf8"),
+    readFile(new URL("app/api/agent/deploy/route.ts", ROOT), "utf8"),
+  ]);
+
+  assert.match(productPage, /handleCreateDraft\("audiobook"\)/);
+  assert.match(productPage, /handleCreateDraft\("ebook"\)/);
+  assert.match(productPage, /createStudioPublication\(type\)/);
+  assert.match(productPage, /Publication type is fixed when the canonical workspace is created/);
+  assert.match(route, /assertCanonicalPublicationType\(requestedAssetId, mediaType\)/);
+});
+
 test("WordPress deployment preserves immutable post identity across rename and retry", async () => {
   const [route, gateway] = await Promise.all([
     readFile(new URL("app/api/agent/deploy/route.ts", ROOT), "utf8"),
