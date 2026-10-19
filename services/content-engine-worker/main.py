@@ -3,6 +3,7 @@ import hmac
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -102,6 +103,13 @@ class TerminalAttemptError(PermanentTaskError):
 
 class TenantCredentialNotFound(PermanentTaskError):
     pass
+
+
+class WordPressStageError(Exception):
+    def __init__(self, code: str, stage: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.stage = stage
 
 
 class LeaseBusyError(Exception):
@@ -1061,6 +1069,9 @@ def record_worker_error(
             "workerLeaseExpiresAt": firestore.DELETE_FIELD,
             "updatedAt": firestore.SERVER_TIMESTAMP,
         }
+        if isinstance(error, WordPressStageError):
+            updates["errorCode"] = error.code
+            updates["errorStage"] = error.stage
         if terminal:
             updates["executionState"] = "failed"
             updates["errorLog"] = str(error)[:500]
@@ -1419,14 +1430,35 @@ def wordpress_request(
     method: str,
     url: str,
     expected_origin: str,
+    stage: str,
     **kwargs: Any,
 ) -> requests.Response:
-    response = session.request(
-        method,
-        url,
-        allow_redirects=False,
-        **kwargs,
-    )
+    attempts = 3 if method.upper() == "GET" else 1
+    response = None
+    for attempt in range(attempts):
+        try:
+            response = session.request(
+                method,
+                url,
+                allow_redirects=False,
+                **kwargs,
+            )
+            break
+        except requests.ConnectionError as error:
+            if attempt + 1 < attempts:
+                time.sleep(0.25 * (attempt + 1))
+                continue
+            raise WordPressStageError(
+                "WORDPRESS_CONNECTION_ABORTED",
+                stage,
+                f"WordPress closed the connection during {stage}.",
+            ) from error
+    if response is None:
+        raise WordPressStageError(
+            "WORDPRESS_CONNECTION_ABORTED",
+            stage,
+            f"WordPress did not respond during {stage}.",
+        )
     assert_wordpress_response_origin(response, expected_origin)
     if 300 <= response.status_code < 400:
         raise TenantCredentialNotFound(
@@ -1444,6 +1476,7 @@ def find_wordpress_record(
         "GET",
         endpoint,
         expected_origin,
+        "record_lookup",
         params={"slug": slug, "context": "edit"},
         timeout=(10, 45),
     )
@@ -1465,18 +1498,27 @@ def upload_featured_media(
     if existing:
         return int(existing["id"]), str(existing.get("source_url") or "")
 
-    response = wordpress_request(
-        session,
-        "POST",
-        media_endpoint,
-        base_url,
-        headers={
-            "Content-Type": "image/jpeg",
-            "Content-Disposition": f'attachment; filename="{slug}.jpg"',
-        },
-        data=image_bytes,
-        timeout=(10, 90),
-    )
+    try:
+        response = wordpress_request(
+            session,
+            "POST",
+            media_endpoint,
+            base_url,
+            "media_create",
+            headers={
+                "Content-Type": "image/jpeg",
+                "Content-Disposition": f'attachment; filename="{slug}.jpg"',
+            },
+            data=image_bytes,
+            timeout=(10, 90),
+        )
+    except WordPressStageError:
+        reconciled = find_wordpress_record(
+            session, media_endpoint, slug, base_url
+        )
+        if reconciled:
+            return int(reconciled["id"]), str(reconciled.get("source_url") or "")
+        raise
     media = response.json()
     media_id = int(media["id"])
     metadata_response = wordpress_request(
@@ -1484,6 +1526,7 @@ def upload_featured_media(
         "POST",
         f"{media_endpoint}/{media_id}",
         base_url,
+        "media_metadata_update",
         json={"slug": slug, "alt_text": alt_text, "caption": caption},
         timeout=(10, 45),
     )
@@ -1516,14 +1559,27 @@ def stage_wordpress_draft(
     if featured_media_id:
         payload["featured_media"] = featured_media_id
     endpoint = f"{posts_endpoint}/{post_id}" if post_id else posts_endpoint
-    response = wordpress_request(
-        session,
-        "POST",
-        endpoint,
-        base_url,
-        json=payload,
-        timeout=(10, 90),
-    )
+    try:
+        response = wordpress_request(
+            session,
+            "POST",
+            endpoint,
+            base_url,
+            "draft_update" if post_id else "draft_create",
+            json=payload,
+            timeout=(10, 90),
+        )
+    except WordPressStageError:
+        reconciled = find_wordpress_record(
+            session, posts_endpoint, slug, base_url
+        )
+        if reconciled:
+            resolved_id = int(reconciled["id"])
+            return (
+                resolved_id,
+                f"{base_url}/wp-admin/post.php?post={resolved_id}&action=edit",
+            )
+        raise
     post = response.json()
     resolved_id = int(post["id"])
     if resolved_id <= 0:
@@ -1732,7 +1788,7 @@ def execute_generation(
 
     featured_media_id = int(data.get("featuredMediaId") or 0)
     featured_media_url = str(data.get("featuredMediaUrl") or "")
-    if not featured_media_id:
+    if not featured_media_id and data.get("featuredMediaSkipped") is not True:
         try:
             image_bytes = generate_featured_image(article["hero_image_prompt"])
             featured_media_id, featured_media_url = upload_featured_media(
@@ -2146,6 +2202,12 @@ def process_blog_topics(request):
         elif blueprint_id and attempt_id:
             reference = db.collection("content_blueprints").document(blueprint_id)
             record_worker_error(reference, attempt_id, error, retry_count, terminal)
+        error_code = (
+            error.code
+            if isinstance(error, WordPressStageError)
+            else "CONTENT_GENERATION_FAILED"
+        )
+        error_stage = error.stage if isinstance(error, WordPressStageError) else "worker"
         print(
             json.dumps(
                 {
@@ -2159,6 +2221,8 @@ def process_blog_topics(request):
                     "generationAttemptId": attempt_id,
                     "retryCount": retry_count,
                     "terminal": terminal,
+                    "errorCode": error_code,
+                    "errorStage": error_stage,
                     "error": str(error)[:500],
                 }
             )

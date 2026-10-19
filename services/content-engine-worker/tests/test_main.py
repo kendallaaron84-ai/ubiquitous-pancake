@@ -40,6 +40,7 @@ def _install_import_stubs():
     requests = python_types.ModuleType("requests")
     requests.Response = type("Response", (), {})
     requests.Session = type("Session", (), {})
+    requests.ConnectionError = type("ConnectionError", (Exception,), {})
     requests.get = MagicMock()
     sys.modules["requests"] = requests
 
@@ -227,6 +228,69 @@ class FakeWordPressSession:
         if method == "GET":
             return FakeResponse(url, payload=[])
         return FakeResponse(url, payload={"id": 41})
+
+
+class StatefulWordPressSession:
+    def __init__(self, base_url, *, lose_first_create_response=False):
+        self.base_url = base_url
+        self.calls = []
+        self.posts_by_slug = {}
+        self.media_by_slug = {}
+        self.lose_first_create_response = lose_first_create_response
+
+    def request(self, method, url, allow_redirects=False, **kwargs):
+        del allow_redirects
+        self.calls.append((method, url, kwargs))
+        if method == "GET":
+            slug = kwargs.get("params", {}).get("slug")
+            records = (
+                self.media_by_slug
+                if "/wp-json/wp/v2/media" in url
+                else self.posts_by_slug
+            )
+            record = records.get(slug)
+            return FakeResponse(url, payload=[record] if record else [])
+
+        payload = kwargs.get("json") or {}
+        if "/wp-json/wp/v2/media" in url:
+            if payload:
+                media_id = int(url.rsplit("/", 1)[-1])
+                media = next(
+                    value
+                    for value in self.media_by_slug.values()
+                    if value["id"] == media_id
+                )
+                old_slug = media["slug"]
+                media.update(payload)
+                if media["slug"] != old_slug:
+                    self.media_by_slug.pop(old_slug, None)
+                    self.media_by_slug[media["slug"]] = media
+                return FakeResponse(url, payload=media)
+            disposition = kwargs.get("headers", {}).get("Content-Disposition", "")
+            filename = disposition.split('filename="', 1)[-1].removesuffix('"')
+            slug = filename.removesuffix(".jpg")
+            media = self.media_by_slug.get(slug) or {
+                "id": len(self.media_by_slug) + 7,
+                "slug": slug,
+                "source_url": f"{self.base_url}/uploads/{slug}.jpg",
+            }
+            self.media_by_slug[slug] = media
+            return FakeResponse(url, payload=media)
+
+        slug = payload.get("slug")
+        if "/wp-json/wp/v2/posts" in url and slug:
+            existing = self.posts_by_slug.get(slug)
+            post = existing or {
+                "id": len(self.posts_by_slug) + 41,
+                "slug": slug,
+            }
+            post.update(payload)
+            self.posts_by_slug[slug] = post
+            if self.lose_first_create_response:
+                self.lose_first_create_response = False
+                raise worker.requests.ConnectionError("response closed")
+            return FakeResponse(url, payload=post)
+        return FakeResponse(url, payload={"id": 7})
 
 
 class FakeRequest:
@@ -867,6 +931,168 @@ class WorkerContractTests(unittest.TestCase):
         ):
             worker.execute_generation("blueprint_001", "attempt_001", "KOBA-001", "https://author.example", "secret")
         generate.assert_called_once_with(data)
+
+    def test_wordpress_get_retries_connection_abort_before_failing(self):
+        class RecoveringSession:
+            def __init__(self):
+                self.attempts = 0
+
+            def request(self, _method, url, **_kwargs):
+                self.attempts += 1
+                if self.attempts < 3:
+                    raise worker.requests.ConnectionError("response closed")
+                return FakeResponse(url, payload=[])
+
+        session = RecoveringSession()
+        with patch.object(worker.time, "sleep") as sleep:
+            result = worker.find_wordpress_record(
+                session,
+                "https://author.example/wp-json/wp/v2/posts",
+                "koba-blog-blueprint-001",
+                "https://author.example",
+            )
+        self.assertIsNone(result)
+        self.assertEqual(3, session.attempts)
+        self.assertEqual(2, sleep.call_count)
+
+    def test_ambiguous_draft_create_reconciles_without_duplicate(self):
+        session = StatefulWordPressSession(
+            "https://author.example", lose_first_create_response=True
+        )
+        first_id, first_url = worker.stage_wordpress_draft(
+            session,
+            "https://author.example",
+            "blueprint_001",
+            "Synthetic Article",
+            "<p>Synthetic content.</p>",
+            0,
+            None,
+        )
+        second_id, second_url = worker.stage_wordpress_draft(
+            session,
+            "https://author.example",
+            "blueprint_001",
+            "Synthetic Article Revised",
+            "<p>Synthetic content revised.</p>",
+            0,
+            None,
+        )
+        self.assertEqual(first_id, second_id)
+        self.assertEqual(first_url, second_url)
+        self.assertEqual(1, len(session.posts_by_slug))
+        post = next(iter(session.posts_by_slug.values()))
+        self.assertEqual("draft", post["status"])
+        self.assertEqual("Synthetic Article Revised", post["title"])
+
+    def test_synthetic_author_workflow_generates_assets_and_one_draft(self):
+        data = nexus_blueprint()
+        data.update({
+            "schemaVersion": 0,
+            "blueprintKind": "legacy_content_blueprint",
+            "topicTitle": "How authors build a launch audience",
+            "targetAudience": "Independent authors",
+            "seoKeywords": {
+                "primary": "author launch plan",
+                "secondary": "book marketing",
+                "longTail": "how to prepare an author launch plan",
+            },
+            "seoTitle": "",
+            "seoDescription": "",
+            "blogPostHtml": "",
+            "focusKeyword": "",
+            "imagePrompt": "",
+            "featuredMediaId": 0,
+            "featuredMediaUrl": "",
+        })
+        data.pop("contentSource")
+        generated = {
+            "seo_title": "A Practical Author Launch Plan",
+            "seo_description": "Synthetic acceptance article.",
+            "blog_post_html": "<h2>The Short Answer</h2><p>Start with readers.</p>",
+            "focus_keyword": "author launch plan",
+            "facebook_post": "Plan the launch.",
+            "instagram_caption": "Build the audience.",
+            "hero_image_prompt": "An author planning a book launch",
+        }
+        session = StatefulWordPressSession("https://author.example")
+        updates = []
+        with patch.object(worker, "acquire_worker_lease", return_value=data), patch.object(
+            worker, "generate_article", return_value=generated
+        ) as generate, patch.object(
+            worker, "generate_featured_image", return_value=b"synthetic-jpeg"
+        ) as artwork, patch.object(
+            worker, "wordpress_session", return_value=(session, "https://author.example")
+        ), patch.object(
+            worker,
+            "update_attempt",
+            side_effect=lambda _reference, _attempt, value: updates.append(value),
+        ), patch.object(worker, "complete_attempt") as complete:
+            result = worker.execute_generation(
+                "blueprint_001",
+                "attempt_001",
+                "KOBA-001",
+                "https://author.example",
+                "secret",
+            )
+
+        generate.assert_called_once_with(data)
+        artwork.assert_called_once_with(generated["hero_image_prompt"])
+        complete.assert_called_once()
+        self.assertEqual("success", result["status"])
+        self.assertEqual(1, len(session.media_by_slug))
+        self.assertEqual(1, len(session.posts_by_slug))
+        post = next(iter(session.posts_by_slug.values()))
+        self.assertEqual("draft", post["status"])
+        self.assertEqual(generated["blog_post_html"], post["content"])
+        self.assertTrue(any(update.get("featuredMediaId") == 7 for update in updates))
+
+        retry_id, _retry_url = worker.stage_wordpress_draft(
+            session,
+            "https://author.example",
+            "blueprint_001",
+            generated["seo_title"],
+            generated["blog_post_html"],
+            7,
+            None,
+        )
+        self.assertEqual(post["id"], retry_id)
+        self.assertEqual(1, len(session.posts_by_slug))
+        self.assertEqual("draft", next(iter(session.posts_by_slug.values()))["status"])
+
+    def test_retry_after_artwork_warning_does_not_spend_another_image_call(self):
+        data = nexus_blueprint("business_brand")
+        data.update({
+            "featuredMediaId": 0,
+            "featuredMediaUrl": "",
+            "featuredMediaSkipped": True,
+        })
+        session = StatefulWordPressSession("https://author.example")
+        validation = {
+            "groundingStatus": "grounded",
+            "canonValidationStatus": "not_applicable",
+            "spoilerValidationStatus": "not_applicable",
+            "warnings": [],
+        }
+        with patch.object(worker, "acquire_worker_lease", return_value=data), patch.object(
+            worker, "resolve_nexus_generation_context", return_value=({}, None, [])
+        ), patch.object(
+            worker, "validate_generated_article", return_value=validation
+        ), patch.object(worker, "update_attempt"), patch.object(
+            worker, "complete_attempt"
+        ), patch.object(
+            worker, "wordpress_session", return_value=(session, "https://author.example")
+        ), patch.object(worker, "generate_featured_image") as artwork:
+            result = worker.execute_generation(
+                "blueprint_001",
+                "attempt_001",
+                "KOBA-001",
+                "https://author.example",
+                "secret",
+            )
+        self.assertEqual("success", result["status"])
+        artwork.assert_not_called()
+        self.assertEqual(1, len(session.posts_by_slug))
+        self.assertEqual("draft", next(iter(session.posts_by_slug.values()))["status"])
 
     def test_completed_attempt_deduplication_remains_unchanged(self):
         with patch.object(worker, "acquire_worker_lease", return_value={"_alreadyCompleted": True, "liveDraftUrl": "https://author.example/edit"}), patch.object(
