@@ -86,6 +86,8 @@ export interface NexusBusinessProfile {
   brandValues: string;
   toneOfVoice: string;
   targetAudience: string;
+  approvedWritingSamples: string[];
+  writingSamplesApproved: boolean;
   approvedTerminology: string[];
   prohibitedClaims: string[];
   defaultWebsiteConnectionId: string | null;

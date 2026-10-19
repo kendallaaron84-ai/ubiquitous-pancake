@@ -23,7 +23,7 @@ export function NexusKnowledgePanel({ isOwner = false }: { isOwner?: boolean }) 
   const [context, setContext] = useState<ContextPayload>({});
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [business, setBusiness] = useState({ businessName: "", coreValues: "", toneOfVoice: "", targetAudience: "", brandSummary: "" });
+  const [business, setBusiness] = useState({ businessName: "", coreValues: "", toneOfVoice: "", targetAudience: "", brandSummary: "", approvedWritingSamples: "", writingSamplesApproved: false });
   const [world, setWorld] = useState({ title: "", genre: "", description: "" });
   const [site, setSite] = useState({ targetWpOrigin: "", wpUsername: "", wpAppPassword: "", displayName: "", contentRole: "both" });
   const [managedWorldId, setManagedWorldId] = useState<string | null>(null);
@@ -41,6 +41,8 @@ export function NexusKnowledgePanel({ isOwner = false }: { isOwner?: boolean }) 
       toneOfVoice: stringValue(payload.businessProfile?.toneOfVoice) || current.toneOfVoice,
       targetAudience: stringValue(payload.businessProfile?.targetAudience) || current.targetAudience,
       brandSummary: stringValue(payload.businessProfile?.brandSummary) || current.brandSummary,
+      approvedWritingSamples: stringArray(payload.businessProfile?.approvedWritingSamples).join("\n\n---\n\n"),
+      writingSamplesApproved: payload.businessProfile?.writingSamplesApproved === true,
     }));
   }
 
@@ -73,7 +75,10 @@ export function NexusKnowledgePanel({ isOwner = false }: { isOwner?: boolean }) 
         <textarea className={inputClass} value={business.coreValues} onChange={(e) => setBusiness({ ...business, coreValues: e.target.value })} placeholder="Core values" />
         <input className={inputClass} value={business.toneOfVoice} onChange={(e) => setBusiness({ ...business, toneOfVoice: e.target.value })} placeholder="Tone of voice" />
         <input className={inputClass} value={business.targetAudience} onChange={(e) => setBusiness({ ...business, targetAudience: e.target.value })} placeholder="Target audience" />
-        <button disabled={busy} className="w-full rounded-lg bg-amber-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50" onClick={() => submitJson("/api/nexus/business-profile", "PUT", business, "Business Profile saved.")}>Save Business Profile</button>
+        <textarea className={inputClass} rows={8} value={business.approvedWritingSamples} onChange={(e) => setBusiness({ ...business, approvedWritingSamples: e.target.value, writingSamplesApproved: false })} placeholder={"Approved writing samples (up to 5). Separate samples with a line containing ---"} />
+        <p className="text-[11px] text-muted-foreground">Samples guide style only. They are not treated as factual source material and are never published automatically.</p>
+        <label className="flex items-start gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={business.writingSamplesApproved} onChange={(e) => setBusiness({ ...business, writingSamplesApproved: e.target.checked })} className="mt-0.5" /><span>I confirm these samples are approved for this author&apos;s Brand Voice.</span></label>
+        <button disabled={busy || (business.approvedWritingSamples.trim().length > 0 && !business.writingSamplesApproved)} className="w-full rounded-lg bg-amber-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50" onClick={() => submitJson("/api/nexus/business-profile", "PUT", { ...business, approvedWritingSamples: business.approvedWritingSamples.split(/\n\s*---\s*\n/).map((sample) => sample.trim()).filter(Boolean) }, "Business Profile saved.")}>Save Business Profile</button>
       </div>
     </details>
 
@@ -260,6 +265,7 @@ function WebsiteEditor({ website, worlds, busy, onSave }: { website: Website; wo
 }
 
 function stringValue(value: unknown) { return typeof value === "string" ? value : ""; }
+function stringArray(value: unknown) { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []; }
 
 function formatTimestamp(value: unknown): string {
   if (typeof value === "string" || typeof value === "number") {
