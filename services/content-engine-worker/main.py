@@ -37,6 +37,10 @@ STORY_BRIEF_MAXIMUM_WORDS = 5000
 STORY_BRIEF_MAXIMUM_CHARACTERS = 30000
 LEGACY_BLUEPRINT_SCHEMA_VERSION = 0
 LEGACY_BLUEPRINT_KIND = "legacy_content_blueprint"
+WORDPRESS_USER_AGENT = (
+    "KOBA-I-Content-Engine/2.1 "
+    "(+https://koba-i.com; WordPress-REST; authenticated-server-to-server)"
+)
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,160}$")
 STUDIO_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{3,160}$")
 SECRET_VERSION_PATTERN = re.compile(
@@ -1386,7 +1390,7 @@ def wordpress_session(
     session = requests.Session()
     session.auth = (username, app_password)
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "User-Agent": WORDPRESS_USER_AGENT,
         "Accept": "application/json",
     })
     
