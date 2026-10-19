@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   isSafeStorefrontProduct,
   resolveStorefrontAuthorization,
+  safeStorefrontProduct,
 } from "../storefront-catalog-authorization.ts";
 import {
   signStorefrontSiteToken,
@@ -124,4 +125,19 @@ test("the authenticated catalog API is not exposed through wildcard browser CORS
   const route = await readFile(new URL("../../../app/api/products/public/route.ts", import.meta.url), "utf8");
   assert.doesNotMatch(route, /Access-Control-Allow-Origin/i);
   assert.doesNotMatch(route, /export\s+async\s+function\s+OPTIONS/);
+});
+
+test("public catalog preserves explicit zero prices and never converts a missing price to free", () => {
+  assert.equal(safeStorefrontProduct("missing", {}).price, null);
+  assert.equal(safeStorefrontProduct("zero-number", { price: 0 }).price, 0);
+  assert.equal(safeStorefrontProduct("zero-string", { unitPrice: "0.00" }).price, 0);
+  assert.equal(safeStorefrontProduct("invalid", { price: "complimentary" }).price, null);
+  assert.equal(safeStorefrontProduct("paid", { price: "12.00" }).price, 12);
+});
+
+test("public catalog exposes only normalized supported format labels", () => {
+  assert.deepEqual(
+    safeStorefrontProduct("formats", { formats: [" Illustrated ebook ", "Audiobook", "", 7] }).formats,
+    ["Illustrated ebook", "Audiobook"]
+  );
 });
