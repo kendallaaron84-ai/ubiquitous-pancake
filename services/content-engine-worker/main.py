@@ -1464,7 +1464,7 @@ def find_wordpress_record(
         endpoint,
         expected_origin,
         "record_lookup",
-        params={"slug": slug, "context": "edit"},
+        params={"slug": slug, "context": "edit", "status": "any"},
         timeout=(10, 45),
     )
     records = response.json()
