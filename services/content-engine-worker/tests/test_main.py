@@ -936,9 +936,11 @@ class WorkerContractTests(unittest.TestCase):
         class RecoveringSession:
             def __init__(self):
                 self.attempts = 0
+                self.params = None
 
-            def request(self, _method, url, **_kwargs):
+            def request(self, _method, url, **kwargs):
                 self.attempts += 1
+                self.params = kwargs.get("params")
                 if self.attempts < 3:
                     raise worker.requests.ConnectionError("response closed")
                 return FakeResponse(url, payload=[])
@@ -954,6 +956,14 @@ class WorkerContractTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(3, session.attempts)
         self.assertEqual(2, sleep.call_count)
+        self.assertEqual(
+            {
+                "slug": "koba-blog-blueprint-001",
+                "context": "edit",
+                "status": "any",
+            },
+            session.params,
+        )
 
     def test_ambiguous_draft_create_reconciles_without_duplicate(self):
         session = StatefulWordPressSession(
