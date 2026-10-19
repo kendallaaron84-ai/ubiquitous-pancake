@@ -51,6 +51,7 @@ Configured/defaulted by the worker:
 ## Managed secrets and credentials
 
 - WordPress Application Passwords remain in Google Secret Manager and are loaded only from task-bound secret-version references.
+- Authenticated WordPress REST requests identify the worker as `KOBA-I-Content-Engine/2.1 (+https://koba-i.com; WordPress-REST; authenticated-server-to-server)`; the worker does not impersonate a consumer browser.
 - `KOBA_TASK_HMAC_SECRET` is supplied to the runtime as a secret-backed environment variable.
 - Application Default Credentials come from the Cloud Run service account; no service-account key file belongs in this directory.
 

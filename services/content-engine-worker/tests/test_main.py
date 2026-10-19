@@ -965,6 +965,71 @@ class WorkerContractTests(unittest.TestCase):
             session.params,
         )
 
+    def test_wordpress_session_uses_explicit_server_identity_for_all_rest_calls(self):
+        class HeaderAwareSession(StatefulWordPressSession):
+            def __init__(self, base_url):
+                super().__init__(base_url)
+                self.auth = None
+                self.headers = {}
+
+            def request(self, method, url, allow_redirects=False, **kwargs):
+                request_headers = dict(self.headers)
+                request_headers.update(kwargs.get("headers") or {})
+                kwargs["headers"] = request_headers
+                return super().request(method, url, allow_redirects=allow_redirects, **kwargs)
+
+        session = HeaderAwareSession("https://author.example")
+        credential = json.dumps({
+            "wordpressUrl": "https://author.example",
+            "username": "synthetic-author",
+            "applicationPassword": "synthetic-application-password",
+        })
+        with patch.object(worker, "get_secret_by_ref", return_value=credential), patch.object(
+            worker.requests, "Session", return_value=session
+        ):
+            resolved_session, resolved_origin = worker.wordpress_session(
+                "projects/123456789/secrets/WP_CREDS_SYNTHETIC/versions/1",
+                "https://author.example",
+            )
+
+        self.assertIs(session, resolved_session)
+        self.assertEqual("https://author.example", resolved_origin)
+        self.assertEqual(
+            ("synthetic-author", "synthetic-application-password"),
+            resolved_session.auth,
+        )
+        self.assertEqual(worker.WORDPRESS_USER_AGENT, resolved_session.headers["User-Agent"])
+        self.assertEqual("application/json", resolved_session.headers["Accept"])
+        self.assertNotIn("Mozilla/", resolved_session.headers["User-Agent"])
+        self.assertNotIn("Chrome/", resolved_session.headers["User-Agent"])
+
+        media_id, _media_url = worker.upload_featured_media(
+            resolved_session,
+            resolved_origin,
+            "blueprint_ua_001",
+            b"synthetic-jpeg",
+            "Synthetic alternative text",
+            "Synthetic caption",
+        )
+        worker.stage_wordpress_draft(
+            resolved_session,
+            resolved_origin,
+            "blueprint_ua_001",
+            "Synthetic Article",
+            "<p>Synthetic content.</p>",
+            media_id,
+            None,
+        )
+
+        self.assertEqual(5, len(session.calls))
+        for method, url, kwargs in session.calls:
+            if "/wp-json/wp/v2/media" in url or "/wp-json/wp/v2/posts" in url:
+                self.assertEqual(
+                    worker.WORDPRESS_USER_AGENT,
+                    kwargs["headers"]["User-Agent"],
+                    f"{method} {url} must retain the server identity",
+                )
+
     def test_ambiguous_draft_create_reconciles_without_duplicate(self):
         session = StatefulWordPressSession(
             "https://author.example", lose_first_create_response=True
@@ -1068,6 +1133,38 @@ class WorkerContractTests(unittest.TestCase):
         self.assertEqual(post["id"], retry_id)
         self.assertEqual(1, len(session.posts_by_slug))
         self.assertEqual("draft", next(iter(session.posts_by_slug.values()))["status"])
+
+    def test_thirty_article_drafts_and_retries_remain_idempotent(self):
+        session = StatefulWordPressSession("https://author.example")
+        first_ids = {}
+        for index in range(30):
+            blueprint_id = f"blueprint_{index:03d}"
+            post_id, _edit_url = worker.stage_wordpress_draft(
+                session,
+                "https://author.example",
+                blueprint_id,
+                f"Synthetic Article {index + 1}",
+                f"<p>Synthetic content {index + 1}.</p>",
+                0,
+                None,
+            )
+            first_ids[blueprint_id] = post_id
+
+        for index in range(30):
+            blueprint_id = f"blueprint_{index:03d}"
+            retry_id, _edit_url = worker.stage_wordpress_draft(
+                session,
+                "https://author.example",
+                blueprint_id,
+                f"Synthetic Article {index + 1} Revised",
+                f"<p>Synthetic content {index + 1} revised.</p>",
+                0,
+                None,
+            )
+            self.assertEqual(first_ids[blueprint_id], retry_id)
+
+        self.assertEqual(30, len(session.posts_by_slug))
+        self.assertTrue(all(post["status"] == "draft" for post in session.posts_by_slug.values()))
 
     def test_retry_after_artwork_warning_does_not_spend_another_image_call(self):
         data = nexus_blueprint("business_brand")
