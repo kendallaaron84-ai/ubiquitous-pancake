@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import Stripe from "stripe";
 
 import { adminDb } from "@/core/firebase-admin";
 import {
-  DASHBOARD_SESSION_COOKIE,
-  resolveDashboardSessionSecret,
-  verifyDashboardSession,
-} from "@/core/security/dashboard-session";
+  DashboardRequestAuthError,
+  requireDashboardRequestSession,
+} from "@/core/security/dashboard-request-auth";
 import { loadContentEngineAccess } from "@/core/security/content-engine-access";
 
 export const dynamic = "force-dynamic";
@@ -52,24 +50,18 @@ export async function POST(request: Request) {
     const body = (await request.json().catch(() => null)) as CheckoutRequestBody | null;
     const plan = body?.plan;
 
-    const sessionToken = (await cookies()).get(DASHBOARD_SESSION_COOKIE)?.value;
-    if (!sessionToken) {
-      return NextResponse.json(
-        { success: false, error: "Sign in before choosing a Blog Engine plan." },
-        { status: 401 }
-      );
-    }
-
     let dashboardSession;
     try {
-      dashboardSession = await verifyDashboardSession(
-        sessionToken,
-        resolveDashboardSessionSecret()
-      );
-    } catch {
+      dashboardSession = await requireDashboardRequestSession(request);
+    } catch (error) {
+      const authError = error instanceof DashboardRequestAuthError ? error : null;
       return NextResponse.json(
-        { success: false, error: "Your session expired. Sign in again." },
-        { status: 401 }
+        {
+          success: false,
+          code: authError?.code || "DASHBOARD_AUTHENTICATION_FAILED",
+          error: authError?.publicMessage || "Sign in before choosing a Blog Engine plan.",
+        },
+        { status: authError?.status || 401 }
       );
     }
 
@@ -82,10 +74,20 @@ export async function POST(request: Request) {
       );
     }
 
-    const { hasContentEngineAccess } = await loadContentEngineAccess(
+    const { hasContentEngineAccess, hasOwnedActiveLicense } = await loadContentEngineAccess(
       adminDb,
       dashboardSession
     );
+    if (!hasOwnedActiveLicense) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: "STUDIO_KEY_OWNERSHIP_MISMATCH",
+          error: "The signed-in identity does not own this author workspace.",
+        },
+        { status: 403 }
+      );
+    }
     if (hasContentEngineAccess) {
       return NextResponse.json(
         {

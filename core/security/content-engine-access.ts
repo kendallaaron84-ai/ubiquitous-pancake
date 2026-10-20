@@ -14,6 +14,7 @@ const PAID_CONTENT_ENGINE_PLANS = new Set([
 
 export interface ContentEngineAccessResult {
   hasContentEngineAccess: boolean
+  hasOwnedActiveLicense: boolean
   userData: RecordData
   licenseData: RecordData
 }
@@ -41,10 +42,11 @@ export async function loadContentEngineAccess(
     ? canonicalUserSnapshot.data() || {}
     : uidUserSnapshot.data() || {}
   const rawLicenseData = licenseSnapshot?.data() || {}
-  const licenseBelongsToSession =
-    licenseSnapshot?.exists === true &&
-    rawLicenseData.status === "active" &&
-    clean(rawLicenseData.authorEmail).toLowerCase() === email
+  const licenseBelongsToSession = activeLicenseBelongsToSession(
+    session,
+    licenseSnapshot?.exists === true,
+    rawLicenseData
+  )
   const licenseData = licenseBelongsToSession ? rawLicenseData : {}
 
   return {
@@ -53,9 +55,22 @@ export async function loadContentEngineAccess(
       userData,
       licenseData
     ),
+    hasOwnedActiveLicense: licenseBelongsToSession,
     userData,
     licenseData,
   }
+}
+
+export function activeLicenseBelongsToSession(
+  session: Pick<DashboardSessionClaims, "email">,
+  licenseExists: boolean,
+  licenseData: RecordData
+): boolean {
+  return Boolean(
+    licenseExists &&
+    clean(licenseData.status).toLowerCase() === "active" &&
+    clean(licenseData.authorEmail).toLowerCase() === session.email.trim().toLowerCase()
+  )
 }
 
 export function resolveContentEngineAccess(

@@ -29,6 +29,8 @@ const PUBLIC_API_EXACT_PATHS = new Set([
   "/api/auth/sms-verify",
   "/api/products/public",
   "/api/content/public",
+  "/api/webhook",
+  "/api/webhook/stripe",
   "/api/checkout",
   "/api/checkout/plugin",
   "/api/checkout/listener-session",
@@ -46,7 +48,10 @@ const PUBLIC_API_EXACT_PATHS = new Set([
   "/api/reader/purchases/claim",
   "/api/reader/purchases/recover",
 ]);
-const PUBLIC_API_PREFIXES = ["/api/webhook"];
+const INTERNALLY_AUTHENTICATED_API_EXACT_PATHS = new Set([
+  "/api/checkout/create-session",
+  "/api/checkout/create-session/complete",
+]);
 const MVP_PAGE_PREFIXES = [
   "/products",
   "/nexus-engine",
@@ -76,7 +81,11 @@ const MVP_API_EXACT_PATHS = new Set([
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (isStaticAsset(pathname) || isPublicRoute(pathname)) {
+  if (
+    isStaticAsset(pathname) ||
+    isPublicRoute(pathname) ||
+    INTERNALLY_AUTHENTICATED_API_EXACT_PATHS.has(pathname)
+  ) {
     return NextResponse.next();
   }
 
@@ -139,7 +148,7 @@ function isPublicRoute(pathname: string): boolean {
     return true;
   }
 
-  return PUBLIC_API_PREFIXES.some((prefix) => pathMatchesPrefix(pathname, prefix));
+  return /^\/api\/publications\/[^/]+$/.test(pathname) || pathname === "/api/studio/dashboard";
 }
 
 function isStaticAsset(pathname: string): boolean {

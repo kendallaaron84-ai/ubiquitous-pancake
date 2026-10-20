@@ -11,6 +11,7 @@ import Link from "next/link";
 import { onAuthStateChanged } from "firebase/auth";
 import { Plus, X, UploadCloud, Save, Edit3, Trash2, Globe } from "lucide-react";
 import { createStudioPublication } from "@/core/studio-client";
+import { buildUserScopedProductAssetPath } from "@/core/security/product-image-path";
 
 interface AuthorIdentityOption {
   id: string;
@@ -262,13 +263,18 @@ export default function ProductsPage() {
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: "cover" | "bg") => {
     const file = e.target.files?.[0];
-    if (!file || !editingProduct) return;
+    if (!file || !editingProduct || !currentUserEmail) return;
 
     setIsUploading(prev => ({ ...prev, [type]: true }));
     setUploadProgress(prev => ({ ...prev, [type]: 0 }));
 
     const storage = getStorage();
-    const fileName = `assets/${editingProduct.id}_${type === "cover" ? "coverUrl" : "bgImageUrl"}_${file.name}`;
+    const fileName = buildUserScopedProductAssetPath(
+      currentUserEmail,
+      editingProduct.id,
+      type,
+      file.name
+    );
     const storageRef = ref(storage, fileName);
     const uploadTask = uploadBytesResumable(storageRef, file);
 

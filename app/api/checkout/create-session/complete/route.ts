@@ -1,12 +1,12 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 
 import {
-  DASHBOARD_SESSION_COOKIE,
-  resolveDashboardSessionSecret,
-  verifyDashboardSession,
-} from "@/core/security/dashboard-session";
+  DashboardRequestAuthError,
+  requireDashboardRequestSession,
+} from "@/core/security/dashboard-request-auth";
+import { adminDb } from "@/core/firebase-admin";
+import { loadContentEngineAccess } from "@/core/security/content-engine-access";
 import { processAuthorSubscriptionPayment } from "@/core/security/author-subscription";
 
 export const dynamic = "force-dynamic";
@@ -18,24 +18,26 @@ type CompletionRequestBody = {
 
 export async function POST(request: Request) {
   try {
-    const sessionToken = (await cookies()).get(DASHBOARD_SESSION_COOKIE)?.value;
-    if (!sessionToken) {
+    let dashboardSession;
+    try {
+      dashboardSession = await requireDashboardRequestSession(request);
+    } catch (error) {
+      const authError = error instanceof DashboardRequestAuthError ? error : null;
       return NextResponse.json(
-        { success: false, error: "Sign in to finish activating your purchase." },
-        { status: 401 }
+        {
+          success: false,
+          code: authError?.code || "DASHBOARD_AUTHENTICATION_FAILED",
+          error: authError?.publicMessage || "Sign in to finish activating your purchase.",
+        },
+        { status: authError?.status || 401 }
       );
     }
 
-    let dashboardSession;
-    try {
-      dashboardSession = await verifyDashboardSession(
-        sessionToken,
-        resolveDashboardSessionSecret()
-      );
-    } catch {
+    const access = await loadContentEngineAccess(adminDb, dashboardSession);
+    if (!access.hasOwnedActiveLicense) {
       return NextResponse.json(
-        { success: false, error: "Your session expired. Sign in and refresh this page." },
-        { status: 401 }
+        { success: false, code: "STUDIO_KEY_OWNERSHIP_MISMATCH", error: "The signed-in identity does not own this author workspace." },
+        { status: 403 }
       );
     }
 

@@ -1,31 +1,18 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { adminDb } from "@/core/firebase-admin";
 import {
-  DASHBOARD_SESSION_COOKIE,
-  resolveDashboardSessionSecret,
-  verifyDashboardSession,
-} from "@/core/security/dashboard-session";
+  DashboardRequestAuthError,
+  requireDashboardRequestSession,
+} from "@/core/security/dashboard-request-auth";
 import { loadContentEngineAccess } from "@/core/security/content-engine-access";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
-  const token = (await cookies()).get(DASHBOARD_SESSION_COOKIE)?.value;
-  if (!token) {
-    return NextResponse.json(
-      { authenticated: false, isOwner: false, connectionStatus: "not_connected" },
-      { status: 401, headers: { "Cache-Control": "no-store" } }
-    );
-  }
-
+export async function GET(request: Request) {
   try {
-    const session = await verifyDashboardSession(
-      token,
-      resolveDashboardSessionSecret()
-    );
+    const session = await requireDashboardRequestSession(request);
     const ownerEmails = new Set(
       (process.env.KOBA_OWNER_EMAILS || "")
         .split(",")
@@ -34,10 +21,21 @@ export async function GET() {
     );
     const isOwner = ownerEmails.has(session.email.trim().toLowerCase());
 
-    const { hasContentEngineAccess } = await loadContentEngineAccess(
+    const { hasContentEngineAccess, hasOwnedActiveLicense } = await loadContentEngineAccess(
       adminDb,
       session
     );
+    if (session.studioKey && !hasOwnedActiveLicense) {
+      return NextResponse.json(
+        {
+          authenticated: false,
+          isOwner: false,
+          connectionStatus: "not_connected",
+          code: "STUDIO_KEY_OWNERSHIP_MISMATCH",
+        },
+        { status: 403, headers: { "Cache-Control": "no-store" } }
+      );
+    }
 
     let connectionStatus: "connected" | "not_connected" = "not_connected";
     let targetWpOrigin = "";
@@ -71,10 +69,16 @@ export async function GET() {
       },
       { headers: { "Cache-Control": "private, no-store" } }
     );
-  } catch {
+  } catch (error) {
+    const authError = error instanceof DashboardRequestAuthError ? error : null;
     return NextResponse.json(
-      { authenticated: false, isOwner: false, connectionStatus: "not_connected" },
-      { status: 401, headers: { "Cache-Control": "no-store" } }
+      {
+        authenticated: false,
+        isOwner: false,
+        connectionStatus: "not_connected",
+        ...(authError ? { code: authError.code } : {}),
+      },
+      { status: authError?.status || 401, headers: { "Cache-Control": "no-store" } }
     );
   }
 }
