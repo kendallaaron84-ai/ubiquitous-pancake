@@ -13,7 +13,7 @@ import {
 
 const ASSET_ID = "ebk_protected";
 const STUDIO_KEY = "studio_author";
-const STORAGE_PATH = `studio/${ASSET_ID}/${STUDIO_KEY}/illustration/page-one.png`;
+const STORAGE_PATH = `studio/${ASSET_ID}/${STUDIO_KEY}/illustrated_page/page-one.png`;
 
 test("Workbench persistence discards signed previews and keeps canonical protected references", () => {
   const patch = buildWorkbenchDraftPatch({
@@ -29,14 +29,14 @@ test("Workbench persistence discards signed previews and keeps canonical protect
   });
   const html = patch.chapters[0].textContent;
   assert.match(html, new RegExp(`data-koba-storage-path="${STORAGE_PATH}"`));
-  assert.match(html, /src=""/);
+  assert.doesNotMatch(html, /\ssrc=/);
   assert.doesNotMatch(html, /signed\.example|token=secret/);
   assert.deepEqual(protectedChapterImagePaths(html), [STORAGE_PATH]);
 });
 
 test("cross-tenant protected illustration references fail closed", () => {
   assert.throws(() => canonicalizeProtectedChapterImages(
-    `<img src="https://signed.example" data-koba-storage-path="studio/${ASSET_ID}/other_tenant/illustration/stolen.png">`,
+    `<img src="https://signed.example" data-koba-storage-path="studio/${ASSET_ID}/other_tenant/illustrated_page/stolen.png">`,
     (path) => assertTenantBoundStoragePath(path, ASSET_ID, STUDIO_KEY)
   ), /not authorized/);
 });

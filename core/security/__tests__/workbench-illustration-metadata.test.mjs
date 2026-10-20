@@ -19,7 +19,7 @@ import {
 const ROOT = new URL("../../../", import.meta.url);
 const ASSET_ID = "ebk_metadata";
 const STUDIO_KEY = "studio_author";
-const STORAGE_PATH = `studio/${ASSET_ID}/${STUDIO_KEY}/illustration/page-one.png`;
+const STORAGE_PATH = `studio/${ASSET_ID}/${STUDIO_KEY}/illustrated_page/page-one.png`;
 const PREVIEW_URL = "https://signed.example/preview.png?token=temporary";
 
 function escapeText(value) {
@@ -308,7 +308,7 @@ test("starting a new insertion restores preview-only metadata before another fig
     altText: "Second illustration",
     caption: "",
     source: "https://signed.example/second",
-    storagePath: `studio/${ASSET_ID}/${STUDIO_KEY}/illustration/page-two.png`,
+    storagePath: `studio/${ASSET_ID}/${STUDIO_KEY}/illustrated_page/page-two.png`,
   });
   const serialized = `<p>Before</p>${first.toHtml()}${second.toHtml()}<p>After</p>`;
 
@@ -334,7 +334,7 @@ test("accept, Save Draft, refresh, and reader signing preserve figure, caption, 
     guardrails: {},
   });
   const persisted = patch.chapters[0].textContent;
-  assert.match(persisted, /src=""/);
+  assert.doesNotMatch(persisted, /\ssrc=/);
   assert.doesNotMatch(persisted, /token=temporary|signed\.example/);
   assert.match(persisted, /alt="Kendall recording narration"/);
   assert.match(persisted, /<figcaption>Recording the audiobook edition\.<\/figcaption>/);

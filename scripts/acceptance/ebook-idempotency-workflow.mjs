@@ -4,6 +4,26 @@ import { readFile } from "node:fs/promises";
 const origin = process.env.KOBA_DISPOSABLE_WORDPRESS_ORIGIN || "http://127.0.0.1:9400";
 const firestoreHost = process.env.FIRESTORE_EMULATOR_HOST;
 assert.ok(firestoreHost, "FIRESTORE_EMULATOR_HOST is required; this acceptance must use the real Firestore emulator");
+const wordpressUrl = new URL(origin);
+assert.equal(wordpressUrl.protocol, "http:", "disposable WordPress must use local HTTP");
+assert.ok(
+  wordpressUrl.hostname === "127.0.0.1" || wordpressUrl.hostname === "localhost",
+  "disposable WordPress must resolve to loopback"
+);
+assert.equal(wordpressUrl.username, "", "disposable WordPress URL must not contain credentials");
+assert.equal(wordpressUrl.password, "", "disposable WordPress URL must not contain credentials");
+assert.equal(wordpressUrl.pathname, "/", "disposable WordPress origin must not contain a path");
+assert.equal(wordpressUrl.search, "", "disposable WordPress origin must not contain a query");
+assert.equal(wordpressUrl.hash, "", "disposable WordPress origin must not contain a fragment");
+const firestoreUrl = new URL(`http://${firestoreHost}`);
+assert.ok(
+  firestoreUrl.hostname === "127.0.0.1" || firestoreUrl.hostname === "localhost",
+  "Firestore emulator must resolve to loopback"
+);
+assert.ok(firestoreUrl.port, "Firestore emulator must use an explicit local port");
+assert.equal(firestoreUrl.pathname, "/", "Firestore emulator host must not contain a path");
+assert.equal(firestoreUrl.search, "", "Firestore emulator host must not contain a query");
+assert.equal(firestoreUrl.hash, "", "Firestore emulator host must not contain a fragment");
 const firestoreProject = "koba-ebook-idempotency-test";
 const firestoreBase = `http://${firestoreHost}/v1/projects/${firestoreProject}/databases/(default)/documents`;
 const firestoreAdminHeaders = { Authorization: "Bearer owner" };
@@ -18,6 +38,21 @@ assert.match(routeSource, /expectedPublicationId: input\.expectedPublicationId/)
 assert.match(routeSource, /expectedPageId: input\.expectedPageId/);
 assert.match(routeSource, /publicationId: wordpress\.publicationId/);
 assert.match(routeSource, /pageId: wordpress\.pageId/);
+assert.match(routeSource, /status: hasConfirmedWordPressDeployment[\s\S]*?: "draft"/);
+assert.match(routeSource, /isPublished: hasConfirmedWordPressDeployment[\s\S]*?: false/);
+assert.match(routeSource, /status: input\.status/);
+
+if (process.env.KOBA_ACCEPTANCE_VALIDATE_ONLY === "true") {
+  console.log(JSON.stringify({
+    result: "PASS",
+    validationOnly: true,
+    productionServices: false,
+    wordpressOrigin: wordpressUrl.origin,
+    firestoreEmulatorHost: firestoreUrl.host,
+    draftAndIdentityContractChecked: true,
+  }));
+  process.exit(0);
+}
 
 const credentialsResponse = await fetch(`${origin}/wp-content/uploads/koba-ebook-test-credentials.json`);
 assert.equal(credentialsResponse.status, 200, "disposable WordPress credentials must be available");

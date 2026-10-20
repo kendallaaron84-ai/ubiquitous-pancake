@@ -291,13 +291,16 @@ test("new audiobook and ebook creation persist the selected canonical identity b
   assert.match(productsPage, /assetId: editingProduct\.id/);
 });
 
-test("Workbench image insertion survives the upload-state rerender by resolving a stable slot index", async () => {
+test("Workbench image insertion survives rerenders and rejects stale cross-chapter slots", async () => {
   const workbench = await readFile(new URL("app/workbench/[assetId]/page.tsx", ROOT), "utf8");
-  assert.match(workbench, /pendingInsertionIndexRef = useRef<number \| null>/);
+  assert.match(workbench, /pendingInsertionSlotRef = useRef<PendingIllustrationInsertion \| null>/);
+  assert.match(workbench, /chapterId: String\(chapter\.id \|\| ""\)/);
+  assert.match(workbench, /chapterIndex: activeChapterIndex/);
+  assert.match(workbench, /slotIndex/);
   assert.match(workbench, /slot\.dataset\.kobaImageSlot/);
-  assert.match(workbench, /querySelector<HTMLElement>\(`\[data-koba-image-slot=/);
-  assert.match(workbench, /editor\.insertBefore\(figure, contentBlocks\[insertionIndex\] \|\| null\)/);
-  assert.doesNotMatch(workbench, /pendingInsertionSlotRef/);
+  assert.match(workbench, /pendingInsertion\.chapterIndex === Number\(editor\.dataset\.kobaChapterIndex\)/);
+  assert.match(workbench, /pendingInsertion\.chapterId === String\(editor\.dataset\.kobaChapterId \|\| ""\)/);
+  assert.match(workbench, /slot\.replaceWith\(figure\)/);
 });
 
 test("upload and transcription reject missing, placeholder, or unowned publication identities", async () => {

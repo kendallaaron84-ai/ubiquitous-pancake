@@ -273,7 +273,7 @@ test("new publication creation preserves canonical media type through Save & Syn
 
   assert.match(productPage, /handleCreateDraft\("audiobook"\)/);
   assert.match(productPage, /handleCreateDraft\("ebook"\)/);
-  assert.match(productPage, /createStudioPublication\(type\)/);
+  assert.match(productPage, /createStudioPublication\(publicationType\)/);
   assert.match(productPage, /Publication type is fixed when the canonical workspace is created/);
   assert.match(route, /assertCanonicalPublicationType\(requestedAssetId, mediaType\)/);
 });

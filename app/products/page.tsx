@@ -621,27 +621,17 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
 
                     <div className="flex flex-col space-y-1.5">
                       <label className="text-xs font-semibold text-slate-300">Media Type</label>
-                      <select 
+                      <select
+                        disabled
                         value={editingProduct.type || "audiobook"}
-                        onChange={(e) => {
-                          const newType = e.target.value;
-                          const currentCategory = String(editingProduct.category || "").trim();
-                          const defaultCategory = newType === "ebook" ? "E-Books" : "Audiobooks";
-                          const previousDefault = newType === "ebook" ? "Audiobooks" : "E-Books";
-                          setEditingProduct({
-                            ...editingProduct, 
-                            type: newType,
-                            category:
-                              !currentCategory || currentCategory === previousDefault
-                                ? defaultCategory
-                                : currentCategory,
-                          });
-                        }}
-                        className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:outline-none"
+                        className="bg-[#1a2138] border border-[#40527c]/40 rounded-lg p-2.5 text-slate-400 text-sm focus:outline-none"
                       >
                         <option value="audiobook">Audiobook</option>
                         <option value="ebook">E-Book</option>
                       </select>
+                      <p className="text-[11px] leading-4 text-slate-400">
+                        Publication type is fixed when the canonical workspace is created.
+                      </p>
                     </div>
                   </div>
 
