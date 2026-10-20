@@ -305,9 +305,8 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     image.alt = alt;
     image.loading = "lazy";
     figure.appendChild(image);
-    if (slot) slot.replaceWith(figure);
-    else editor.insertBefore(figure, contentBlocks[insertionIndex] || null);
-    pendingInsertionIndexRef.current = null;
+    slot.replaceWith(figure);
+    pendingInsertionSlotRef.current = null;
     selectedFigureRef.current = figure;
     setHasSelectedIllustration(true);
     const snapshot = readProtectedIllustrationMetadata(figure);
