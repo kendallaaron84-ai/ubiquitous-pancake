@@ -84,7 +84,7 @@ function nextAction(group: AuthorOnboardingGroup): string {
   return "Complete website setup";
 }
 
-function addVerifiedOrigin(origins: Set<string>, data: Record<string, any>) {
+function addVerifiedOrigin(origins: Set<string>, data: Record<string, unknown>) {
   if (clean(data.status) !== "active" || clean(data.verificationStatus) !== "verified") return;
   const value = clean(data.wordpressOrigin || data.targetWpOrigin);
   if (!value) return;
@@ -103,9 +103,12 @@ function arrayIncludes(value: unknown, expected: string): boolean {
   return Array.isArray(value) && value.some((item) => clean(item) === expected);
 }
 
-function toIso(value: any): string | null {
+function toIso(value: unknown): string | null {
   if (!value) return null;
-  if (typeof value.toDate === "function") return value.toDate().toISOString();
+  if (typeof value === "object" && "toDate" in value && typeof value.toDate === "function") {
+    const converted = value.toDate();
+    return converted instanceof Date ? converted.toISOString() : null;
+  }
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string") return value;
   return null;

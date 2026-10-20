@@ -604,7 +604,6 @@ async function deployPublicationToWordPress(
 ): Promise<WordPressDeploymentResult> {
   const targetWpOrigin = input.destination.targetWpOrigin;
   const wpUsername = input.destination.wpUsername;
-
   const gatewayUrl = resolveWordPressGatewayUrl();
   let gatewayResponse: {
     status: number;
@@ -619,7 +618,7 @@ async function deployPublicationToWordPress(
       const response = await fetch(`${gatewayUrl}/publish-vault`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(buildGatewayDeploymentPayload(input)),
+        body: JSON.stringify(buildGatewayDeploymentPayload(input, wpUsername)),
         signal: AbortSignal.timeout(25_000),
         cache: "no-store",
       });
@@ -634,7 +633,7 @@ async function deployPublicationToWordPress(
       await authenticatedClient.request<WordPressGatewayDeploymentResponse>({
         url: `${gatewayUrl}/publish-vault`,
         method: "POST",
-        data: buildGatewayDeploymentPayload(input),
+        data: buildGatewayDeploymentPayload(input, wpUsername),
         timeout: 25_000,
         validateStatus: () => true,
       });
@@ -722,13 +721,13 @@ async function deployPublicationToWordPress(
   };
 }
 
-function buildGatewayDeploymentPayload(input: WordPressDeploymentInput) {
+function buildGatewayDeploymentPayload(input: WordPressDeploymentInput, wpUsername: string) {
   return {
     studioKey: input.studioKey,
     websiteConnectionId: input.destination.websiteConnectionId,
     secretCredentialRef: input.destination.secretCredentialRef,
     targetWpOrigin: input.destination.targetWpOrigin,
-    wpUsername: input.destination.wpUsername,
+    wpUsername,
     publication: {
       assetKey: input.assetKey,
       bookTitle: input.title,

@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useEffect, useLayoutEffect, useMemo, use, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, use, useRef } from "react";
 import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, ImagePlus, Trash2, GripVertical, Replace, Eye, Check, RotateCcw, X } from "lucide-react";
 import Link from "next/link";
+import Image from "next/image";
 import { toast } from "@/components/ui/use-toast";
 import { ModeToggle } from "@/components/elements/mode-toggle";
 import { loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
@@ -41,10 +42,40 @@ type PendingIllustrationRebind = {
   selected: ProtectedIllustrationLocator;
 };
 
+type IllustratedPage = {
+  id?: string;
+  assetId?: string;
+  previewUrl: string;
+  fileName?: string;
+  mimeType?: string;
+  width?: number;
+  height?: number;
+  aspectRatio?: number;
+  facingIntent?: string;
+};
+
+type WorkbenchChapter = {
+  id?: string;
+  title?: string;
+  content?: string;
+  textContent?: string;
+  pages?: IllustratedPage[];
+};
+
+type WorkbenchBook = {
+  title?: string;
+  type?: string;
+  accessError?: string;
+  layoutMode?: string;
+  illustratedPageSettings?: unknown;
+  guardrails?: { setting: string; mood: string; loreContext: string };
+  chapters: WorkbenchChapter[];
+};
+
 function imageDimensions(file: File): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
-    const image = new Image();
+    const image = document.createElement("img");
     image.onload = () => {
       URL.revokeObjectURL(url);
       resolve({ width: image.naturalWidth, height: image.naturalHeight });
@@ -106,7 +137,7 @@ const Tooltip = ({ text, children }: { text: string, children: React.ReactNode }
 export default function AuthorWorkbench({ params }: { params: Promise<{ assetId: string }> }) {
   const { assetId } = use(params); 
 
-  const [bookData, setBookData] = useState<any>(null);
+  const [bookData, setBookData] = useState<WorkbenchBook | null>(null);
   const [activeChapterIndex, setActiveChapterIndex] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
@@ -128,6 +159,8 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   const activeChapterSourceHtml = bookData?.chapters?.[activeChapterIndex]?.textContent
     || bookData?.chapters?.[activeChapterIndex]?.content
     || "";
+  const activeChapterId = bookData?.chapters?.[activeChapterIndex]?.id;
+  const activeChapterTextContent = bookData?.chapters?.[activeChapterIndex]?.textContent;
   const activeChapterEditorMarkup = useMemo(
     () => ({ __html: editorHtml(activeChapterSourceHtml) }),
     [activeChapterSourceHtml]
@@ -147,18 +180,18 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
       try {
         console.log("🎯 Workbench attempting connection for assetId:", assetId);
         const payload = await loadStudioProduct(assetId);
-        const data = payload.product;
+        const data = payload.product as WorkbenchBook;
         if (!Array.isArray(data.chapters) || data.chapters.length === 0) {
           data.chapters = [{ id: `ch_1_${assetId}`, title: "Chapter 1", textContent: "" }];
         }
         setBookData(data);
         if (data.guardrails) setGuardrails(data.guardrails);
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error("Workbench publication lookup failed:", error);
         setBookData({
           title: "Publication unavailable",
           type: "ebook",
-          accessError: error?.message || "This publication could not be opened.",
+          accessError: error instanceof Error ? error.message : "This publication could not be opened.",
           chapters: [],
         });
       }
@@ -168,29 +201,9 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   // ... Your existing fetchManuscript useEffect ends here ...
   }, [assetId]);
 
-  const handleMasteredUpload = async (e: React.ChangeEvent<HTMLInputElement>, chapterId: string) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    toast({ title: "Mastered Upload", description: "Injecting production-ready audio into the vault..." });
-    try {
-      const uploaded = await uploadStudioFile(assetId, file, "mastered");
-      await saveStudioProduct(assetId, "attach_mastered_audio", {
-        chapterId,
-        storagePath: uploaded.storagePath,
-      });
-      toast({ title: "Production Success", description: "Audio mastered and vaulted." });
-    } catch (error) {
-      toast({
-        title: "Upload Failed",
-        description: error instanceof Error ? error.message : "The mastered audio could not be saved.",
-        variant: "destructive",
-      });
-    }
-};
-
   const updateActiveChapterHtml = (html: string) => {
-    setBookData((current: any) => {
+    setBookData((current) => {
+      if (!current) return current;
       const chapters = [...(current?.chapters || [])];
       if (!chapters[activeChapterIndex]) return current;
       chapters[activeChapterIndex] = { ...chapters[activeChapterIndex], textContent: html };
@@ -218,7 +231,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     return copy.innerHTML;
   };
 
-  const refreshImageInsertionSlots = () => {
+  const refreshImageInsertionSlots = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
     editor.querySelectorAll("[data-koba-image-slot]").forEach((slot) => slot.remove());
@@ -241,7 +254,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
       slot.setAttribute("aria-label", `Add image at chapter position ${index + 1}`);
       editor.insertBefore(slot, blocks[index] || null);
     }
-  };
+  }, []);
 
   const chooseImageForSlot = (slot: HTMLElement) => {
     const chapter = bookData?.chapters?.[activeChapterIndex];
@@ -268,7 +281,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     if (!bookData) return;
     const frame = window.requestAnimationFrame(refreshImageInsertionSlots);
     return () => window.cancelAnimationFrame(frame);
-  }, [activeChapterIndex, bookData?.chapters?.[activeChapterIndex]?.id]);
+  }, [activeChapterId, activeChapterIndex, bookData, refreshImageInsertionSlots]);
 
   const insertImageAtSelectedPosition = (url: string, storagePath: string, alt: string): boolean => {
     const editor = editorRef.current;
@@ -503,7 +516,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     }
     selectedFigureRef.current = figure;
     refreshImageInsertionSlots();
-  }, [activeChapterIndex, bookData?.chapters?.[activeChapterIndex]?.textContent]);
+  }, [activeChapterIndex, activeChapterTextContent, refreshImageInsertionSlots]);
 
   const handleIllustrationUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -531,8 +544,8 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
         file.name.replace(/\.[^.]+$/, "")
       )) return;
       toast({ title: "Image inserted", description: "Save Draft to preserve it in this chapter." });
-    } catch (error: any) {
-      toast({ title: "Image upload failed", description: error?.message || "Please try again.", variant: "destructive" });
+    } catch (error: unknown) {
+      toast({ title: "Image upload failed", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" });
     } finally {
       setIsUploadingImage(false);
     }
@@ -564,7 +577,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   try {
     const sourceChapters = Array.isArray(bookData.chapters) ? bookData.chapters : [];
     const illustrated = bookData.layoutMode === "illustrated_pages";
-    const formattedChapters = sourceChapters.map((ch: any, index: number) => illustrated
+    const formattedChapters = sourceChapters.map((ch, index: number) => illustrated
       ? { id: ch.id || `ch_${index + 1}_${assetId}`, title: ch.title || `Chapter ${index + 1}`, pages: Array.isArray(ch.pages) ? ch.pages : [] }
       : { id: ch.id || `ch_${index + 1}_${assetId}`, title: ch.title || `Chapter ${index + 1}`, textContent: sanitizeChapterHtml(editorHtml(ch.textContent || ch.content || "")) });
 
@@ -575,10 +588,10 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
       illustratedPageSettings: bookData.illustratedPageSettings,
     });
 
-    setBookData((current: any) => ({
+    setBookData((current) => current ? ({
       ...current,
-      ...payload.product,
-    }));
+      ...(payload.product as Partial<WorkbenchBook>),
+    }) : current);
     clearIllustrationSelection(false);
 
     console.log("💾 Workbench manuscript saved to products collection.", {
@@ -621,7 +634,8 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
           facingIntent: "auto",
         });
       }
-      setBookData((current: any) => {
+      setBookData((current) => {
+        if (!current) return current;
         const chapters = [...current.chapters];
         const chapter = { ...chapters[activeChapterIndex] };
         const pages = [...(chapter.pages || [])];
@@ -639,8 +653,9 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     }
   };
 
-  const updateCurrentPages = (transform: (pages: any[]) => any[]) => {
-    setBookData((current: any) => {
+  const updateCurrentPages = (transform: (pages: IllustratedPage[]) => IllustratedPage[]) => {
+    setBookData((current) => {
+      if (!current) return current;
       const chapters = [...current.chapters];
       const chapter = { ...chapters[activeChapterIndex] };
       chapter.pages = transform([...(chapter.pages || [])]);
@@ -724,7 +739,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
                     </span>
                 </p>
                 <div className="text-left text-xs bg-black/50 p-3 rounded font-mono border border-gray-800 text-gray-500">
-                    Expected: Firestore Document under "products" collection with correct layout keys.
+                    Expected: Firestore Document under &quot;products&quot; collection with correct layout keys.
                 </div>
             </div>
         </div>
@@ -745,7 +760,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
           </span>
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          {bookData.chapters.map((chapter: any, index: number) => (
+          {bookData.chapters.map((chapter, index: number) => (
             <button
               key={chapter.id}
               onClick={() => {
@@ -819,7 +834,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
                   ...bookData,
                   layoutMode: event.target.value,
                   illustratedPageSettings: bookData.illustratedPageSettings || { spreadStart: "right", allowSpreads: true, pageBackground: "#111111" },
-                  chapters: bookData.chapters.map((chapter: any) => ({ ...chapter, pages: chapter.pages || [] })),
+                  chapters: bookData.chapters.map((chapter) => ({ ...chapter, pages: chapter.pages || [] })),
                 })}
                 className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-white/20 dark:bg-slate-900"
               >
@@ -836,13 +851,13 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
               <input ref={pageInputRef} type="file" multiple accept="image/jpeg,image/png,image/gif" className="hidden" onChange={(event) => { const files = [...(event.target.files || [])]; event.target.value = ""; void uploadPageFiles(files); }} />
               <input ref={replacePageInputRef} type="file" accept="image/jpeg,image/png,image/gif" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void uploadPageFiles([file], replacePageIndexRef.current); }} />
               <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {(currentChapter.pages || []).map((page: any, pageIndex: number) => {
+                {(currentChapter.pages || []).map((page, pageIndex: number) => {
                   const referenceRatio = Number((currentChapter.pages || [])[0]?.aspectRatio || 0);
                   const ratioMismatch = referenceRatio > 0 && Math.abs(Number(page.aspectRatio) - referenceRatio) / referenceRatio > 0.08;
                   return (
                     <article key={page.id || pageIndex} draggable onDragStart={() => { dragPageIndexRef.current = pageIndex; }} onDragOver={(event) => event.preventDefault()} onDrop={() => { const from = dragPageIndexRef.current; if (from === null || from === pageIndex) return; updateCurrentPages((pages) => { const [moved] = pages.splice(from, 1); pages.splice(pageIndex, 0, moved); return pages; }); dragPageIndexRef.current = null; }} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-white/10 dark:bg-slate-900">
                       <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2 text-xs dark:border-white/10"><span className="flex items-center gap-1 font-bold"><GripVertical className="h-4 w-4 text-slate-400" /> Page {pageIndex + 1}</span><span>{page.width} × {page.height}</span></div>
-                      <div className="flex h-64 items-center justify-center bg-slate-200 p-2 dark:bg-black/40"><img src={page.previewUrl} alt={`Page ${pageIndex + 1} preview`} draggable={false} className="max-h-full max-w-full object-contain" /></div>
+                      <div className="relative flex h-64 items-center justify-center bg-slate-200 p-2 dark:bg-black/40"><Image src={page.previewUrl} alt={`Page ${pageIndex + 1} preview`} fill unoptimized draggable={false} sizes="(max-width: 640px) 100vw, 33vw" className="object-contain p-2" /></div>
                       {ratioMismatch && <p className="bg-amber-50 px-3 py-2 text-xs text-amber-800">Aspect ratio differs from the first page.</p>}
                       <div className="flex items-center justify-between gap-2 p-3">
                         <select aria-label={`Facing intent for page ${pageIndex + 1}`} value={page.facingIntent || "auto"} onChange={(event) => updateCurrentPages((pages) => pages.map((candidate, index) => index === pageIndex ? { ...candidate, facingIntent: event.target.value } : candidate))} className="rounded border px-2 py-1 text-xs dark:bg-slate-800"><option value="auto">Auto facing</option><option value="left">Left</option><option value="right">Right</option></select>

@@ -119,8 +119,8 @@ export async function establishAuthorInvitation(
     try {
       firebaseUser = await adminAuth.getUserByEmail(email);
       await adminAuth.updateUser(firebaseUser.uid, { password: input.password, displayName: authorName, emailVerified: true });
-    } catch (error: any) {
-      if (error?.code !== "auth/user-not-found") throw error;
+    } catch (error: unknown) {
+      if (!hasErrorCode(error, "auth/user-not-found")) throw error;
       firebaseUser = await adminAuth.createUser({ email, password: input.password, displayName: authorName, emailVerified: true });
     }
 
@@ -177,7 +177,7 @@ async function findInvitation(database: Firestore, token: string) {
   return { ref: query.docs[0].ref, data: query.docs[0].data() || {} };
 }
 
-function validateInvitation(data: Record<string, any>, now: number): void {
+function validateInvitation(data: Record<string, unknown>, now: number): void {
   if (data.welcomeInvitationStatus === "consumed" || data.accountEstablishedAt) {
     throw new AuthorInvitationError(410, "AUTHOR_INVITATION_USED", "This account-establishment invitation has already been used.");
   }
@@ -187,7 +187,7 @@ function validateInvitation(data: Record<string, any>, now: number): void {
   }
 }
 
-function validateOwnership(provision: Record<string, any>, license: Record<string, any> | null): void {
+function validateOwnership(provision: Record<string, unknown>, license: Record<string, unknown> | null): void {
   if (!license || clean(license.status) !== "active") {
     throw new AuthorInvitationError(403, "AUTHOR_LICENSE_INACTIVE", "The author workspace is not active.");
   }
@@ -216,4 +216,8 @@ function notFound() {
 
 function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function hasErrorCode(error: unknown, expected: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === expected;
 }

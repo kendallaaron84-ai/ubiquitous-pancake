@@ -5,8 +5,8 @@ import Layout from "@/components/layout";
 import { AUTOMATION_STEP_TEMPLATES as STEP_TEMPLATES } from "@/core/automation-step-templates";
 import { 
   Terminal as TerminalIcon, Play, RefreshCw, CheckCircle2, 
-  XCircle, AlertTriangle, ShieldCheck, Database, LayoutGrid, 
-  ListFilter, Activity, Layers, ArrowRight, Save, Cpu, Sparkles 
+  XCircle, ShieldCheck, Database, LayoutGrid,
+  Activity, Layers, Save, Cpu, Sparkles
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -14,7 +14,7 @@ export const dynamic = 'force-dynamic';
 
 export default function AutomationCenterPage() {
   const [activeCategory, setActiveCategory] = useState<string>("all");
-  const [dbSteps, setDbSteps] = useState<Record<string, any>>({});
+  const [dbSteps, setDbSteps] = useState<Record<string, AutomationStepState>>({});
   const [selectedStepId, setSelectedStepId] = useState<string>("step_1");
   const [runningStepId, setRunningStepId] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<boolean>(true);
@@ -80,11 +80,11 @@ export default function AutomationCenterPage() {
         title: "Test Step Enqueued",
         description: `Successfully enqueued step ${stepId}. Mapped target: ${resData.mapped_target_url}`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
       toast({
         title: "Dispatch Failure",
-        description: `Failed to initiate backend execution: ${err.message}`,
+        description: `Failed to initiate backend execution: ${errorMessage(err)}`,
         variant: "destructive"
       });
       
@@ -99,7 +99,7 @@ export default function AutomationCenterPage() {
             {
               timestamp: new Date().toISOString(),
               status: "failed",
-              errors: [`Failed to dispatch to backend endpoint: ${err.message}`]
+              errors: [`Failed to dispatch to backend endpoint: ${errorMessage(err)}`]
             }
           ]
         }
@@ -126,11 +126,11 @@ export default function AutomationCenterPage() {
         title: "Test Suite Initialized",
         description: "Successfully seeded all 23 automation integration steps into Firestore collection.",
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
       toast({
         title: "Seeding Failed",
-        description: `Could not initialize steps inside database: ${err.message}`,
+        description: `Could not initialize steps inside database: ${errorMessage(err)}`,
         variant: "destructive"
       });
     } finally {
@@ -154,11 +154,11 @@ export default function AutomationCenterPage() {
         title: "Snapshot Captured Successfully",
         description: `Deployment layout run saved with ${payload.successCount} compliant points.`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
       toast({
         title: "Snapshot Failed",
-        description: `Could not write compliance records: ${err.message}`,
+        description: `Could not write compliance records: ${errorMessage(err)}`,
         variant: "destructive"
       });
     }
@@ -174,8 +174,9 @@ export default function AutomationCenterPage() {
   // Selected Step detailed metrics
   const selectedTemplate = STEP_TEMPLATES.find(t => t.id === selectedStepId);
   const selectedLiveData = dbSteps[selectedStepId] || {};
-  const latestExecutionLog = selectedLiveData.execution_history?.length > 0 
-    ? selectedLiveData.execution_history[selectedLiveData.execution_history.length - 1] 
+  const executionHistory = selectedLiveData.execution_history || [];
+  const latestExecutionLog = executionHistory.length > 0
+    ? executionHistory[executionHistory.length - 1]
     : null;
 
   // Filter templates based on category pills
@@ -565,4 +566,24 @@ export default function AutomationCenterPage() {
       </div>
     </Layout>
   );
+}
+
+interface AutomationExecutionRecord {
+  timestamp?: string;
+  status?: string;
+  errors?: string[];
+  trace?: string;
+}
+
+interface AutomationStepState {
+  status?: string;
+  execution_history?: AutomationExecutionRecord[];
+  asset_key?: string;
+  expected_visibility?: string;
+  expected_price?: string | number;
+  expected_stripe_account?: string;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown error";
 }

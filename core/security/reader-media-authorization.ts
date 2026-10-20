@@ -318,16 +318,12 @@ export async function buildProtectedPublicationChapters(input: {
     input.chapters.map(async (chapter) => {
       if (!chapter || typeof chapter !== "object" || Array.isArray(chapter)) return {};
       const chapterData = chapter as Record<string, unknown>;
-      const {
-        storagePath: rawMediaStoragePath,
-        transcriptStoragePath: rawTranscriptStoragePath,
-        url: _rawUrl,
-        audioUrl: _rawAudioUrl,
-        mediaUrl: _rawMediaUrl,
-        src: _rawSourceUrl,
-        transcriptUrl: _rawTranscriptUrl,
-        ...safeChapter
-      } = chapterData;
+      const rawMediaStoragePath = chapterData.storagePath;
+      const rawTranscriptStoragePath = chapterData.transcriptStoragePath;
+      const safeChapter = { ...chapterData };
+      for (const key of ["storagePath", "transcriptStoragePath", "url", "audioUrl", "mediaUrl", "src", "transcriptUrl"]) {
+        delete safeChapter[key];
+      }
       const mediaStoragePath = text(rawMediaStoragePath);
       const transcriptStoragePath = text(rawTranscriptStoragePath);
 
@@ -377,13 +373,10 @@ export async function buildProtectedPublicationChapters(input: {
         safeChapter.pages = await Promise.all(chapterData.pages.map(async (page) => {
           if (!page || typeof page !== "object" || Array.isArray(page)) return {};
           const pageData = page as Record<string, unknown>;
-          const {
-            assetId: rawPageAssetId,
-            storagePath: rawPageStoragePath,
-            url: _rawPageUrl,
-            previewUrl: _rawPreviewUrl,
-            ...safePage
-          } = pageData;
+          const rawPageAssetId = pageData.assetId;
+          const rawPageStoragePath = pageData.storagePath;
+          const safePage = { ...pageData };
+          for (const key of ["assetId", "storagePath", "url", "previewUrl"]) delete safePage[key];
           const pageStoragePath = text(rawPageAssetId || rawPageStoragePath);
           if (!pageStoragePath || !pageStoragePath.startsWith(mediaPrefix)) {
             throw new ReaderMediaAuthorizationError(

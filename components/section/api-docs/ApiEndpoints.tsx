@@ -39,7 +39,7 @@ export default function ApiEndpoints() {
 							{category.category}
 						</h3>
 						<ul className="space-y-1">
-							{category.items.map((item, index) => (
+							{category.items.map((item) => (
 								<li key={item}>
 									<Button
 										variant="outline"

@@ -84,7 +84,7 @@ export async function provisionAuthorPlugin(
   const provisionRef = adminDb.collection("plugin_license_provisions").doc(provisionId);
   const candidateStudioKey = generateStudioKey();
 
-  const licenseResult = await adminDb.runTransaction(async (transaction: any) => {
+  const licenseResult = await adminDb.runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
     const provisionSnapshot = await transaction.get(provisionRef);
     const existingProvision = provisionSnapshot.exists
       ? (provisionSnapshot.data() as ProvisioningState)
@@ -227,7 +227,7 @@ async function deferProvisionedAuthorWelcome(
   studioKey: string,
 ): Promise<WelcomeEmailStatus> {
   let status: WelcomeEmailStatus = "deferred";
-  await adminDb.runTransaction(async (transaction: any) => {
+  await adminDb.runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
     const snapshot = await transaction.get(provisionRef);
     if (!snapshot.exists) throw new Error("Provisioning state was not created.");
     const data = snapshot.data() as ProvisioningState;
@@ -267,7 +267,7 @@ async function deliverProvisionedAuthorWelcome(input: {
 
   const emailClaimId = randomUUID();
   const invitation = createAuthorInvitationEnvelope();
-  const shouldSendEmail = await adminDb.runTransaction(async (transaction: any) => {
+  const shouldSendEmail = await adminDb.runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
     const snapshot = await transaction.get(provisionRef);
     if (!snapshot.exists) throw new Error("Provisioning state was not created.");
     const data = snapshot.data() as ProvisioningState;

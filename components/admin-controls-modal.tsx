@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { ShieldAlert, Save, UploadCloud, Loader2 } from "lucide-react";
+import { ShieldAlert, Save, Loader2 } from "lucide-react";
 
 export const dynamic = 'force-dynamic';
 
@@ -33,9 +33,9 @@ export function AdminControlsModal() {
 
       alert("System core configuration deployed globally across the Nexus engine fabric!");
       setFile(null);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Administrative storage execution error:", err);
-      alert(`Failed to save core systems: ${err.message}`);
+      alert(`Failed to save core systems: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
       setUploading(false);
     }

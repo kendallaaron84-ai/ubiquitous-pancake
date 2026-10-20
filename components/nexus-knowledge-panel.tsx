@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Archive, BookOpen, Building2, CheckCircle2, Compass, Eye, Globe2, Pencil, Trash2, Upload, X } from "lucide-react";
 
 type Website = { websiteConnectionId: string; displayName: string; wordpressOrigin: string; contentRole: string; defaultUniverseId?: string | null; status: string };
@@ -188,7 +188,7 @@ function ReferenceGuideDetail({ world, referenceGuideId, onClose, onComplete }: 
   const [message, setMessage] = useState("Loading guide…");
   const [busy, setBusy] = useState(false);
 
-  async function load(version?: number) {
+  const load = useCallback(async (version?: number) => {
     setBusy(true); setMessage("Loading guide…");
     try {
       const query = new URLSearchParams({ universeId: world.id, referenceGuideId });
@@ -199,9 +199,9 @@ function ReferenceGuideDetail({ world, referenceGuideId, onClose, onComplete }: 
       setDetail(payload.guide); setDraft(payload.guide.normalizedText); setSafeToDiscuss(payload.guide.spoilerPolicy.thingsSafeToDiscuss); setNeverReveal(payload.guide.spoilerPolicy.thingsNeverToReveal); setEditing(false); setAcknowledged(false); setMessage("");
     } catch (error) { setMessage(error instanceof Error ? error.message : "The Reference Guide could not be loaded."); }
     finally { setBusy(false); }
-  }
+  }, [referenceGuideId, world.id]);
 
-  useEffect(() => { void load(); }, [referenceGuideId, world.id]);
+  useEffect(() => { void load(); }, [load]);
 
   async function saveNewVersion() {
     setBusy(true); setMessage("");

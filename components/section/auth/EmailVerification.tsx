@@ -12,7 +12,7 @@ interface EmailVerificationProps {
 	email: string
 }
 
-export default function EmailVerification({ onStateChange, email }: EmailVerificationProps) {
+export default function EmailVerification({ email }: EmailVerificationProps) {
 	const [verified, setVerified] = useState<boolean>(false)
 	const [progress, setProgress] = useState<number>(0)
 	const router = useRouter()
@@ -71,7 +71,7 @@ export default function EmailVerification({ onStateChange, email }: EmailVerific
 						<div className="text-center space-y-2">
 							<h3 className="text-lg font-medium">Verifying your email</h3>
 							<p className="text-sm text-muted-foreground">
-								We're confirming <span className="font-medium text-foreground">{email}</span>
+								We&apos;re confirming <span className="font-medium text-foreground">{email}</span>
 							</p>
 							<p className="text-xs text-muted-foreground">This will only take a moment...</p>
 						</div>

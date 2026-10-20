@@ -62,7 +62,7 @@ export async function persistStripeConnection(input: {
     updatedAt: FieldValue.serverTimestamp(),
   };
 
-  await adminDb.runTransaction(async (transaction: any) => {
+  await adminDb.runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
     transaction.set(
       adminDb.collection("plugin_licenses").doc(input.studioKey),
       patch,

@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches:
+      - main
+      - master
       - "codex/**"
       - "feature/**"
   workflow_dispatch:
@@ -40,9 +42,12 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec tsc --noEmit
+      - run: pnpm run lint
+      - run: pnpm run typecheck
       - run: pnpm run test:nexus
       - run: pnpm run test:security
+      - run: pnpm run test:business
+      - run: pnpm run test:content-worker
       - run: pnpm run build
 
   firestore-rules:
@@ -63,7 +68,7 @@ jobs:
           distribution: temurin
           java-version: "21"
       - run: pnpm install --frozen-lockfile
-      - run: pnpm dlx firebase-tools@14.18.0 emulators:exec --config firebase.ci.json --only firestore --project author-jubilee-command-center-rules-test "node --test core/security/rules-tests/firestore-nexus-rules.test.mjs"
+      - run: pnpm run test:rules
 
   wordpress-gateway:
     name: WordPress gateway

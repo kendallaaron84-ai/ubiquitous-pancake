@@ -16,7 +16,7 @@ registerHooks({
   },
 });
 
-const { authenticateDashboardRequest, DashboardRequestAuthError } = await import("../dashboard-request-auth.ts");
+const { authenticateDashboardRequest } = await import("../dashboard-request-auth.ts");
 const { activeLicenseBelongsToSession } = await import("../content-engine-access.ts");
 const { createSessionStatusHandler } = await import("../../../app/api/session/handler.ts");
 

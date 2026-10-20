@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import Layout from "@/components/layout"; 
 import PaymentReadinessBanner from "@/components/section/dashboard/PaymentReadinessBanner";
 import Link from "next/link"; 
+import Image from "next/image";
 import { onAuthStateChanged } from "firebase/auth";
 import { Plus, X, UploadCloud, Save, Edit3, Trash2, Globe } from "lucide-react";
 import { createStudioPublication } from "@/core/studio-client";
@@ -32,21 +33,59 @@ interface ProductStoryWorld {
   defaultWebsiteConnectionId?: string | null;
 }
 
+interface ProductRecord {
+  id: string;
+  title?: string;
+  type?: string;
+  status?: string;
+  category?: string;
+  description?: string;
+  synopsis?: string;
+  coverArtUrl?: string;
+  bgImageUrl?: string;
+  price?: number | string;
+  unitPrice?: number;
+  studioKey?: string;
+  wpStudioKey?: string;
+  associatedWebsite?: string;
+  websiteConnectionId?: string;
+  storyWorldId?: string;
+  universeId?: string;
+  authorIdentityId?: string;
+  chapters?: unknown[];
+  studioTracks?: unknown[];
+  ebookPayload?: unknown;
+  wordpressDeployment?: {
+    websiteConnectionId?: string;
+    status?: string;
+    publicationId?: number | string;
+    pageId?: number | string;
+    targetWpOrigin?: string;
+  };
+  _originalWebsiteConnectionId?: string;
+  _originalAssociatedWebsite?: string;
+}
+
+interface UserProfile {
+  studioKey?: string;
+  connectionStatus?: string;
+}
+
 export const dynamic = 'force-dynamic';
 
 export default function ProductsPage() {
-  const [products, setProducts] = useState<any[]>([]);
-  const [editingProduct, setEditingProduct] = useState<any | null>(null);
+  const [products, setProducts] = useState<ProductRecord[]>([]);
+  const [editingProduct, setEditingProduct] = useState<ProductRecord | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
-  const [userProfile, setUserProfile] = useState<any | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [websiteConnections, setWebsiteConnections] = useState<ProductWebsiteConnection[]>([]);
   const [storyWorlds, setStoryWorlds] = useState<ProductStoryWorld[]>([]);
   const [destinationsLoading, setDestinationsLoading] = useState(false);
   const [authorIdentities, setAuthorIdentities] = useState<AuthorIdentityOption[]>([]);
-  const [uploadProgress, setUploadProgress] = useState<{ cover: number; bg: number }>({ cover: 0, bg: 0 });
-  const [isUploading, setIsUploading] = useState<{ cover: boolean; bg: boolean }>({ cover: false, bg: false });
+  const [, setUploadProgress] = useState<{ cover: number; bg: number }>({ cover: 0, bg: 0 });
+  const [, setIsUploading] = useState<{ cover: boolean; bg: boolean }>({ cover: false, bg: false });
   const { toast } = useToast();
 
   useEffect(() => {
@@ -56,7 +95,7 @@ export default function ProductsPage() {
         const userDocRef = doc(db, "users", user.email);
         const userSnap = await getDoc(userDocRef);
         if (userSnap.exists()) {
-          setUserProfile(userSnap.data());
+          setUserProfile(userSnap.data() as UserProfile);
         }
       } else {
         setCurrentUserEmail(null);
@@ -132,7 +171,7 @@ export default function ProductsPage() {
     const selected = websiteConnections.find((website) =>
       website.websiteConnectionId === websiteConnectionId
     );
-    setEditingProduct((current: any | null) => current ? {
+    setEditingProduct((current) => current ? {
       ...current,
       websiteConnectionId,
       associatedWebsite: selected?.wordpressOrigin || current.associatedWebsite || "",
@@ -203,7 +242,7 @@ export default function ProductsPage() {
         throw new Error("The publication workspace could not be confirmed.");
       }
       const websiteConnectionId = chooseProductWebsiteConnectionId(
-        {},
+        { id: "" },
         websiteConnections,
         storyWorlds
       );
@@ -233,7 +272,7 @@ export default function ProductsPage() {
     }
   };
 
-  const handleEditProduct = (product: any) => {
+  const handleEditProduct = (product: ProductRecord) => {
     const websiteConnectionId = chooseProductWebsiteConnectionId(
       product,
       websiteConnections,
@@ -290,7 +329,7 @@ export default function ProductsPage() {
       },
       async () => {
         const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-        setEditingProduct((prev: any | null) => prev ? ({
+        setEditingProduct((prev) => prev ? ({
           ...prev,
           [type === "cover" ? "coverArtUrl" : "bgImageUrl"]: downloadUrl,
         }) : prev);
@@ -420,8 +459,8 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
       description: `Your secure product record ${canonicalAssetKey} is ready.`,
     });
 
-  } catch (err: any) {
-    toast({ title: "Deployment Failed", description: err.message, variant: "destructive" });
+  } catch (err: unknown) {
+    toast({ title: "Deployment Failed", description: err instanceof Error ? err.message : "Deployment failed.", variant: "destructive" });
   } finally {
     setIsSaving(false);
   }
@@ -439,8 +478,8 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
       }
       toast({ title: "Product Deleted", description: "Metadata removed from live Firestore catalogs." });
       setEditingProduct(null);
-    } catch (err: any) {
-      toast({ title: "Deletion Failed", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({ title: "Deletion Failed", description: err instanceof Error ? err.message : "Deletion failed.", variant: "destructive" });
     }
   };
 
@@ -492,14 +531,17 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
               Your Dynamic Staging Canvas is Empty. Deploy assets through the command center.
             </div>
           ) : (
-            products.map((product: any) => (
+            products.map((product) => (
               <div key={product.id} className="relative group overflow-hidden bg-[#2d3b5e] border border-[#40527c] rounded-xl p-5 shadow-lg flex flex-col justify-between hover:border-[#8b4528]/50 transition-all">
                 <div>
                   <div className="relative w-full h-48 rounded-md mb-4 bg-black/25 overflow-hidden">
-                    <img 
+                    <Image
                       src={product.coverArtUrl || "/placeholder.jpg"} 
-                      alt={product.title} 
-                      className="w-full h-full object-cover" 
+                      alt={product.title || "Publication cover"}
+                      fill
+                      unoptimized
+                      sizes="(max-width: 768px) 100vw, 33vw"
+                      className="object-cover"
                     />
                     <div className="absolute top-2 right-2 flex gap-1">
                       <span className={`text-[10px] border px-2 py-0.5 rounded font-mono uppercase ${product.status === 'published' ? 'bg-emerald-900/90 border-emerald-500/50 text-emerald-400' : 'bg-slate-900/90 border-white/10 text-white'}`}>
@@ -822,7 +864,7 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
 }
 
 function chooseProductWebsiteConnectionId(
-  product: Record<string, any>,
+  product: ProductRecord,
   websites: ProductWebsiteConnection[],
   worlds: ProductStoryWorld[]
 ): string {

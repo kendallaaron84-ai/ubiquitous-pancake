@@ -17,8 +17,6 @@ import {
 } from "../reader-session-cookie.ts";
 import { createMemoryDb } from "./reader-platform-test-harness.mjs";
 
-const ROOT = new URL("../../../", import.meta.url);
-
 function product(overrides = {}) {
   return {
     title: "Protected Publication",

@@ -89,7 +89,7 @@ export default function ModelSettings() {
 							defaultValue="You are a helpful AI assistant that provides accurate and concise information."
 						/>
 						<p className="text-xs text-muted-foreground">
-							System prompt that defines the AI's behavior and capabilities.
+							System prompt that defines the AI&apos;s behavior and capabilities.
 						</p>
 					</div>
 				</div>

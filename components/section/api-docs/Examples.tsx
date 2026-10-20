@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { BarChart, Code, FileText, Image, MessageSquare, Search, Settings } from "lucide-react"
+import { BarChart, Code, FileText, ImageIcon, MessageSquare, Search, Settings } from "lucide-react"
 
 const examples = [
 	{
@@ -25,7 +25,7 @@ const examples = [
 		description: "Generate images from text descriptions",
 		language: "JavaScript",
 		complexity: "Advanced",
-		icon: <Image className="h-8 w-8 text-primary" />,
+		icon: <ImageIcon className="h-8 w-8 text-primary" />,
 		tags: ["Images", "Multimodal", "Frontend"],
 	},
 	{

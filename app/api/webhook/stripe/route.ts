@@ -54,7 +54,7 @@ export async function POST(request: Request) {
       signature,
       endpointSecret
     );
-  } catch (error) {
+  } catch {
     console.error("Stripe webhook signature verification failed.");
     return NextResponse.json(
       { error: "Webhook signature verification failed." },

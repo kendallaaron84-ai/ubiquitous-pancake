@@ -1,4 +1,4 @@
-const http = require('http');
+void import('node:http').then(({ default: http }) => {
 
 // Simulating the exact metadata payload Stripe would pass back from your bookshelf order
 const mockStripePayload = JSON.stringify({
@@ -58,3 +58,4 @@ req.on('error', (e) => {
 
 req.write(mockStripePayload);
 req.end();
+});

@@ -37,17 +37,46 @@ function readMediaDuration(file: File): Promise<number> {
 
 export const dynamic = 'force-dynamic';
 
+interface StudioTrack {
+  id: string;
+  chapterNumber: number;
+  title: string;
+  fileName: string;
+  uploadStatus: string;
+  isTranscribed?: boolean;
+  transcriptUrl?: string;
+  url?: string;
+  storagePath?: string;
+  duration?: number;
+}
+
+interface StudioProduct {
+  title?: string;
+  type?: string;
+  accessError?: string;
+  vaultStatus?: string;
+  mediaType?: string;
+  studioTracks?: StudioTrack[];
+}
+
+interface TranscriptionQuote {
+  formattedAmount: string;
+  missingDurationTrackCount: number;
+  pendingTrackCount: number;
+  totalDurationHours: number;
+}
+
 export default function ProductionStudio({ params }: { params: Promise<{ assetId: string }> }) {
   const { assetId } = use(params); 
   const searchParams = useSearchParams();
 
-  const [productData, setProductData] = useState<any>(null);
+  const [productData, setProductData] = useState<StudioProduct | null>(null);
   const [activeTab, setActiveTab] = useState("media"); 
   const [mediaType, setMediaType] = useState("audio"); 
   const [vaultStatus, setVaultStatus] = useState("unprotected");
   const [encryptionLog, setEncryptionLog] = useState<string[]>([]);
-  const [tracks, setTracks] = useState<any[]>([]);
-  const [transcriptionQuote, setTranscriptionQuote] = useState<any | null>(null);
+  const [tracks, setTracks] = useState<StudioTrack[]>([]);
+  const [transcriptionQuote, setTranscriptionQuote] = useState<TranscriptionQuote | null>(null);
   const [transcriptionStatus, setTranscriptionStatus] = useState("not_started");
   const [transcriptionMessage, setTranscriptionMessage] = useState("");
   const [isStartingCheckout, setIsStartingCheckout] = useState(false);
@@ -57,7 +86,7 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
     const fetchProduct = async () => {
       try {
         const payload = await loadStudioProduct(assetId);
-        const data = payload.product;
+        const data = payload.product as StudioProduct;
         setProductData(data);
         if (data.vaultStatus) setVaultStatus(data.vaultStatus);
         if (data.studioTracks) setTracks(data.studioTracks);
@@ -81,7 +110,7 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
       try {
         const data = await loadStudioTranscriptionQuote(assetId);
         if (!active) return;
-        setTranscriptionQuote(data.quote);
+        setTranscriptionQuote(data.quote as TranscriptionQuote);
         setTranscriptionStatus(data.transcriptionStatus || "not_started");
         if (data.transcriptionError) {
           setTranscriptionMessage(data.transcriptionError);
@@ -110,14 +139,14 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
   }, [assetId, searchParams]);
 
   // Unified save handler to commit current track array to Firestore
-  const saveTracksToDatabase = async (currentTracks: any[]) => {
+  const saveTracksToDatabase = async (currentTracks: StudioTrack[]) => {
     try {
       const payload = await saveStudioProduct(assetId, "save_studio_manifest", {
         tracks: currentTracks,
         mediaType,
       });
-      setProductData(payload.product);
-      setTracks(Array.isArray(payload.product?.studioTracks) ? payload.product.studioTracks : currentTracks);
+      setProductData(payload.product as StudioProduct);
+      setTracks(Array.isArray(payload.product?.studioTracks) ? payload.product.studioTracks as StudioTrack[] : currentTracks);
     } catch (e) {
       console.error("Failed to sync studio context to Firestore:", e);
       throw e;
@@ -195,7 +224,7 @@ export default function ProductionStudio({ params }: { params: Promise<{ assetId
       } else {
         setVaultStatus("unprotected");
       }
-    } catch (e) {
+    } catch {
       setVaultStatus("unprotected");
     }
   };
