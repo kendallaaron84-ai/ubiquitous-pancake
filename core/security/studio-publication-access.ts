@@ -1,4 +1,4 @@
-import { canonicalizeProtectedChapterImages } from "./protected-chapter-images.ts";
+import { storeProtectedInlineImages } from "./protected-inline-images.ts";
 
 const ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
 const PLACEHOLDER_ASSET_IDS = new Set([
@@ -438,14 +438,14 @@ function sanitizeChapters(value: unknown, assetId: string, studioKey: string) {
   }
   return value.map((raw, index) => {
     const chapter = safeObject(raw);
-    const protectedContent = canonicalizeProtectedChapterImages(
-      boundedText(chapter.textContent || chapter.content, MAX_TEXT_LENGTH),
-      (path) => assertTenantBoundStoragePath(path, assetId, studioKey)
-    );
     return {
       id: clean(chapter.id) || `chapter_${index + 1}`,
       title: boundedText(chapter.title, MAX_TITLE_LENGTH) || `Chapter ${index + 1}`,
-      textContent: protectedContent.html,
+      textContent: storeProtectedInlineImages(
+        boundedText(chapter.textContent || chapter.content, MAX_TEXT_LENGTH),
+        assetId,
+        studioKey
+      ),
     };
   });
 }

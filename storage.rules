@@ -1,0 +1,23 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function ownsEmailPath(userEmail) {
+      return request.auth != null
+        && request.auth.token.email is string
+        && request.auth.token.email.lower() == userEmail.lower();
+    }
+
+    match /users/{userEmail}/{allPaths=**} {
+      allow read, write: if ownsEmailPath(userEmail);
+    }
+
+    match /vault/audio/{userEmail}/{allPaths=**} {
+      allow read, write: if ownsEmailPath(userEmail);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

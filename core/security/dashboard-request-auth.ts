@@ -11,26 +11,73 @@ import {
 
 type RecordData = Record<string, unknown>;
 
+export interface DashboardRequestAuthDependencies {
+  readSessionCookie(request: Request): Promise<string | null>;
+  verifySession(token: string): Promise<DashboardSessionClaims>;
+  verifyIdToken(token: string): Promise<{ uid?: unknown; email?: unknown }>;
+  loadUserProfile(email: string, uid: string): Promise<RecordData | null>;
+  resolveAccessScope(email: string): DashboardSessionClaims["accessScope"];
+}
+
 export class DashboardRequestAuthError extends Error {
+  readonly status: 401 | 403 | 503;
+  readonly code: string;
+  readonly publicMessage: string;
+
   constructor(
-    readonly status: 401 | 403 | 503,
-    readonly code: string,
-    readonly publicMessage: string
+    status: 401 | 403 | 503,
+    code: string,
+    publicMessage: string
   ) {
     super(publicMessage);
     this.name = "DashboardRequestAuthError";
+    this.status = status;
+    this.code = code;
+    this.publicMessage = publicMessage;
   }
 }
 
 export async function requireDashboardRequestSession(
   request: Request
 ): Promise<DashboardSessionClaims> {
+  return authenticateDashboardRequest(request, {
+    async readSessionCookie() {
+      return (await cookies()).get(DASHBOARD_SESSION_COOKIE)?.value || null;
+    },
+    verifySession(token) {
+      return verifyDashboardSession(token, resolveDashboardSessionSecret());
+    },
+    async verifyIdToken(token) {
+      return getFirebaseAdminAuth().verifyIdToken(token);
+    },
+    async loadUserProfile(email, uid) {
+      if (!adminDb) {
+        throw new DashboardRequestAuthError(
+          503,
+          "DASHBOARD_AUTH_UNAVAILABLE",
+          "Dashboard authentication is temporarily unavailable."
+        );
+      }
+      const canonical = await adminDb.collection("users").doc(email).get();
+      const uidRecord = canonical.exists
+        ? null
+        : await adminDb.collection("users").doc(uid).get();
+      return (canonical.exists ? canonical.data() : uidRecord?.data()) as RecordData | null;
+    },
+    resolveAccessScope: resolveDashboardAccessScope,
+  });
+}
+
+export async function authenticateDashboardRequest(
+  request: Request,
+  dependencies: DashboardRequestAuthDependencies
+): Promise<DashboardSessionClaims> {
   const bearer = readBearerToken(request.headers.get("authorization"));
   if (bearer) {
-    return resolveBearerDashboardSession(bearer);
+    return resolveBearerDashboardSession(bearer, dependencies);
   }
 
-  const sessionToken = (await cookies()).get(DASHBOARD_SESSION_COOKIE)?.value;
+  const sessionToken = await dependencies.readSessionCookie(request);
   if (!sessionToken) {
     throw new DashboardRequestAuthError(
       401,
@@ -40,10 +87,7 @@ export async function requireDashboardRequestSession(
   }
 
   try {
-    return await verifyDashboardSession(
-      sessionToken,
-      resolveDashboardSessionSecret()
-    );
+    return await dependencies.verifySession(sessionToken);
   } catch {
     throw new DashboardRequestAuthError(
       401,
@@ -67,20 +111,14 @@ export function readBearerToken(value: string | null): string | null {
 }
 
 async function resolveBearerDashboardSession(
-  idToken: string
+  idToken: string,
+  dependencies: DashboardRequestAuthDependencies
 ): Promise<DashboardSessionClaims> {
-  if (!adminDb) {
-    throw new DashboardRequestAuthError(
-      503,
-      "DASHBOARD_AUTH_UNAVAILABLE",
-      "Dashboard authentication is temporarily unavailable."
-    );
-  }
-
   let claims;
   try {
-    claims = await getFirebaseAdminAuth().verifyIdToken(idToken);
-  } catch {
+    claims = await dependencies.verifyIdToken(idToken);
+  } catch (error) {
+    if (error instanceof DashboardRequestAuthError) throw error;
     throw new DashboardRequestAuthError(
       401,
       "DASHBOARD_BEARER_INVALID",
@@ -98,13 +136,7 @@ async function resolveBearerDashboardSession(
     );
   }
 
-  const canonical = await adminDb.collection("users").doc(email).get();
-  const uidRecord = canonical.exists
-    ? null
-    : await adminDb.collection("users").doc(uid).get();
-  const userData = (canonical.exists ? canonical.data() : uidRecord?.data()) as
-    | RecordData
-    | undefined;
+  const userData = await dependencies.loadUserProfile(email, uid);
   const profileEmail = clean(userData?.email).toLowerCase();
   if (profileEmail && profileEmail !== email) {
     throw new DashboardRequestAuthError(
@@ -118,7 +150,7 @@ async function resolveBearerDashboardSession(
     uid,
     email,
     studioKey: clean(userData?.studioKey) || null,
-    accessScope: resolveDashboardAccessScope(email),
+    accessScope: dependencies.resolveAccessScope(email),
   };
 }
 

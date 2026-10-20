@@ -2,11 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Layout from "@/components/layout";
-import { db } from "@/core/firebase";
-import { 
-  collection, doc, onSnapshot, setDoc, addDoc, 
-  getDocs, writeBatch, serverTimestamp 
-} from "firebase/firestore";
+import { AUTOMATION_STEP_TEMPLATES as STEP_TEMPLATES } from "@/core/automation-step-templates";
 import { 
   Terminal as TerminalIcon, Play, RefreshCw, CheckCircle2, 
   XCircle, AlertTriangle, ShieldCheck, Database, LayoutGrid, 
@@ -16,39 +12,6 @@ import { useToast } from "@/hooks/use-toast";
 
 export const dynamic = 'force-dynamic';
 
-// 23 Integration test points template definitions
-const STEP_TEMPLATES = [
-  // 1. Content Creation & Onboarding (Steps 1–7)
-  { id: "step_1", name: "Step 1: User Onboarding Flow", category: "onboarding", description: "Verifies user signup form and active session cookie generation." },
-  { id: "step_2", name: "Step 2: Ingest Manuscript Document", category: "onboarding", description: "Uploads raw text manuscript to secure CDN asset directory." },
-  { id: "step_3", name: "Step 3: Parse Sections & Structural Hierarchy", category: "onboarding", description: "Processes manuscript sections, titles, and table of contents." },
-  { id: "step_4", name: "Step 4: Generate Firebase Audiobook", category: "onboarding", description: "Invokes KOBA-I Studio synthesize audiobook audio tracks." },
-  { id: "step_5", name: "Step 5: Publish Product Metadata (CPT)", category: "onboarding", description: "Publishes product details to custom WordPress post type endpoint." },
-  { id: "step_6", name: "Step 6: Generate Cover Art Graphics", category: "onboarding", description: "Triggers generative image pipelines to create high-resolution book cover art." },
-  { id: "step_7", name: "Step 7: Verify WordPress CPT Sync Pipeline", category: "onboarding", description: "Validates that the production asset key maps cleanly to the custom koba_publication post type endpoint." },
-
-  // 2. Stripe & Product Deployments (Steps 8–17)
-  { id: "step_8", name: "Step 8: Verify Bookshelf License Activation", category: "onboarding", description: "Asserts that the public catalog handles shortcode delivery via active entries in the plugin_licenses schema." },
-  { id: "step_9", name: "Step 9: Verify Stripe Connect Merchant Authorization", category: "onboarding", description: "Validates merchant ID authentication tokens against active platform profiles." },
-  { id: "step_10", name: "Step 10: Verify Dynamic Entitlement Provisioning", category: "onboarding", description: "Asserts that a successful payment intent successfully generates user access rights maps in Firestore." },
-  { id: "step_11", name: "Step 11: Deploy Stripe Webhook Listeners", category: "stripe", description: "Listens for payment intent success signals and fires CDN provisioning." },
-  { id: "step_12", name: "Step 12: [WIP] Verify Author Modular Purchasing (A-La-Carte)", category: "stripe", description: "Tests user tier upgrades and billing frequency intervals." },
-  { id: "step_13", name: "Step 13: [WIP] Verify Author Subscription Packages (Recurring)", category: "stripe", description: "Creates cryptographically-signed license keys upon payment." },
-  { id: "step_14", name: "Step 14: Test Credit Card Checkout Flows", category: "stripe", description: "Simulates automated credit card purchase cycles in sandbox environment." },
-  { id: "step_15", name: "Step 15: Verify Dynamic Entitlement Authorization", category: "stripe", description: "Validates that a successful purchase generates an active entitlement matrix, securely gating access to the requested asset without exposing direct file downloads." },
-  { id: "step_16", name: "Step 16: Audit Platform Revenue Splitting", category: "stripe", description: "Verifies that Stripe Connect split-payout logic correctly routes 100% of the transaction volume directly to the connected author account by default, while supporting dynamic platform fee commission deductions when custom commercial terms are applied." },
-  { id: "step_17", name: "Step 17: Verify Secure Gated Media Streaming", category: "stripe", description: "Validates the generation of temporary, 10-hour signed access tokens for direct web player streaming, ensuring media assets remain private and unshared." },
-
-  // 3. WordPress & Bookshelf Validations (Steps 18–23)
-  { id: "step_18", name: "Step 18: Verify Universal Page Builder Rendering Engine", category: "wordpress", description: "Audits universal shortcode injection and asset schema initialization, ensuring compatibility across Gutenberg, Divi, Beaver Builder, and classic content layouts." },
-  { id: "step_19", name: "Step 19: Verify Dynamic Client Runtime Metadata Injection", category: "wordpress", description: "Validates that the plugin runtime securely streams live author profiles, asset metadata schemas, and real-time pricing directly from the Firestore cloud layer without duplicating data into local WordPress postmeta tables." },
-  { id: "step_20", name: "Step 20: [BACKLOG] Validate Audiobook RSS Feed Generation", category: "wordpress", description: "FUTURE EXPANSION: Audits the generation of secure, tokenized XML syndication feeds for external podcast/audiobook player integrations. Currently unbuilt." },
-  { id: "step_21", name: "Step 21: Verify Cloud Media Storage Hotlink Prevention", category: "wordpress", description: "Validates that raw media asset URLs stored in the cloud storage bucket throw a 403 Forbidden error when accessed directly without a valid, non-expired 10-hour cryptographic signature token." },
-  { id: "step_22", name: "Step 22: Validate Author Workbench Layout Fidelity", category: "wordpress", description: "Verifies that the content engine accurately renders the author's custom text formatting, structural layouts, and embedded images inside the Jubilee Works media player component exactly as configured in the backend workbench." },
-  { id: "step_22b", name: "Step 22b: [BACKLOG] Enforce EPUB Standard Validation Checks", category: "wordpress", description: "FUTURE EXPANSION: Audits uploaded .epub digital package structures for compliance with IDPF/W3C schema standards before unpacking them into the layout engine. Currently unbuilt." },
-  { id: "step_23", name: "Step 23: Complete Bookshelf Styling & Interactivity Audit", category: "wordpress", description: "Verifies that the core CSS stylesheets and interactive JavaScript packages load seamlessly and render with absolute visual fidelity when injected via shortcode on an external, newly initialized WordPress site instance." },
-];
-
 export default function AutomationCenterPage() {
   const [activeCategory, setActiveCategory] = useState<string>("all");
   const [dbSteps, setDbSteps] = useState<Record<string, any>>({});
@@ -57,24 +20,30 @@ export default function AutomationCenterPage() {
   const [syncing, setSyncing] = useState<boolean>(true);
   const { toast } = useToast();
 
-  // Subscribe to real-time updates from Firestore steps collection
+  const refreshSteps = async () => {
+    const response = await fetch("/api/admin/automation-state", {
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.success) {
+      throw new Error(payload?.error || "Automation state is unavailable.");
+    }
+    setDbSteps(payload.steps || {});
+  };
+
+  // Poll the owner-only server projection; browsers never access global collections directly.
   useEffect(() => {
     setSyncing(true);
-    const stepsCollection = collection(db, "steps");
-    
-    const unsubscribe = onSnapshot(stepsCollection, (snapshot) => {
-      const stepData: Record<string, any> = {};
-      snapshot.forEach((doc) => {
-        stepData[doc.id] = doc.data();
-      });
-      setDbSteps(stepData);
-      setSyncing(false);
-    }, (error) => {
+    let active = true;
+    const load = () => refreshSteps().catch((error) => {
       console.error("Firestore sync error: ", error);
-      setSyncing(false);
+    }).finally(() => {
+      if (active) setSyncing(false);
     });
-
-    return () => unsubscribe();
+    void load();
+    const interval = window.setInterval(load, 5000);
+    return () => { active = false; window.clearInterval(interval); };
   }, []);
 
   // Handler to execute or retry individual step
@@ -144,27 +113,15 @@ export default function AutomationCenterPage() {
   const handleSeedDatabaseSteps = async () => {
     setSyncing(true);
     try {
-      const batch = writeBatch(db);
-      
-      STEP_TEMPLATES.forEach((step) => {
-        const docRef = doc(db, "steps", step.id);
-        
-        // Define default seed data matching backend expectations
-        const seedPayload = {
-          step_name: step.name,
-          status: "idle",
-          category: step.category,
-          asset_key: `asset_${step.id}`,
-          expected_visibility: "Active",
-          expected_price: "49.99",
-          expected_stripe_account: "acct_12345",
-          execution_history: []
-        };
-        
-        batch.set(docRef, seedPayload, { merge: true });
+      const response = await fetch("/api/admin/automation-state", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "seed_steps" }),
       });
-
-      await batch.commit();
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.success) throw new Error(payload?.error || "The test suite could not be initialized.");
+      await refreshSteps();
       toast({
         title: "Test Suite Initialized",
         description: "Successfully seeded all 23 automation integration steps into Firestore collection.",
@@ -184,35 +141,18 @@ export default function AutomationCenterPage() {
   // Snapshot/Save view state method for future auditing compliance
   const handleSaveViewSnapshot = async () => {
     try {
-      const currentRunState = STEP_TEMPLATES.map(item => {
-        const liveData = dbSteps[item.id] || {};
-        return {
-          id: item.id,
-          name: item.name,
-          category: item.category,
-          status: liveData.status || "idle",
-          latest_log: liveData.execution_history?.length > 0 
-            ? liveData.execution_history[liveData.execution_history.length - 1] 
-            : null
-        };
+      const response = await fetch("/api/admin/automation-state", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save_snapshot" }),
       });
-
-      const totalSuccess = currentRunState.filter(s => s.status === "success").length;
-      const totalFailed = currentRunState.filter(s => s.status === "failed").length;
-
-      await addDoc(collection(db, "saved_test_runs"), {
-        timestamp: serverTimestamp(),
-        totalSteps: 23,
-        successCount: totalSuccess,
-        failedCount: totalFailed,
-        states: currentRunState,
-        complianceVerified: totalFailed === 0 && totalSuccess > 0,
-        auditedBy: "Jubilee Compliance Core"
-      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.success) throw new Error(payload?.error || "The snapshot could not be saved.");
 
       toast({
         title: "Snapshot Captured Successfully",
-        description: `Deployment layout run saved with ${totalSuccess} compliant points. Captured in saved_test_runs collection.`,
+        description: `Deployment layout run saved with ${payload.successCount} compliant points.`,
       });
     } catch (err: any) {
       console.error(err);

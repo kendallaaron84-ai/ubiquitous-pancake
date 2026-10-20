@@ -259,21 +259,37 @@ test("complete chapter manifest uses only namespaced signed URLs and never raw p
   ].sort());
 });
 
-test("reflowable chapter illustrations resolve canonical paths only after reader authorization", async () => {
-  const storagePath = "studio/ebk_protected/studio_a/illustration/tree.png";
-  const [chapter] = await buildProtectedPublicationChapters({
+test("mixed-content inline illustrations are signed and raw Storage identity is removed", async () => {
+  const storagePath = "studio/ebk_mixed/STUDIO-A/illustrated_page/inline.png";
+  const chapters = await buildProtectedPublicationChapters({
     chapters: [{
-      id: "chapter_one",
-      textContent: `<p>Before</p><img src="" data-koba-storage-path="${storagePath}" alt="Tree"><p>After</p>`,
+      id: "chapter-one",
+      title: "One",
+      textContent: `<p>Before</p><figure><img alt="Art" data-koba-storage-path="${storagePath}"></figure><p>After</p>`,
     }],
-    tenantId: "studio_a",
-    assetId: "ebk_protected",
+    tenantId: "STUDIO-A",
+    assetId: "ebk_mixed",
     publicationType: "ebook",
-    signStoragePath: async (path) => `https://signed.example/reader/${encodeURIComponent(path)}`,
+    signStoragePath: async (path) => `https://signed.example/image?path=${encodeURIComponent(path)}`,
   });
-  assert.match(chapter.textContent, /https:\/\/signed\.example\/reader/);
-  assert.match(chapter.textContent, /data-koba-storage-path=/);
-  assert.doesNotMatch(chapter.textContent, /src=""/);
+  const html = chapters[0].textContent;
+  assert.match(html, /<p>Before<\/p>/);
+  assert.match(html, /<p>After<\/p>/);
+  assert.match(html, /src="https:\/\/signed\.example\/image\?path=/);
+  assert.doesNotMatch(html, /data-koba-storage-path|studio\/ebk_mixed/);
+});
+
+test("mixed-content inline illustrations fail closed for a same-asset cross-tenant path", async () => {
+  await assert.rejects(
+    () => buildProtectedPublicationChapters({
+      chapters: [{ textContent: '<img data-koba-storage-path="studio/ebk_mixed/STUDIO-B/illustrated_page/inline.png">' }],
+      tenantId: "STUDIO-A",
+      assetId: "ebk_mixed",
+      publicationType: "ebook",
+      signStoragePath: async () => "https://signed.example/image",
+    }),
+    (error) => error.code === READER_MEDIA_ERROR_CODES.manifestUnavailable
+  );
 });
 
 test("missing or cross-namespace protected media pointers fail closed", async () => {

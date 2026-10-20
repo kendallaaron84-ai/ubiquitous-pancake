@@ -51,6 +51,7 @@ const PUBLIC_API_EXACT_PATHS = new Set([
 const INTERNALLY_AUTHENTICATED_API_EXACT_PATHS = new Set([
   "/api/checkout/create-session",
   "/api/checkout/create-session/complete",
+  "/api/audiobook-requests",
 ]);
 const MVP_PAGE_PREFIXES = [
   "/products",

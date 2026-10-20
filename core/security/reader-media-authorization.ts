@@ -4,7 +4,6 @@ import {
 } from "./services/service-support.ts";
 import { requireActiveVerifiedReader } from "./services/reader-profile-service.ts";
 import { isExplicitlyFreePublication } from "./reader-free-acquisition.ts";
-import { attachProtectedChapterImageUrls } from "./protected-chapter-images.ts";
 import { exactReaderOrigin, exactReaderUrl } from "./reader-origin-policy.ts";
 
 const ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
@@ -332,6 +331,25 @@ export async function buildProtectedPublicationChapters(input: {
       const mediaStoragePath = text(rawMediaStoragePath);
       const transcriptStoragePath = text(rawTranscriptStoragePath);
 
+      if (input.publicationType === "ebook" && typeof safeChapter.textContent === "string") {
+        try {
+          const { renderProtectedInlineImages } = await import("./protected-inline-images.ts");
+          safeChapter.textContent = await renderProtectedInlineImages(
+            safeChapter.textContent,
+            input.assetId,
+            input.tenantId,
+            input.signStoragePath,
+            false
+          );
+        } catch {
+          throw new ReaderMediaAuthorizationError(
+            503,
+            READER_MEDIA_ERROR_CODES.manifestUnavailable,
+            "Protected inline illustrations are temporarily unavailable."
+          );
+        }
+      }
+
       if (input.publicationType !== "ebook") {
         if (!mediaStoragePath || !mediaStoragePath.startsWith(mediaPrefix)) {
           throw new ReaderMediaAuthorizationError(
@@ -385,27 +403,6 @@ export async function buildProtectedPublicationChapters(input: {
           }
           return safePage;
         }));
-      }
-
-      if (input.publicationType === "ebook" && typeof chapterData.textContent === "string") {
-        try {
-          safeChapter.textContent = await attachProtectedChapterImageUrls(
-            chapterData.textContent,
-            (path) => {
-              if (!path.startsWith(mediaPrefix) || path.includes("..") || path.includes("\\")) {
-                throw new Error("Protected illustration path is outside this publication.");
-              }
-              return path;
-            },
-            input.signStoragePath
-          );
-        } catch {
-          throw new ReaderMediaAuthorizationError(
-            503,
-            READER_MEDIA_ERROR_CODES.manifestUnavailable,
-            "Protected chapter illustrations are temporarily unavailable."
-          );
-        }
       }
 
       if (

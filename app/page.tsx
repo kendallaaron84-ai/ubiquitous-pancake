@@ -15,8 +15,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { db } from "@/core/firebase";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { Sparkles, FileText, Headphones, Loader2 } from "lucide-react";
 
 export default function Home() {
@@ -26,7 +24,6 @@ export default function Home() {
 	// Track local form control states right inline
 	const [manuscriptTitle, setManuscriptTitle] = useState("");
 	const [targetAuthorName, setTargetAuthorName] = useState("");
-	const [targetAuthorEmail, setTargetAuthorEmail] = useState("");
 	const [loading, setLoading] = useState(false);
 	const [isOpen, setIsOpen] = useState(false); // Controls closing the modal block on success
 	const marketingPlanner = useMarketingBudgetPlanner();
@@ -56,22 +53,21 @@ export default function Home() {
 		// 🚀 RUN SANITIZATION: Clean both fields before validation or processing
 		const sanitizedTitle = cleanJsonString(manuscriptTitle);
 		const sanitizedName = cleanJsonString(targetAuthorName);
-		const sanitizedEmail = cleanJsonString(targetAuthorEmail).toLowerCase();
 
-		if (!sanitizedTitle || !sanitizedEmail) return;
+		if (!sanitizedTitle) return;
 		setLoading(true);
 
 		try {
-			// 🔑 FIRING SCHEMA BUILD: Adds sanitized records straight to Firestore
-			await addDoc(collection(db, "audiobook_requests"), {
-				title: sanitizedTitle,
-				authorName: sanitizedName || null,
-				authorEmail: sanitizedEmail,
-				currentStage: 1, // Stage 1: Ingestion
-				queuePosition: 2, // Standard visual scarcity offset
-				createdAt: serverTimestamp(),
-				updatedAt: serverTimestamp()
+			const response = await fetch("/api/audiobook-requests", {
+				method: "POST",
+				credentials: "same-origin",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ title: sanitizedTitle, authorName: sanitizedName }),
 			});
+			const payload = await response.json().catch(() => null);
+			if (!response.ok || !payload?.success) {
+				throw new Error(payload?.error || "The narration request could not be submitted.");
+			}
 
 			toast({
 				title: "Narration request received",
@@ -80,7 +76,6 @@ export default function Home() {
 
 			setManuscriptTitle("");
 			setTargetAuthorName("");
-			setTargetAuthorEmail("");
 			setIsOpen(false); // Shut the modal overlay
 
 			// 🚀 THE REDIRECT: Safely routes you directly to the Audio-Narration Tracker panel
@@ -143,17 +138,6 @@ export default function Home() {
 											value={targetAuthorName}
 											onChange={(e) => setTargetAuthorName(e.target.value)}
 										required
-											disabled={loading}
-										/>
-									</div>
-									<div className="space-y-2">
-										<label className="text-xs font-semibold text-muted-foreground">Author Email</label>
-										<Input 
-											type="email" 
-											placeholder="author@domain.com" 
-											value={targetAuthorEmail}
-											onChange={(e) => setTargetAuthorEmail(e.target.value)}
-											required 
 											disabled={loading}
 										/>
 									</div>

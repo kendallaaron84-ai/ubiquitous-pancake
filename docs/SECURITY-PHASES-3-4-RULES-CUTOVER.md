@@ -1,7 +1,7 @@
-# Phase 3/4 application remediation — rules cutover dependencies
+# Phase 3/4 application remediation — RC2 rules contract
 
-This branch does not deploy or modify Firebase rules. It reconciles the application
-against AntiG's proposed production Firestore and Storage posture.
+This branch contains the application changes and candidate Firestore/Storage rules
+as one reviewable RC2 contract. Nothing in this branch deploys either ruleset.
 
 ## Compatible after this branch
 
@@ -15,23 +15,43 @@ against AntiG's proposed production Firestore and Storage posture.
 - Raw public content/publication routes return HTTP 410.
 - Legacy Stripe destinations delegate to the canonical signature-verified webhook;
   the canonical `/api/webhook/stripe` integration is unchanged.
+- Workbench illustrations use tenant/asset-scoped signed uploads under
+  `studio/{assetId}/{studioKey}/illustrated_page/**`. Stored chapter HTML retains
+  only that protected identity; Reader manifests replace it with a short-lived
+  signed URL and reject cross-tenant pointers.
+- Admin Controls writes fixed `system_config` records only through the same-origin,
+  authenticated platform-owner API. Automation templates and snapshots use the
+  corresponding owner API; ordinary authors have no browser rule access.
+- Audiobook requests derive the author identity and StudioKey from the verified
+  Dashboard session or Firebase Bearer identity.
+- The unused Sales Funnel browser component is retired. `sales_pipeline`, `steps`,
+  and `saved_test_runs` are browser-denied by the candidate rules.
+- User profile writes use an explicit non-privileged field allowlist. Content
+  Engine, Blog Engine, Nexus, license, role, plan, StudioKey, and plugin entitlement
+  fields cannot be self-granted by a Firebase browser client.
+- Direct browser Storage is limited to the authenticated author's
+  `users/{email}/**` and `vault/audio/{email}/**` namespaces. All server-owned
+  namespaces, including `studio/**` and `system_config/**`, are denied.
 
-## STOP conditions before production rules cutover
+## Verified offline acceptance
 
-AntiG's candidate rules are not yet production-compatible with every browser feature:
+- TypeScript compilation, the complete security suite, Nexus suite, API suite, and
+  Firestore/Storage emulator contract must all pass for the exact RC2 commit.
+- HTTP-level authentication coverage exercises the actual session route handler for
+  valid cookie, valid Firebase Bearer, missing, invalid/expired, and cross-license
+  identities.
+- Emulator tests prove ordinary author profile editing remains available while
+  privileged self-grants, cross-tenant data, global configuration, automation,
+  sales, Nexus, and server-owned Storage remain denied.
 
-1. `app/workbench/[assetId]/page.tsx` uploads illustrations to `studio/**`, which the
-   candidate Storage rules deny.
-2. `components/admin-controls-modal.tsx` writes `system_config/**` directly from the
-   browser, which both candidate rules deny.
-3. Candidate Firestore privileged-field protection must explicitly cover
-   `hasContentEngineAccess`, `contentEngineEnabled`, `blogEngineEnabled`, and
-   `nexusEnabled`.
-4. `sales_pipeline`, `steps`, and `saved_test_runs` require an explicit product
-   decision (server route, tenant rule, or intentional retirement).
-5. Browser audiobook requests must derive the target author from authentication;
-   arbitrary cross-author `targetAuthorEmail` input is incompatible with tenant rules.
+## STOP conditions before production deployment
 
-Production Firestore/Storage rules deployment remains blocked until these items are
-corrected or explicitly removed from the supported release scope and independently
-regression-tested in the emulators.
+1. Deploy commands must name the intended Firebase project explicitly. The checked-in
+   `.firebaserc` still defaults to `content-engine-prod`, while the accepted Dashboard
+   browser assignment is `author-jubilee-command-center`; no implicit default is safe.
+2. `KOBA_OWNER_EMAILS` must be set to the approved platform-owner identities before
+   Admin Controls or Automation Center owner operations are accepted.
+3. The exact immutable RC2 application/rules package requires independent validation.
+4. Firestore and Storage rules need a separately authorized backup, deployment,
+   monitoring, and rollback window. Application deployment must be coordinated with
+   that cutover so neither half is released alone.

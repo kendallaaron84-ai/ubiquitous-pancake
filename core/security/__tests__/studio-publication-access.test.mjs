@@ -180,6 +180,28 @@ test("illustrated page drafts preserve intrinsic geometry and tenant-bound durab
   }), (error) => error.code === "STUDIO_UPLOAD_PATH_INVALID");
 });
 
+test("reflowable drafts retain only tenant-bound inline illustration identity", () => {
+  const storagePath = `studio/ebk_sharon/${SHARON_KEY}/illustrated_page/inline.png`;
+  const draft = buildWorkbenchDraftPatch({
+    assetId: "ebk_sharon",
+    studioKey: SHARON_KEY,
+    chapters: [{
+      id: "one",
+      title: "One",
+      textContent: `<p>Before</p><img src="https://temporary.example/read" data-koba-storage-path="${storagePath}" alt="Art"><p>After</p>`,
+    }],
+    guardrails: {},
+  });
+  assert.match(draft.chapters[0].textContent, new RegExp(`data-koba-storage-path="${storagePath}"`));
+  assert.doesNotMatch(draft.chapters[0].textContent, /temporary\.example/);
+  assert.throws(() => buildWorkbenchDraftPatch({
+    assetId: "ebk_sharon",
+    studioKey: SHARON_KEY,
+    chapters: [{ textContent: '<img data-koba-storage-path="studio/other/STUDIO-B/illustrated_page/x.png">' }],
+    guardrails: {},
+  }), /PROTECTED_INLINE_IMAGE_PATH_INVALID/);
+});
+
 test("owner-owned assets use the same exact ownership model", () => {
   const ownerSession = session({
     uid: "firebase_kendall",

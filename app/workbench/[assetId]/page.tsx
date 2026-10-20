@@ -5,7 +5,7 @@ import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, Shield
 import Link from "next/link";
 import { toast } from "@/components/ui/use-toast";
 import { ModeToggle } from "@/components/elements/mode-toggle";
-import { loadStudioMediaPreview, loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
+import { loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
 import { validateStudioImageFile } from "@/core/studio-image";
 import {
   applyProtectedIllustrationMetadata,
@@ -304,6 +304,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     image.dataset.kobaStoragePath = storagePath;
     image.alt = alt;
     image.loading = "lazy";
+    image.dataset.kobaStoragePath = storagePath;
     figure.appendChild(image);
     slot.replaceWith(figure);
     pendingInsertionSlotRef.current = null;
@@ -523,9 +524,12 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     }
     setIsUploadingImage(true);
     try {
-      const uploaded = await uploadStudioFile(assetId, file, "illustration", "image");
-      const preview = await loadStudioMediaPreview(assetId, uploaded.storagePath);
-      if (!insertImageAtSelectedPosition(preview.url, uploaded.storagePath, file.name.replace(/\.[^.]+$/, ""))) return;
+      const uploaded = await uploadStudioFile(assetId, file, "illustrated_page");
+      if (!insertImageAtSelectedPosition(
+        uploaded.previewUrl,
+        uploaded.storagePath,
+        file.name.replace(/\.[^.]+$/, "")
+      )) return;
       toast({ title: "Image inserted", description: "Save Draft to preserve it in this chapter." });
     } catch (error: any) {
       toast({ title: "Image upload failed", description: error?.message || "Please try again.", variant: "destructive" });

@@ -22,10 +22,8 @@ import {
 import { requireStudioAuthorContext } from "@/core/security/studio-publication-session";
 import { validateStudioAudioFile } from "@/core/studio-media";
 import { validateStudioImageFile } from "@/core/studio-image";
-import {
-  attachProtectedChapterImageUrls,
-  protectedChapterImagePaths,
-} from "@/core/security/protected-chapter-images";
+import { protectedChapterImagePaths } from "@/core/security/protected-chapter-images";
+import { renderProtectedInlineImages } from "@/core/security/protected-inline-images";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -168,6 +166,7 @@ export async function POST(request: Request) {
           uploadUrl: `${localMediaGateway}/storage-upload?path=${encodeURIComponent(storagePath)}`,
           storagePath,
           canonicalUrl: canonicalStorageUrl(bucketName, storagePath),
+          previewUrl: `${localMediaGateway}/storage-preview?path=${encodeURIComponent(storagePath)}`,
           contentType,
           expiresInSeconds: 600,
         },
@@ -179,11 +178,17 @@ export async function POST(request: Request) {
       expires: Date.now() + 10 * 60 * 1000,
       contentType,
     });
+    const [previewUrl] = await bucket.file(storagePath).getSignedUrl({
+      version: "v4",
+      action: "read",
+      expires: Date.now() + 60 * 60 * 1000,
+    });
     return success({
       upload: {
         uploadUrl,
         storagePath,
         canonicalUrl: canonicalStorageUrl(bucketName, storagePath),
+        previewUrl,
         contentType,
         expiresInSeconds: 600,
       },
@@ -340,10 +345,12 @@ async function studioProductWithPagePreviews(assetId: string, product: RecordDat
       ...projected,
       chapters: await Promise.all(projected.chapters.map(async (chapter) => ({
         ...chapter,
-        textContent: await attachProtectedChapterImageUrls(
+        textContent: await renderProtectedInlineImages(
           clean(chapter.textContent),
-          (path) => assertTenantBoundStoragePath(path, assetId, studioKey),
-          previewUrl
+          assetId,
+          studioKey,
+          previewUrl,
+          true
         ),
       }))),
     };

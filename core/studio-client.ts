@@ -3,6 +3,7 @@ import { validateStudioAudioFile } from "./studio-media.ts";
 export interface StudioUploadResult {
   storagePath: string;
   canonicalUrl: string;
+  previewUrl: string;
   contentType: string;
 }
 
@@ -111,6 +112,7 @@ export async function uploadStudioFile(
   return {
     storagePath: upload.storagePath,
     canonicalUrl: upload.canonicalUrl,
+    previewUrl: typeof upload.previewUrl === "string" ? upload.previewUrl : upload.canonicalUrl,
     contentType: upload.contentType,
   };
 }
