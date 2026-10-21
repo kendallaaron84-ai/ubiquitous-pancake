@@ -17,7 +17,7 @@
     "test:nexus": "node --test core/nexus/__tests__/*.test.mjs",
     "test:business": "node --test \"app/api/**/*.test.mjs\" \"scripts/acceptance/*.test.mjs\"",
     "test:content-worker": "python -m unittest discover -s services/content-engine-worker/tests -p test_*.py",
-    "test:gateway": "node --check services/wordpress-egress-gateway/index.js && node --test services/wordpress-egress-gateway/credential-reference.test.mjs",
+    "test:gateway": "node --check services/wordpress-egress-gateway/index.js && node --test services/wordpress-egress-gateway/*.test.mjs",
     "prepare": "node scripts/install-git-hooks.mjs"
   },
   "dependencies": {

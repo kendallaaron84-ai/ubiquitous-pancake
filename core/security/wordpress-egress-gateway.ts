@@ -28,6 +28,14 @@ export interface WordPressGatewayConnectionInput {
   wpAppPassword: unknown;
 }
 
+export interface StoredWordPressGatewayConnectionInput {
+  studioKey: string;
+  websiteConnectionId: string;
+  targetWpOrigin: unknown;
+  wpUsername: unknown;
+  secretCredentialRef: unknown;
+}
+
 let gatewayAuthClient: GoogleAuth | null = null;
 
 function getGatewayAuthClient(): GoogleAuth {
@@ -128,6 +136,80 @@ export async function verifyAndProvisionThroughGateway(
     );
   }
   return { studioKey: clean(input.studioKey), targetWpOrigin, wpUsername, secretCredentialRef };
+}
+
+export async function verifyStoredThroughGateway(
+  gatewayUrl: string,
+  input: StoredWordPressGatewayConnectionInput,
+): Promise<void> {
+  let gatewayResponse: { status: number; data: WordPressGatewayResponse };
+  try {
+    const authenticatedClient = await getGatewayAuthClient().getIdTokenClient(gatewayUrl);
+    const response = await authenticatedClient.request<WordPressGatewayResponse>({
+      url: `${gatewayUrl}/verify-stored-wordpress`,
+      method: "POST",
+      data: input,
+      timeout: 20_000,
+      validateStatus: () => true,
+    });
+    gatewayResponse = { status: response.status, data: response.data || {} };
+  } catch (error: unknown) {
+    console.error("[WordPress Connection] Stored-connection gateway request failed.", {
+      name: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw new WordPressConnectionDiagnosticError(
+      "NETWORK_TIMEOUT_TLS",
+      "KOBA-I could not reach the secure WordPress connection service. Please retry.",
+    );
+  }
+
+  const payload = gatewayResponse.data;
+  if (gatewayResponse.status < 200 || gatewayResponse.status >= 300) {
+    throw gatewayDiagnosticError(gatewayResponse.status, payload);
+  }
+
+  if (payload.success !== true) {
+    throw new WordPressConnectionDiagnosticError(
+      "VAULT_PROVISION_FAIL",
+      "KOBA-I could not verify the saved WordPress connection. Please retry.",
+    );
+  }
+}
+
+function gatewayDiagnosticError(
+  status: number,
+  payload: WordPressGatewayResponse,
+): WordPressConnectionDiagnosticError {
+  const gatewayCode = clean(payload.code);
+  const publicMessage = clean(payload.error) ||
+    "KOBA-I could not complete the secure WordPress connection.";
+  const diagnosticCodes = new Set<WordPressConnectionDiagnosticCode>([
+    "INVALID_CREDENTIALS",
+    "INSUFFICIENT_PERMISSIONS",
+    "FIREWALL_CHALLENGE",
+    "NETWORK_TIMEOUT_TLS",
+    "REST_API_DISABLED",
+    "VAULT_PROVISION_FAIL",
+  ]);
+  if (diagnosticCodes.has(gatewayCode as WordPressConnectionDiagnosticCode)) {
+    return new WordPressConnectionDiagnosticError(
+      gatewayCode as WordPressConnectionDiagnosticCode,
+      publicMessage,
+      { httpStatus: status },
+    );
+  }
+  if (status === 401 || status === 403) {
+    return new WordPressConnectionDiagnosticError(
+      "VAULT_PROVISION_FAIL",
+      "KOBA-I could not authorize the secure WordPress connection service. Please retry.",
+    );
+  }
+  return new WordPressConnectionDiagnosticError(
+    "VAULT_PROVISION_FAIL",
+    publicMessage,
+    { httpStatus: status },
+  );
 }
 
 function clean(value: unknown): string {
