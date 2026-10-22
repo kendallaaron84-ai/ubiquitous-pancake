@@ -20,7 +20,7 @@ REGION = os.environ.get("GCP_REGION", "us-central1").strip()
 ARTICLE_REGION = os.environ.get("VERTEX_ARTICLE_REGION", "global").strip()
 IMAGE_REGION = os.environ.get("VERTEX_IMAGE_REGION", "global").strip()
 ARTICLE_MODEL = os.environ.get("ARTICLE_MODEL", "gemini-3.1-pro-preview").strip()
-ARTWORK_MODEL = os.environ.get("ARTWORK_MODEL", "gemini-3.1-flash-image").strip()
+ARTWORK_MODEL = os.environ.get("ARTWORK_MODEL", "gemini-nano-banana-2.1").strip()
 TRANSCRIPTION_MODEL = os.environ.get("TRANSCRIPTION_MODEL", "gemini-2.5-flash").strip()
 TRANSCRIPT_BUCKET = os.environ.get("FIREBASE_STORAGE_BUCKET", "").strip()
 EXPECTED_QUEUE = os.environ.get("CLOUD_TASKS_QUEUE", "content-generation-queue").strip()
@@ -820,7 +820,11 @@ Guardrails:
 - Address the long-tail search intent in a useful H2 when supplied.
 - Avoid keyword stuffing and write at roughly a fifth- to sixth-grade level.
 - Include a concise The Short Answer section and three FAQ questions.
-- Generate social copy and a cinematic featured-image prompt with no text or logos.
+- Generate social copy and a social-ready featured-image direction tied directly to the article's central argument.
+- The hero_image_prompt must name one visually specific concept and one exact, accurate overlay headline of 2-6 words.
+- Reuse relevant visual tone or color guidance from the authoritative brand context when available.
+- Keep the composition legible at social-thumbnail size with clear subject/overlay separation and safe margins for a 16:9 crop.
+- Do not invent claims, add a logo, or request any text beyond the exact short overlay headline.
 
 Return strict JSON with exactly these keys:
 seo_title, seo_description, blog_post_html, focus_keyword,
@@ -1150,7 +1154,11 @@ Requirements:
 - Put the exact topic phrase near the beginning and use it naturally.
 - Include a concise "The Short Answer" section and three FAQ questions.
 - Prepare search metadata and social copy without exaggerated promises.
-- Include a detailed cinematic featured-image prompt with no text or logos.
+- Include a social-ready featured-image direction tied directly to the article's central argument.
+- The hero_image_prompt must name one visually specific concept and one exact, accurate overlay headline of 2-6 words.
+- Reuse relevant visual tone or color guidance from the configured brand context when available.
+- Keep the composition legible at social-thumbnail size with clear subject/overlay separation and safe margins for a 16:9 crop.
+- Do not invent claims, add a logo, or request any text beyond the exact short overlay headline.
 - Do not insert placeholder image tags; featured media is attached separately.
 
 Return strict JSON with exactly these keys:
@@ -1314,13 +1322,25 @@ def resolve_blueprint_generation_mode(data: dict[str, Any]) -> str:
     raise PermanentTaskError("Blueprint schema is unsupported for worker execution.")
 
 
+def build_featured_image_generation_prompt(prompt: str) -> str:
+    creative_direction = re.sub(r"\s+", " ", str(prompt or "")).strip()
+    if not creative_direction:
+        raise RuntimeError("The featured-image creative direction is empty.")
+    return (
+        "Create one polished 16:9 editorial featured graphic for social sharing. "
+        "Make the image clearly relevant to the supplied article direction, with one strong focal subject, "
+        "clean visual hierarchy, and safe margins so the design remains readable in social thumbnails. "
+        "Render exactly the short overlay headline specified in the creative direction, once, with exact spelling "
+        "and punctuation. Use large, high-contrast, accessible typography. Do not add any other words, captions, "
+        "logos, trademarks, signatures, or watermarks. Reuse supplied brand colors and visual tone when present. "
+        f"Creative direction: {creative_direction}"
+    )
+
+
 def generate_featured_image(prompt: str) -> bytes:
     response = image_client.models.generate_content(
         model=ARTWORK_MODEL,
-        contents=(
-            "Generate one polished, cinematic featured image with no text or logos. "
-            f"Use this creative direction: {prompt}"
-        ),
+        contents=build_featured_image_generation_prompt(prompt),
         config=types.GenerateContentConfig(
             response_modalities=[types.Modality.IMAGE],
             image_config=types.ImageConfig(

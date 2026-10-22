@@ -595,6 +595,68 @@ class WorkerContractTests(unittest.TestCase):
         self.assertIn("Mara tends the silver harbor lantern", prompt)
         self.assertIn("Queen Iris is the traitor", prompt)
 
+    def test_business_prompt_requires_article_relevant_social_graphic_and_brand_context(self):
+        profile = {
+            "businessName": "KOBA-I",
+            "brandSummary": "Author technology grounded in trust",
+            "coreValues": "Trust and ownership",
+            "toneOfVoice": "Clear, warm, and direct",
+            "targetAudience": "Independent authors",
+        }
+        prompt = worker.build_grounded_article_prompt(
+            blueprint=nexus_blueprint("business_brand"),
+            business_context=profile,
+            story_context=None,
+            strategy_context=[],
+        )
+        self.assertIn("Author technology grounded in trust", prompt)
+        self.assertIn("tied directly to the article's central argument", prompt)
+        self.assertIn("exact, accurate overlay headline of 2-6 words", prompt)
+        self.assertIn("brand context when available", prompt)
+        self.assertIn("safe margins for a 16:9 crop", prompt)
+
+    def test_legacy_prompt_uses_same_featured_image_contract(self):
+        with patch.object(worker, "fetch_tier_1_core_library", return_value="CORE"), patch.object(
+            worker, "fetch_tier_2_profile", return_value="Brand tone: warm and direct"
+        ), patch.object(worker, "fetch_book_context", return_value=""):
+            prompt = worker.build_article_prompt({
+                "topicTitle": "Why independent authors own their audience",
+                "authorEmail": "author@example.com",
+                "targetAudience": "Independent authors",
+            })
+        self.assertIn("Brand tone: warm and direct", prompt)
+        self.assertIn("exact, accurate overlay headline of 2-6 words", prompt)
+        self.assertIn("social-thumbnail size", prompt)
+
+    def test_featured_image_prompt_preserves_exact_overlay_and_rejects_extra_text(self):
+        prompt = worker.build_featured_image_generation_prompt(
+            "A confident author at a desk. Exact overlay headline: OWN YOUR AUDIENCE. Brand colors: navy and gold."
+        )
+        self.assertIn("Render exactly the short overlay headline", prompt)
+        self.assertIn("exact spelling and punctuation", prompt)
+        self.assertIn("Do not add any other words", prompt)
+        self.assertIn("OWN YOUR AUDIENCE", prompt)
+        self.assertIn("navy and gold", prompt)
+        with self.assertRaisesRegex(RuntimeError, "creative direction is empty"):
+            worker.build_featured_image_generation_prompt("  ")
+
+    def test_featured_image_generation_uses_selected_model_and_social_aspect_ratio(self):
+        result = python_types.SimpleNamespace(
+            parts=[python_types.SimpleNamespace(
+                inline_data=python_types.SimpleNamespace(data=b"synthetic-jpeg")
+            )]
+        )
+        worker.image_client.models.generate_content = MagicMock(return_value=result)
+        image = worker.generate_featured_image(
+            "Editorial portrait. Exact overlay headline: BUILD WITH PURPOSE."
+        )
+        self.assertEqual(b"synthetic-jpeg", image)
+        call = worker.image_client.models.generate_content.call_args.kwargs
+        self.assertEqual(worker.ARTWORK_MODEL, call["model"])
+        self.assertIn("BUILD WITH PURPOSE", call["contents"])
+        self.assertEqual("16:9", call["config"].image_config.aspect_ratio)
+        self.assertEqual("image/jpeg", call["config"].image_config.output_mime_type)
+
     def test_failed_grounding_raises_permanent_error(self):
         story = {"completeReferenceGuide": complete_guide_text(), "chunks": [{"text": complete_guide_text()}], "guardrails": {"neverReveal": ""}}
         article = dict(nexus_blueprint())
