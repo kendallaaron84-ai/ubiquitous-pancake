@@ -1,0 +1,6 @@
+# Baseline: 4caea13411c1cc2218848c2775e81aeffd0da330
+# Generated offline: 2026-10-13
+7fb026bbfa56d1938795c5c303b59f23232b907d1a805aff651be16754f51308  app/workbench/[assetId]/page.tsx
+3a05c439be6b487362d541c9b7c46a2c43bbd70df3df486f6d69490e5b9bc904  core/studio-illustration-metadata.ts
+f5a976f4a5e804501aa4dc94a2d2a2180bedbf03f21c9462311da3e53f749cd6  core/security/__tests__/workbench-illustration-metadata.test.mjs
+c1194dfd13058a9c077d7f73b57ff741ea6df3c9580a7f2307ad80f4f18fbd2a  docs/WORKBENCH-ILLUSTRATION-METADATA-RC.md

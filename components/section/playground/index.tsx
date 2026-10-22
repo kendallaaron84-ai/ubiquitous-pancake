@@ -3,20 +3,12 @@
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Download, Share } from "lucide-react"
-import { Dispatch, SetStateAction, useState } from "react"
+import { useState } from "react"
 import ChatTab from "./ChatTab"
 import CompletionTab from "./CompletionTab"
 import ImageGenerationTab from "./ImageGenerationTab"
 
 type TabValue = "chat" | "completion" | "image"
-
-interface CompletionTabProps {
-	prompt: string
-	setPrompt: Dispatch<SetStateAction<string>>
-	response: string
-	isGenerating: boolean
-	handleGenerate: () => void
-}
 
 export default function Playground() {
 	const [activeTab, setActiveTab] = useState<TabValue>("chat")

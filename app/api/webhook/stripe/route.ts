@@ -2,18 +2,20 @@ import { NextResponse } from "next/server";
 import Stripe from "stripe";
 
 import { provisionAuthorPlugin } from "@/core/security/author-provisioning";
-import { processListenerPurchaseEntitlement } from "@/core/security/listener-entitlement";
 import { processAuthorTranscriptionPayment } from "@/core/security/transcription-payment";
 import { processAuthorSubscriptionPayment } from "@/core/security/author-subscription";
 import { syncConnectedAccountFromWebhook } from "@/core/security/stripe-connect-server";
 import { processCanonicalReaderPurchase } from "@/core/security/reader-platform-stripe";
-import { processReaderPurchaseWebhook } from "@/core/security/reader-purchase-webhook";
 import { processCanonicalReaderFinancialEvent } from "@/core/security/reader-platform-financial-events";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
+function requireStripe(): Stripe {
+  const secretKey = process.env.STRIPE_SECRET_KEY?.trim();
+  if (!secretKey) throw new Error("STRIPE_CONFIGURATION_MISSING");
+  return new Stripe(secretKey);
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown webhook failure.";
@@ -47,12 +49,12 @@ export async function POST(request: Request) {
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(
+    event = Stripe.webhooks.constructEvent(
       body,
       signature,
       endpointSecret
     );
-  } catch (error) {
+  } catch {
     console.error("Stripe webhook signature verification failed.");
     return NextResponse.json(
       { error: "Webhook signature verification failed." },
@@ -136,25 +138,15 @@ export async function POST(request: Request) {
 
   if (isListenerPurchase) {
     try {
-      const result = await processReaderPurchaseWebhook(event, session, {
-        recordCanonicalPurchase: (stripeEvent, checkoutSession) =>
-          processCanonicalReaderPurchase(stripeEvent, checkoutSession, stripe),
-        fulfillLegacyPurchase: processListenerPurchaseEntitlement,
-      });
-      if (!result.legacy.success) {
-        console.warn(
-          "Legacy listener fulfillment failed after canonical purchase recording.",
-          { status: result.legacy.status }
-        );
-      }
+      const stripe = requireStripe();
+      const result = await processCanonicalReaderPurchase(event, session, stripe);
       return NextResponse.json(
         {
           success: true,
           listenerMode: true,
-          legacyStatus: result.legacy.status,
-          readerPlatformPurchaseId: result.canonical.purchaseId,
-          readerPlatformClaimId: result.canonical.claimId,
-          readerPlatformReplay: result.canonical.replay,
+          readerPlatformPurchaseId: result.purchaseId,
+          readerPlatformClaimId: result.claimId,
+          readerPlatformReplay: result.replay,
           stripeSessionId: session.id,
         },
         { status: 200 }
@@ -181,6 +173,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    const stripe = requireStripe();
     const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
     const itemAnalysis: Array<Record<string, unknown>> = [];
     let hasAudiobookPlayer = false;

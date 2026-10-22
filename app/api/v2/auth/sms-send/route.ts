@@ -1,3 +1,5 @@
-export const dynamic = "force-dynamic";
+import { retiredReaderAuthOptions, retiredReaderAuthResponse } from "@/core/security/retired-reader-auth";
 
-export { OPTIONS, POST } from "./handler";
+export const dynamic = "force-dynamic";
+export const OPTIONS = retiredReaderAuthOptions;
+export const POST = retiredReaderAuthResponse;

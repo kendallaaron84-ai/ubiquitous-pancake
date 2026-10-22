@@ -20,7 +20,7 @@ export default function LoginPage() {
 					</div>
 					<div className="relative z-10 flex h-full flex-col justify-between p-6 lg:p-8 text-primary-foreground">
 						<Link href="/">
-							<img src="/images/logo-white.png" alt="Logo" className="h-8 w-auto" />
+							<Image src="/images/logo-white.png" alt="Logo" width={128} height={32} className="h-8 w-auto" />
 							<h2 className="mt-6 text-xl font-semibold">Welcome to Aixus</h2>
 						</Link>
 						<div className="space-y-4">

@@ -21,7 +21,7 @@ export interface BlogGenerationTaskPayload {
   targetWpOrigin: string;
   secretCredentialRef: string;
   seo: BlogSeoStrategy;
-  schemaVersion?: 1;
+  schemaVersion?: 1 | 2;
   authorId?: string;
   authorEmail?: string;
   requestedByUid?: string;
@@ -29,6 +29,11 @@ export interface BlogGenerationTaskPayload {
   contentSource?: NexusContentSource;
   universeId?: string | null;
   referenceGuideId?: string | null;
+  referenceGuideVersion?: number | null;
+  storyAuthorityMode?: "canonical_only" | "canonical_plus_story_brief";
+  storyBriefId?: string | null;
+  storyBriefVersion?: number | null;
+  storyBriefSha256?: string | null;
   requestedGoal?: NexusGoal | "automatic";
   strategyGuideSelectionMode?: NexusStrategySelectionMode;
   primaryStrategyGuideId?: string | null;
@@ -53,6 +58,19 @@ interface CloudTasksConfiguration {
   invokerServiceAccount: string;
   workerUrl: string;
   hmacSecret: string;
+}
+
+export const NEXUS_TASK_DISPATCH_CONFIGURATION_INVALID =
+  "NEXUS_TASK_DISPATCH_CONFIGURATION_INVALID" as const;
+
+export class CloudTasksDispatchConfigurationError extends Error {
+  readonly code = NEXUS_TASK_DISPATCH_CONFIGURATION_INVALID;
+  readonly status = 503;
+
+  constructor(message = "The Content Engine task destination is not configured correctly.") {
+    super(message);
+    this.name = "CloudTasksDispatchConfigurationError";
+  }
 }
 
 let sharedClient: CloudTasksClient | null = null;
@@ -106,8 +124,12 @@ export async function dispatchBlogGenerationTask(
     if (grpcStatusCode(error) === 6) {
       return { taskName, deduplicated: true };
     }
-    throw error;
+    throw normalizeCloudTasksDispatchError(error);
   }
+}
+
+export function assertBlogGenerationTaskConfiguration(): void {
+  resolveConfiguration();
 }
 
 export async function dispatchAudiobookTranscriptionTask(
@@ -222,26 +244,52 @@ function resolveConfiguration(): CloudTasksConfiguration {
   };
 }
 
-function validateWorkerUrl(value: string): string {
+export function validateWorkerUrl(value: string): string {
+  if (value.length > 2_083 || /[\u0000-\u001F\u007F]/.test(value)) {
+    throw new CloudTasksDispatchConfigurationError();
+  }
+
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
-    throw new Error("PYTHON_CONTENT_ENGINE_URL is invalid.");
+    throw new CloudTasksDispatchConfigurationError();
   }
+
+  const labels = parsed.hostname.split(".");
+  const validDnsHostname =
+    parsed.hostname.length <= 253 &&
+    labels.every(
+      (label) =>
+        label.length >= 1 &&
+        label.length <= 63 &&
+        /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label)
+    );
 
   if (
     parsed.protocol !== "https:" ||
+    !validDnsHostname ||
     !parsed.hostname.endsWith(".run.app") ||
     (parsed.pathname !== "/" && parsed.pathname !== "") ||
+    parsed.port ||
     parsed.username ||
     parsed.password ||
     parsed.search ||
     parsed.hash
   ) {
-    throw new Error("PYTHON_CONTENT_ENGINE_URL must be a root Cloud Run HTTPS URL.");
+    throw new CloudTasksDispatchConfigurationError();
   }
   return parsed.origin;
+}
+
+export function normalizeCloudTasksDispatchError(error: unknown): unknown {
+  if (
+    grpcStatusCode(error) === 3 &&
+    /invalid\s+url|http\s*request[^\n]*url/i.test(cloudTasksErrorMessage(error))
+  ) {
+    return new CloudTasksDispatchConfigurationError();
+  }
+  return error;
 }
 
 function requiredEnvironment(name: string): string {
@@ -256,4 +304,13 @@ function grpcStatusCode(error: unknown): number | null {
   }
   const code = (error as { code?: unknown }).code;
   return typeof code === "number" ? code : null;
+}
+
+function cloudTasksErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error !== "object" || error === null) return "";
+  const candidate = error as { message?: unknown; details?: unknown };
+  return [candidate.message, candidate.details]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
 }

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import test from "node:test"
 
 import {
   ensurePrimaryAuthorIdentity,
+  loadAuthorIdentityRegistry,
   registerPenName,
   requireAuthorizedAuthorIdentity,
 } from "../author-identity.ts"
@@ -75,6 +77,21 @@ test("seeds one deterministic primary identity for an active individual license"
   assert.equal(db.rows.get(`plugin_licenses/${studioKey}/author_identities/primary`).type, "primary")
 })
 
+test("loads the canonical primary identity repeatedly without creating duplicates", async () => {
+  const db = database()
+  const first = await loadAuthorIdentityRegistry(db, studioKey, email)
+  const second = await loadAuthorIdentityRegistry(db, studioKey, email)
+
+  assert.deepEqual(first.identities.map(({ id, displayName, type }) => ({ id, displayName, type })), [
+    { id: "primary", displayName: "Author Name", type: "primary" },
+  ])
+  assert.deepEqual(second.identities, first.identities)
+  assert.equal(
+    [...db.rows.keys()].filter((path) => path === `plugin_licenses/${studioKey}/author_identities/primary`).length,
+    1
+  )
+})
+
 test("requires rights attestation before registering a pen name", async () => {
   await assert.rejects(
     registerPenName(database(), { studioKey, authorEmail: email, displayName: "A. Writer", rightsAttested: false }),
@@ -84,11 +101,31 @@ test("requires rights attestation before registering a pen name", async () => {
 
 test("allows one pen name and rejects a third identity slot", async () => {
   const db = database()
-  await registerPenName(db, { studioKey, authorEmail: email, displayName: "A. Writer", rightsAttested: true })
+  const identity = await registerPenName(db, { studioKey, authorEmail: email, displayName: "A. Writer", rightsAttested: true })
+  assert.deepEqual(identity, {
+    id: "pen-name",
+    displayName: "A. Writer",
+    normalizedName: "a. writer",
+    type: "pen_name",
+    status: "active",
+  })
   await assert.rejects(
     registerPenName(db, { studioKey, authorEmail: email, displayName: "Another Name", rightsAttested: true }),
     (error) => error.code === "AUTHOR_IDENTITY_LIMIT_REACHED"
   )
+})
+
+test("authenticated MVP authors can use author identities while unrelated APIs remain restricted", async () => {
+  const middleware = await readFile(new URL("../../../middleware.ts", import.meta.url), "utf8")
+  const allowlistStart = middleware.indexOf("const MVP_API_EXACT_PATHS")
+  const allowlistEnd = middleware.indexOf(");", allowlistStart)
+  const allowlist = middleware.slice(allowlistStart, allowlistEnd)
+
+  assert.ok(allowlistStart >= 0 && allowlistEnd > allowlistStart)
+  assert.match(allowlist, /"\/api\/author-identities"/)
+  assert.doesNotMatch(allowlist, /"\/api\/admin\/authors"/)
+  assert.doesNotMatch(middleware, /MVP workspace|This API is not available/)
+  assert.match(middleware, /This feature is not available for your account\./)
 })
 
 test("rejects identity IDs outside the primary and pen-name registry", async () => {

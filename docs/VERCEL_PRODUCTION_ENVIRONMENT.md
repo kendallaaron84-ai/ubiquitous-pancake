@@ -26,11 +26,13 @@ for the Production environment. Never commit secret values to source control.
 | --- | --- |
 | `CONNECTION_SECRET_PROJECT_ID` | GCP project containing per-author WordPress credential secrets. |
 | `CONNECTION_SECRET_PROJECT_NUMBER` | Numeric GCP project number used to build canonical Secret Manager references. |
-| `CONTENT_WORKER_SERVICE_ACCOUNT` | Cloud Run worker service account granted `roles/secretmanager.secretAccessor`. |
 
-The Vercel Firebase Admin identity also needs permission to create secret versions
-and update IAM policies in the configured Secret Manager project. The Cloud Run
-worker receives read-only accessor permission for each author credential secret.
+Production WordPress connection creation and saved-connection verification use the
+authenticated Cloud Run gateway. The Vercel Firebase Admin identity does not need
+Secret Manager access. The gateway may create canonical credential secrets and add
+versions, but it does not rewrite IAM policies. The content worker's read-only,
+`WP_CREDS_*`-scoped access is provisioned separately through the reviewed control
+plane.
 
 ## Author welcome-package delivery
 

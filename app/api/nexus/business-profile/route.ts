@@ -16,7 +16,10 @@ export async function PUT(request: Request) {
     const coreValues = text(body.coreValues, 2_000);
     const toneOfVoice = text(body.toneOfVoice, 1_000);
     const targetAudience = text(body.targetAudience, 1_000);
+    const approvedWritingSamples = writingSampleList(body.approvedWritingSamples);
+    const writingSamplesApproved = body.writingSamplesApproved === true;
     if (!businessName || !coreValues || !toneOfVoice || !targetAudience) throw new NexusRouteError(400, "Business name, core values, tone of voice, and target audience are required.");
+    if (approvedWritingSamples.length > 0 && !writingSamplesApproved) throw new NexusRouteError(400, "Confirm that every writing sample is approved for Brand Voice use.");
     const ref = adminDb.collection("users").doc(context.authorEmail).collection("profile").doc("brand_voice");
     const existing = await ref.get();
     await ref.set({
@@ -29,6 +32,8 @@ export async function PUT(request: Request) {
       brandValues: text(body.brandValues, 2_000),
       toneOfVoice,
       targetAudience,
+      approvedWritingSamples,
+      writingSamplesApproved: approvedWritingSamples.length > 0 && writingSamplesApproved,
       approvedTerminology: stringList(body.approvedTerminology),
       prohibitedClaims: stringList(body.prohibitedClaims),
       defaultWebsiteConnectionId: text(body.defaultWebsiteConnectionId, 80) || null,
@@ -44,4 +49,18 @@ export async function PUT(request: Request) {
 function stringList(value: unknown): string[] {
   const values = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
   return values.map((item) => text(item, 160)).filter(Boolean).slice(0, 30);
+}
+
+function writingSampleList(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : typeof value === "string" ? value.split(/\n\s*---\s*\n/) : [];
+  const samples = values
+    .map((item) => text(item, 4_000))
+    .filter(Boolean)
+    .slice(0, 5);
+  let retained = 0;
+  return samples.filter((sample) => {
+    if (retained + sample.length > 12_000) return false;
+    retained += sample.length;
+    return true;
+  });
 }

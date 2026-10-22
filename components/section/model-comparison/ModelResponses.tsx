@@ -48,7 +48,7 @@ export default function ModelResponses({ modelResponses }: ModelResponsesProps) 
 									<Bot className="h-10 w-10 text-muted-foreground mb-4" />
 									<h3 className="text-lg font-medium">No response yet</h3>
 									<p className="text-sm text-muted-foreground mt-1 max-w-md">
-										Enter a prompt and click "Compare Models" to see how this model responds.
+										Enter a prompt and click &quot;Compare Models&quot; to see how this model responds.
 									</p>
 								</div>
 							)}

@@ -22,6 +22,7 @@ export default function AuthorSupportChat() {
   - Do NOT answer questions about history, science, coding, politics, or general trivia.
   - If a user asks about an off-topic subject, politely reply: "I am specialized in KOBA-I operations, WordPress, and book marketing. I cannot assist with that topic. How can we optimize your author platform today?"
   - Keep answers under 3 paragraphs. Use bullet points for actionable steps.`;
+  void SYSTEM_PROMPT;
 
   const [messages, setMessages] = useState<Message[]>([
     { role: "assistant", content: "Welcome to KOBA-I Support! I'm here to help you optimize your WordPress site, scale your book marketing, and get the most out of your audio plugins. What are we tackling today?" }

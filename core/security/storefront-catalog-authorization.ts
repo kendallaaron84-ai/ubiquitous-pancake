@@ -130,10 +130,21 @@ export function safeStorefrontProduct(documentId: string, data: Record<string, u
     coverUrl: clean(data.coverArtUrl || data.coverUrl) || "/placeholder.jpg",
     bgImageUrl: clean(data.bgImageUrl || data.backgroundUrl),
     authorName: clean(data.authorName) || "Sovereign Author",
-    price: Number(data.price ?? data.unitPrice ?? 0),
+    price: explicitStorefrontPrice(data.price, data.unitPrice),
+    formats: readArray(data.formats)
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean),
     category: clean(data.category) || (type === "ebook" ? "E-Books" : "Audiobooks"),
     chapterCount: chapters.length,
   };
+}
+
+function explicitStorefrontPrice(primary: unknown, fallback: unknown): number | null {
+  const value = primary ?? fallback;
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
 }
 
 export function hasGlobalCatalogAuthority(license: Record<string, unknown>): boolean {

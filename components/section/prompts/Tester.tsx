@@ -11,7 +11,7 @@ export default function Tester() {
 	const [prompt, setPrompt] = useState("")
 	const [response, setResponse] = useState("")
 	const [isGenerating, setIsGenerating] = useState(false)
-	const [selectedTemplate, setSelectedTemplate] = useState(null)
+	const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null)
 
 	const templates = [
 		{
@@ -37,7 +37,7 @@ export default function Tester() {
 		},
 	]
 
-	const handleTemplateSelect = (id:any) => {
+	const handleTemplateSelect = (id: string) => {
 		const template = templates.find((t) => t.id === id)
 		if (template) {
 			setSelectedTemplate(id)
@@ -113,7 +113,7 @@ export default function Tester() {
 									<Bot className="h-10 w-10 text-muted-foreground mb-4" />
 									<h3 className="text-lg font-medium">No analysis yet</h3>
 									<p className="text-sm text-muted-foreground mt-1 max-w-md">
-										Enter a prompt and click "Analyze Prompt" to get AI feedback on its effectiveness.
+										Enter a prompt and click &quot;Analyze Prompt&quot; to get AI feedback on its effectiveness.
 									</p>
 								</div>
 							)}

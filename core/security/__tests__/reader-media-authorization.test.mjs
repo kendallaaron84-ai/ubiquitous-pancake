@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { establishReaderIdentity } from "../reader-auth.ts";
 import {
+  authorizeAnonymousFreeMedia,
   authorizeReaderMedia,
   buildProtectedPublicationChapters,
   ReaderMediaAuthorizationError,
@@ -15,8 +16,6 @@ import {
   serializeReaderSessionCookie,
 } from "../reader-session-cookie.ts";
 import { createMemoryDb } from "./reader-platform-test-harness.mjs";
-
-const ROOT = new URL("../../../", import.meta.url);
 
 function product(overrides = {}) {
   return {
@@ -258,6 +257,39 @@ test("complete chapter manifest uses only namespaced signed URLs and never raw p
   ].sort());
 });
 
+test("mixed-content inline illustrations are signed and raw Storage identity is removed", async () => {
+  const storagePath = "studio/ebk_mixed/STUDIO-A/illustrated_page/inline.png";
+  const chapters = await buildProtectedPublicationChapters({
+    chapters: [{
+      id: "chapter-one",
+      title: "One",
+      textContent: `<p>Before</p><figure><img alt="Art" data-koba-storage-path="${storagePath}"></figure><p>After</p>`,
+    }],
+    tenantId: "STUDIO-A",
+    assetId: "ebk_mixed",
+    publicationType: "ebook",
+    signStoragePath: async (path) => `https://signed.example/image?path=${encodeURIComponent(path)}`,
+  });
+  const html = chapters[0].textContent;
+  assert.match(html, /<p>Before<\/p>/);
+  assert.match(html, /<p>After<\/p>/);
+  assert.match(html, /src="https:\/\/signed\.example\/image\?path=/);
+  assert.doesNotMatch(html, /data-koba-storage-path|studio\/ebk_mixed/);
+});
+
+test("mixed-content inline illustrations fail closed for a same-asset cross-tenant path", async () => {
+  await assert.rejects(
+    () => buildProtectedPublicationChapters({
+      chapters: [{ textContent: '<img data-koba-storage-path="studio/ebk_mixed/STUDIO-B/illustrated_page/inline.png">' }],
+      tenantId: "STUDIO-A",
+      assetId: "ebk_mixed",
+      publicationType: "ebook",
+      signStoragePath: async () => "https://signed.example/image",
+    }),
+    (error) => error.code === READER_MEDIA_ERROR_CODES.manifestUnavailable
+  );
+});
+
 test("missing or cross-namespace protected media pointers fail closed", async () => {
   for (const storagePath of ["", "studio/other_asset/chapter.mp3"]) {
     await assert.rejects(
@@ -281,6 +313,24 @@ test("active manifest route selects canonical UID authorization and requires acc
   assert.match(source, /if \(!readerToken\)/);
   assert.doesNotMatch(source, /if \(isPaid\)/);
   assert.match(source, /buildProtectedPublicationChapters/);
+  assert.match(source, /claims\.principalType === "anonymous_free"/);
+  assert.match(source, /claims\.assetId !== assetKey/);
+  assert.match(source, /claims\.origin !== normalizedRequestOrigin/);
+});
+
+test("anonymous free media authorization requires explicit free, published, deployed, exact-origin product", async () => {
+  const db = createMemoryDb({ "products/abk_free": product({ assetId: "abk_free", isFree: true }) });
+  const result = await authorizeAnonymousFreeMedia(db, { assetId: "abk_free", requestOrigin: "https://author.example" });
+  assert.equal(result.tenantId, "studio_a");
+  await assert.rejects(
+    () => authorizeAnonymousFreeMedia(db, { assetId: "abk_free", requestOrigin: "https://attacker.example" }),
+    (error) => error.code === READER_MEDIA_ERROR_CODES.originNotAllowed
+  );
+  db.docs.set("products/abk_free", product({ assetId: "abk_free", price: 9.99 }));
+  await assert.rejects(
+    () => authorizeAnonymousFreeMedia(db, { assetId: "abk_free", requestOrigin: "https://author.example" }),
+    (error) => error.code === READER_MEDIA_ERROR_CODES.freeAccessRequired
+  );
 });
 
 test("reader media token route bypasses author middleware and enforces its own reader session", async () => {

@@ -16,6 +16,11 @@ import {
   validateReferenceGuideText,
   validateReferenceGuideFile,
 } from "../reference-guide.ts";
+import {
+  NEXUS_STORY_BRIEF_LIMITS,
+  validateStoryBriefFile,
+  validateStoryBriefText,
+} from "../story-brief.ts";
 import { validateFirebasePublicConfig } from "../../firebase-config.ts";
 import {
   assertGuideCanBeArchived,
@@ -26,6 +31,7 @@ import {
 import {
   NEXUS_STRATEGY_CATALOG,
   selectNexusStrategy,
+  validateNexusStrategySourceGoals,
 } from "../strategy-library.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
@@ -111,6 +117,24 @@ test("full-context limits reject instead of silently truncating", () => {
   assert.throws(() => validateReferenceGuideText(`${exactlyThirtyThousand}b`), /REFERENCE_GUIDE_CHARACTER_LIMIT_EXCEEDED/);
 });
 
+test("Story Brief validation supports short story-scoped facts without silent truncation", () => {
+  const brief = "Mara interviews Leonard Crane at the North Harbor Hotel.";
+  assert.deepEqual(validateStoryBriefText(brief), {
+    normalizedText: brief,
+    wordCount: 9,
+    characterCount: brief.length,
+  });
+  for (const [name, type] of [
+    ["brief.pdf", "application/pdf"],
+    ["brief.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    ["brief.txt", "text/plain"],
+    ["brief.md", "text/markdown"],
+  ]) assert.doesNotThrow(() => validateStoryBriefFile({ name, type, size: 128 }));
+  assert.throws(() => validateStoryBriefText(""), /STORY_BRIEF_TEXT_EMPTY/);
+  assert.throws(() => validateStoryBriefText(Array.from({ length: 5001 }, () => "fact").join(" ")), /STORY_BRIEF_WORD_LIMIT_EXCEEDED/);
+  assert.throws(() => validateStoryBriefText("x".repeat(NEXUS_STORY_BRIEF_LIMITS.maximumCharacters + 1)), /STORY_BRIEF_CHARACTER_LIMIT_EXCEEDED/);
+});
+
 test("Firebase client configuration fails early with actionable environment errors", () => {
   const valid = {
     apiKey: `AIza${"a".repeat(32)}`,
@@ -157,6 +181,29 @@ test("feature flags default closed except the backward-compatible strategy selec
       else process.env[name] = previous[name];
     }
   }
+});
+
+test("strategy source goals are catalog-driven and reject unknown or cross-slot tokens", () => {
+  assert.deepEqual(
+    validateNexusStrategySourceGoals("strategy_brand_positioning", ["build_authority", "challenge_assumptions"]),
+    ["build_authority", "challenge_assumptions"]
+  );
+  assert.deepEqual(
+    validateNexusStrategySourceGoals("strategy_intrigue", ["create_intrigue", "create_intrigue"]),
+    ["create_intrigue"]
+  );
+  assert.throws(
+    () => validateNexusStrategySourceGoals("strategy_intrigue", ["invented_goal"]),
+    /NEXUS_STRATEGY_GOAL_UNKNOWN/
+  );
+  assert.throws(
+    () => validateNexusStrategySourceGoals("strategy_intrigue", ["drive_action"]),
+    /NEXUS_STRATEGY_GOAL_NOT_SUPPORTED_BY_SLOT/
+  );
+  assert.throws(
+    () => validateNexusStrategySourceGoals("strategy_intrigue", []),
+    /NEXUS_STRATEGY_GOAL_REQUIRED/
+  );
 });
 
 test("Setup and Nexus UI use the canonical multi-site website workflow", async () => {
@@ -224,7 +271,7 @@ test("worker and gateway retain critical baseline controls", async () => {
   assert.match(worker, /facebook_post/);
   assert.match(worker, /instagram_caption/);
   assert.match(worker, /generate_featured_image/);
-  assert.match(worker, /COMPLETE Reference Guide/);
+  assert.match(worker, /(?:COMPLETE|CANONICAL) Reference Guide/i);
   assert.match(worker, /NEXUS_INSUFFICIENT_GROUNDING/);
   assert.match(worker, /knowledgeMode.*full_reference_guide/s);
   const fullContextRetrieval = worker.slice(
@@ -307,9 +354,17 @@ test("strategy source management is owner-only, private, versioned, and worker-e
   assert.match(sourceRoute, /collection\("versions"\)/);
   assert.match(sourceRoute, /status: "approved"/);
   assert.match(sourceRoute, /cacheControl: "private, no-store"/);
+  assert.match(sourceRoute, /validateNexusStrategySourceGoals/);
+  assert.match(sourceRoute, /NEXUS_STRATEGY_GOAL_UNKNOWN/);
+  assert.match(sourceRoute, /const version = Number\(current\.data\(\)\?\.latestVersion \|\| 0\) \+ 1/);
+  assert.match(sourceRoute, /activeVersion: current\.data\(\)\?\.activeVersion \|\| null/);
+  assert.match(sourceRoute, /status: "active", activeVersion: version/);
   assert.match(ownerPage, /fetch\("\/api\/session"/);
   assert.match(ownerPage, /payload\.isOwner !== true/);
   assert.match(ownerPage, /router\.replace\("\/products"\)/);
+  assert.match(ownerPage, /selectedCatalogEntry\.goals\.map/);
+  assert.match(ownerPage, /Upload New Version/);
+  assert.doesNotMatch(ownerPage, /Comma-separated supported goal IDs/);
   const authorResponse = sourceRoute.slice(sourceRoute.indexOf("export async function GET"), sourceRoute.indexOf("export async function POST"));
   assert.doesNotMatch(authorResponse, /sourceStoragePath|extractedTextStoragePath|normalizedText/);
   assert.match(sourceService, /status === "active"/);
@@ -327,4 +382,81 @@ test("Reference Guide upload deduplication records terminal request state", asyn
   assert.match(guideRoute, /status: "completed"[\s\S]*deduplicated: true/);
   assert.match(guideRoute, /sourceSha256/);
   assert.match(guideRoute, /already processing/);
+});
+
+test("Story World authoring uses the existing tenant-owned routes and immutable guide versions", async () => {
+  const [middleware, worldRoute, guideRoute, panel, intake, knowledge, blueprint, worker] = await Promise.all([
+    readFile(new URL("middleware.ts", ROOT), "utf8"),
+    readFile(new URL("app/api/nexus/story-worlds/route.ts", ROOT), "utf8"),
+    readFile(new URL("app/api/nexus/reference-guides/route.ts", ROOT), "utf8"),
+    readFile(new URL("components/nexus-knowledge-panel.tsx", ROOT), "utf8"),
+    readFile(new URL("components/author-intake-form.tsx", ROOT), "utf8"),
+    readFile(new URL("core/nexus/knowledge-service.ts", ROOT), "utf8"),
+    readFile(new URL("app/api/nexus/blueprints/route.ts", ROOT), "utf8"),
+    readFile(new URL("services/content-engine-worker/main.py", ROOT), "utf8"),
+  ]);
+  const allowlistStart = middleware.indexOf("const MVP_API_EXACT_PATHS");
+  const allowlistEnd = middleware.indexOf(");", allowlistStart);
+  const allowlist = middleware.slice(allowlistStart, allowlistEnd);
+  assert.match(allowlist, /"\/api\/nexus\/story-worlds"/);
+  assert.match(allowlist, /"\/api\/nexus\/reference-guides"/);
+  assert.doesNotMatch(allowlist, /"\/api\/nexus\/blueprints"/);
+  assert.doesNotMatch(allowlist, /"\/api\/admin/);
+
+  assert.match(worldRoute, /export async function PATCH/);
+  assert.match(worldRoute, /assertOwnedStoryWorld/);
+  assert.match(worldRoute, /buildStoryWorldAuthorPatch/);
+  assert.doesNotMatch(worldRoute, /body\?\.studioKey|body\?\.authorId/);
+
+  assert.match(guideRoute, /export async function GET/);
+  assert.match(guideRoute, /export async function PUT/);
+  assert.match(guideRoute, /collection\("versions"\)\.doc\(String\(version\)\)/);
+  assert.match(guideRoute, /await versionRef\.create/);
+  assert.match(guideRoute, /pendingVersionRef\.set\(\{ status: "failed"/);
+  assert.match(guideRoute, /version_created/);
+  assert.match(guideRoute, /Cache-Control.*private, no-store/s);
+  assert.match(panel, /Edit Story World/);
+  assert.match(panel, /View Current Guide/);
+  assert.match(panel, /Edit as New Version/);
+  assert.match(panel, /Canonical Guide/);
+  assert.doesNotMatch(panel, /Story World management is not enabled for this environment/);
+  assert.match(intake, /guide\.id === selectedWorld\?\.defaultReferenceGuideId/);
+
+  for (const source of [knowledge, blueprint]) assert.match(source, /assertCanonicalReferenceGuide/);
+  assert.match(worker, /defaultReferenceGuideId/);
+  assert.match(worker, /active Canonical Guide/);
+});
+
+test("Story World schema v2 keeps Story Brief truth separate and protected", async () => {
+  const [contracts, route, intake, worker, rules] = await Promise.all([
+    readFile(new URL("core/nexus/contracts.ts", ROOT), "utf8"),
+    readFile(new URL("app/api/nexus/blueprints/route.ts", ROOT), "utf8"),
+    readFile(new URL("components/author-intake-form.tsx", ROOT), "utf8"),
+    readFile(new URL("services/content-engine-worker/main.py", ROOT), "utf8"),
+    readFile(new URL("firestore.rules", ROOT), "utf8"),
+  ]);
+  assert.match(contracts, /NEXUS_SCHEMA_VERSION = 2/);
+  assert.match(contracts, /canonical_plus_story_brief/);
+  assert.match(route, /collection\("story_briefs"\)/);
+  assert.match(route, /boundBlueprintId/);
+  assert.match(route, /storyBriefSha256/);
+  assert.doesNotMatch(route, /blueprintData[\s\S]{0,2000}normalizedText/);
+  assert.match(intake, /Story Brief — what is true for this story/);
+  assert.match(intake, /Custom Directives — how should KOBA-I tell it/);
+  assert.match(worker, /def retrieve_story_brief/);
+  assert.match(worker, /approved truth only for this Blueprint/);
+  assert.match(worker, /Custom Directives are not factual authority/);
+  assert.match(worker, /NEXUS_STORY_BRIEF_CONTRADICTS_CANON/);
+  assert.match(rules, /match \/nexus_story_worlds\/\{universeId\}[\s\S]*allow read, write: if false/);
+});
+
+test("Reference Guide detail responses hide server storage coordinates", async () => {
+  const guideRoute = await readFile(new URL("app/api/nexus/reference-guides/route.ts", ROOT), "utf8");
+  const responseStart = guideRoute.indexOf("return NextResponse.json({", guideRoute.indexOf("export async function GET"));
+  const responseEnd = guideRoute.indexOf("Cache-Control", responseStart);
+  const responseProjection = guideRoute.slice(responseStart, responseEnd);
+  assert.ok(responseStart >= 0 && responseEnd > responseStart);
+  assert.doesNotMatch(responseProjection, /sourceStoragePath|extractedTextStoragePath|bucket/);
+  assert.match(responseProjection, /normalizedText/);
+  assert.match(responseProjection, /versions/);
 });

@@ -3,15 +3,17 @@ import { createRequire } from "node:module";
 import { FieldValue } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
 import { adminDb, adminStorage, resolveFirebaseStorageBucketName } from "@/core/firebase-admin";
-import { BUSINESS_BRAND_GOALS, STORY_WORLD_GOALS, type NexusGoal } from "@/core/nexus/contracts";
 import { nexusErrorResponse, NexusRouteError, text } from "@/core/nexus/http";
 import { requireNexusOwnerContext } from "@/core/nexus/owner-context";
-import { NEXUS_STRATEGY_CATALOG } from "@/core/nexus/strategy-library";
+import {
+  NEXUS_STRATEGY_CATALOG,
+  NexusStrategyCatalogValidationError,
+  validateNexusStrategySourceGoals,
+} from "@/core/nexus/strategy-library";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 const nodeRequire = createRequire(import.meta.url);
-const allowedGoals = new Set<NexusGoal>([...BUSINESS_BRAND_GOALS, ...STORY_WORLD_GOALS]);
 
 export async function GET() {
   try {
@@ -34,8 +36,19 @@ export async function POST(request: Request) {
     const file = form.get("file");
     if (!catalog || !(file instanceof File)) throw new NexusRouteError(400, "Select a stable strategy ID and an approved source file.");
     if (file.size <= 0 || file.size > 5 * 1024 * 1024) throw new NexusRouteError(413, "Strategy source files must be no larger than 5 MB.");
-    const goals = String(form.get("supportedGoals") || "").split(",").map((value) => value.trim()).filter((value): value is NexusGoal => allowedGoals.has(value as NexusGoal));
-    if (!goals.length) throw new NexusRouteError(400, "At least one supported goal is required.");
+    let goals;
+    try {
+      goals = validateNexusStrategySourceGoals(strategyGuideId, form.getAll("supportedGoals"));
+    } catch (error) {
+      if (!(error instanceof NexusStrategyCatalogValidationError)) throw error;
+      const messages: Record<string, string> = {
+        NEXUS_STRATEGY_SLOT_INVALID: "Select a valid Strategy Intelligence slot.",
+        NEXUS_STRATEGY_GOAL_REQUIRED: "Select at least one supported goal.",
+        NEXUS_STRATEGY_GOAL_UNKNOWN: "One or more submitted goals are not recognized by the Strategy Intelligence catalog.",
+        NEXUS_STRATEGY_GOAL_NOT_SUPPORTED_BY_SLOT: "One or more submitted goals are not supported by the selected strategy slot.",
+      };
+      throw new NexusRouteError(400, messages[error.code] || "The supported-goal selection is invalid.", error.code);
+    }
     const bytes = Buffer.from(await file.arrayBuffer());
     const normalized = (await extractText(bytes, file.name, file.type)).replace(/\r\n?/g, "\n").replace(/[ \t]+/g, " ").trim();
     if (normalized.length < 100 || normalized.length > 100_000) throw new NexusRouteError(422, "The extracted strategy source must contain 100–100,000 normalized characters of approved material.");

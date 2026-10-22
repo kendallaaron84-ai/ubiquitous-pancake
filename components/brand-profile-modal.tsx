@@ -95,7 +95,7 @@ export function BrandProfileModal() {
     try {
       await setDoc(doc(db, "users", authorEmail), { coreValues, toneOfVoice }, { merge: true });
       alert("Brand profile updated!");
-    } catch (err) {
+    } catch {
       alert("Failed to save profile.");
     } finally {
       setProfileSaving(false);
@@ -149,7 +149,7 @@ export function BrandProfileModal() {
       setFile(null);
       
       setManuscripts(prev => [...prev, { id: docRef.id, title: newTitle.trim(), genre: genresArray.join(", ") }]);
-    } catch (err) {
+    } catch {
       alert("Failed to save book context.");
     } finally {
       setBookSaving(false);

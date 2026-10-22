@@ -28,9 +28,12 @@ export async function POST(request: Request) {
     let validTracksCount = 0;
 
     // Loop through tracks to sum duration (assuming duration is saved in metadata during upload)
-    tracks.forEach((track: any) => {
-      if (track.duration) {
-        totalSeconds += parseFloat(track.duration);
+    tracks.forEach((track: unknown) => {
+      const duration = typeof track === "object" && track !== null && "duration" in track
+        ? track.duration
+        : null;
+      if (typeof duration === "string" || typeof duration === "number") {
+        totalSeconds += Number.parseFloat(String(duration));
         validTracksCount++;
       }
     });
@@ -62,8 +65,8 @@ export async function POST(request: Request) {
       currencySymbol: '$'
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("❌ Estimation Engine Error:", error);
-    return NextResponse.json({ success: false, message: error.message }, { status: 500 });
+    return NextResponse.json({ success: false, message: error instanceof Error ? error.message : "Estimation failed." }, { status: 500 });
   }
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Flame, Sparkles, BookOpen, BookmarkCheck, UserCheck, ArrowRight } from "lucide-react";
+import { Flame, Sparkles, BookmarkCheck, UserCheck } from "lucide-react";
 
 interface ActivityItem {
   id: string;

@@ -1,0 +1,92 @@
+name: KOBA-I release gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+      - "codex/**"
+      - "feature/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: koba-release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dashboard:
+    name: Dashboard build and regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Firebase web client identifiers are public configuration. These
+      # deterministic CI-only values allow static route collection without
+      # granting access to any KOBA-I project or production service.
+      NEXT_PUBLIC_FIREBASE_API_KEY: AIzaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: koba-ci-build.invalid
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: koba-ci-build
+      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: koba-ci-build.invalid
+      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "000000000000"
+      NEXT_PUBLIC_FIREBASE_APP_ID: "1:000000000000:web:0000000000000000000000"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm run test:nexus
+      - run: pnpm run test:security
+      - run: pnpm run test:business
+      - run: pnpm run test:content-worker
+      - run: pnpm run build
+
+  firestore-rules:
+    name: Firestore tenant-isolation rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run test:rules
+
+  wordpress-gateway:
+    name: WordPress gateway
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/wordpress-egress-gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: services/wordpress-egress-gateway/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: node --test "*.test.mjs"

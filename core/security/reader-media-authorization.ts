@@ -3,6 +3,8 @@ import {
   type ReaderPlatformDb,
 } from "./services/service-support.ts";
 import { requireActiveVerifiedReader } from "./services/reader-profile-service.ts";
+import { isExplicitlyFreePublication } from "./reader-free-acquisition.ts";
+import { exactReaderOrigin, exactReaderUrl } from "./reader-origin-policy.ts";
 
 const ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
 const TENANT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,159}$/;
@@ -18,6 +20,7 @@ export const READER_MEDIA_ERROR_CODES = {
   entitlementRequired: "READER_MEDIA_ENTITLEMENT_REQUIRED",
   originNotAllowed: "READER_MEDIA_ORIGIN_NOT_ALLOWED",
   manifestUnavailable: "READER_MEDIA_MANIFEST_UNAVAILABLE",
+  freeAccessRequired: "READER_MEDIA_FREE_ACCESS_REQUIRED",
 } as const;
 
 type ReaderMediaErrorCode =
@@ -49,30 +52,16 @@ export interface AuthorizedReaderMedia {
   allowedOrigins: readonly string[];
 }
 
+export interface AuthorizedAnonymousFreeMedia {
+  tenantId: string;
+  assetId: string;
+  product: Record<string, unknown>;
+  publicationUrl: string;
+  allowedOrigins: readonly string[];
+}
+
 function text(value: unknown, maximum = 2_000): string {
   return typeof value === "string" ? value.trim().slice(0, maximum) : "";
-}
-
-function exactHttpsOrigin(value: unknown): string | null {
-  const candidate = text(value);
-  if (!candidate) return null;
-  try {
-    const parsed = new URL(candidate);
-    return parsed.protocol === "https:" ? parsed.origin : null;
-  } catch {
-    return null;
-  }
-}
-
-function exactHttpsUrl(value: unknown): string | null {
-  const candidate = text(value);
-  if (!candidate) return null;
-  try {
-    const parsed = new URL(candidate);
-    return parsed.protocol === "https:" ? parsed.toString() : null;
-  } catch {
-    return null;
-  }
 }
 
 function publicationEvidence(product: Record<string, unknown>) {
@@ -85,7 +74,7 @@ function publicationEvidence(product: Record<string, unknown>) {
   const status = text(product.status, 40).toLowerCase();
   const isPublished =
     product.isPublished === true || ["active", "publish", "published"].includes(status);
-  const publicationUrl = exactHttpsUrl(
+  const publicationUrl = exactReaderUrl(
     deployment.publicationUrl || product.publicationUrl || product.wordpressUrl
   );
   const origins = new Set<string>();
@@ -95,7 +84,7 @@ function publicationEvidence(product: Record<string, unknown>) {
     product.associatedWebsite,
     publicationUrl,
   ]) {
-    const origin = exactHttpsOrigin(value);
+    const origin = exactReaderOrigin(value);
     if (origin) origins.add(origin);
   }
   return {
@@ -187,7 +176,7 @@ export async function authorizeReaderMedia(
       );
     }
     const requestedOrigin = input.requestOrigin
-      ? exactHttpsOrigin(input.requestOrigin)
+      ? exactReaderOrigin(input.requestOrigin)
       : null;
     if (input.requestOrigin && (!requestedOrigin || !evidence.origins.includes(requestedOrigin))) {
       throw new ReaderMediaAuthorizationError(
@@ -218,6 +207,84 @@ export async function authorizeReaderMedia(
       allowedOrigins: evidence.origins,
     };
   });
+}
+
+export async function authorizeAnonymousFreeMedia(
+  db: ReaderPlatformDb,
+  input: { assetId: string; requestOrigin?: string | null }
+): Promise<AuthorizedAnonymousFreeMedia> {
+  const assetId = text(input.assetId, 160);
+  if (!ASSET_ID_PATTERN.test(assetId)) {
+    throw new ReaderMediaAuthorizationError(
+      400,
+      READER_MEDIA_ERROR_CODES.assetInvalid,
+      "A valid publication asset is required."
+    );
+  }
+  const snapshot = await db.collection("products").doc(assetId).get();
+  if (!snapshot.exists) {
+    throw new ReaderMediaAuthorizationError(
+      404,
+      READER_MEDIA_ERROR_CODES.publicationNotFound,
+      "The requested publication was not found."
+    );
+  }
+  const product = (snapshot.data() || {}) as Record<string, unknown>;
+  const tenantId = text(product.studioKey || product.wpStudioKey, 160);
+  if (!TENANT_ID_PATTERN.test(tenantId)) {
+    throw new ReaderMediaAuthorizationError(
+      403,
+      READER_MEDIA_ERROR_CODES.tenantInvalid,
+      "This publication is not linked to a valid author library."
+    );
+  }
+  const evidence = publicationEvidence(product);
+  if (!evidence.isPublished || product.disabled === true || product.isDisabled === true || product.isActive === false) {
+    throw new ReaderMediaAuthorizationError(
+      404,
+      READER_MEDIA_ERROR_CODES.publicationUnavailable,
+      "This publication is not available."
+    );
+  }
+  if (evidence.deploymentStatus !== "deployed" || !evidence.publicationUrl) {
+    throw new ReaderMediaAuthorizationError(
+      403,
+      READER_MEDIA_ERROR_CODES.publicationNotDeployed,
+      "This publication is not deployed for reader access."
+    );
+  }
+  if (!isExplicitlyFreePublication(product)) {
+    throw new ReaderMediaAuthorizationError(
+      403,
+      READER_MEDIA_ERROR_CODES.freeAccessRequired,
+      "This publication requires a purchase or reader entitlement."
+    );
+  }
+  const storedAssetId = text(product.assetId || product.assetKey, 160);
+  if (storedAssetId && storedAssetId !== assetId) {
+    throw new ReaderMediaAuthorizationError(
+      403,
+      READER_MEDIA_ERROR_CODES.assetInvalid,
+      "The publication asset identity is invalid."
+    );
+  }
+  const requestedOrigin = input.requestOrigin
+    ? exactReaderOrigin(input.requestOrigin)
+    : null;
+  if (input.requestOrigin && (!requestedOrigin || !evidence.origins.includes(requestedOrigin))) {
+    throw new ReaderMediaAuthorizationError(
+      403,
+      READER_MEDIA_ERROR_CODES.originNotAllowed,
+      "This website is not authorized to request the publication."
+    );
+  }
+  return {
+    tenantId,
+    assetId,
+    product,
+    publicationUrl: evidence.publicationUrl,
+    allowedOrigins: evidence.origins,
+  };
 }
 
 export function publicationMediaChapters(
@@ -251,18 +318,33 @@ export async function buildProtectedPublicationChapters(input: {
     input.chapters.map(async (chapter) => {
       if (!chapter || typeof chapter !== "object" || Array.isArray(chapter)) return {};
       const chapterData = chapter as Record<string, unknown>;
-      const {
-        storagePath: rawMediaStoragePath,
-        transcriptStoragePath: rawTranscriptStoragePath,
-        url: _rawUrl,
-        audioUrl: _rawAudioUrl,
-        mediaUrl: _rawMediaUrl,
-        src: _rawSourceUrl,
-        transcriptUrl: _rawTranscriptUrl,
-        ...safeChapter
-      } = chapterData;
+      const rawMediaStoragePath = chapterData.storagePath;
+      const rawTranscriptStoragePath = chapterData.transcriptStoragePath;
+      const safeChapter = { ...chapterData };
+      for (const key of ["storagePath", "transcriptStoragePath", "url", "audioUrl", "mediaUrl", "src", "transcriptUrl"]) {
+        delete safeChapter[key];
+      }
       const mediaStoragePath = text(rawMediaStoragePath);
       const transcriptStoragePath = text(rawTranscriptStoragePath);
+
+      if (input.publicationType === "ebook" && typeof safeChapter.textContent === "string") {
+        try {
+          const { renderProtectedInlineImages } = await import("./protected-inline-images.ts");
+          safeChapter.textContent = await renderProtectedInlineImages(
+            safeChapter.textContent,
+            input.assetId,
+            input.tenantId,
+            input.signStoragePath,
+            false
+          );
+        } catch {
+          throw new ReaderMediaAuthorizationError(
+            503,
+            READER_MEDIA_ERROR_CODES.manifestUnavailable,
+            "Protected inline illustrations are temporarily unavailable."
+          );
+        }
+      }
 
       if (input.publicationType !== "ebook") {
         if (!mediaStoragePath || !mediaStoragePath.startsWith(mediaPrefix)) {
@@ -285,6 +367,35 @@ export async function buildProtectedPublicationChapters(input: {
         safeChapter.url = mediaUrl;
         safeChapter.audioUrl = mediaUrl;
         safeChapter.mediaUrl = mediaUrl;
+      }
+
+      if (input.publicationType === "ebook" && Array.isArray(chapterData.pages)) {
+        safeChapter.pages = await Promise.all(chapterData.pages.map(async (page) => {
+          if (!page || typeof page !== "object" || Array.isArray(page)) return {};
+          const pageData = page as Record<string, unknown>;
+          const rawPageAssetId = pageData.assetId;
+          const rawPageStoragePath = pageData.storagePath;
+          const safePage = { ...pageData };
+          for (const key of ["assetId", "storagePath", "url", "previewUrl"]) delete safePage[key];
+          const pageStoragePath = text(rawPageAssetId || rawPageStoragePath);
+          if (!pageStoragePath || !pageStoragePath.startsWith(mediaPrefix)) {
+            throw new ReaderMediaAuthorizationError(
+              503,
+              READER_MEDIA_ERROR_CODES.manifestUnavailable,
+              "An illustrated page is not available from protected storage."
+            );
+          }
+          try {
+            safePage.url = await input.signStoragePath(pageStoragePath);
+          } catch {
+            throw new ReaderMediaAuthorizationError(
+              503,
+              READER_MEDIA_ERROR_CODES.manifestUnavailable,
+              "Protected illustrated pages are temporarily unavailable."
+            );
+          }
+          return safePage;
+        }));
       }
 
       if (

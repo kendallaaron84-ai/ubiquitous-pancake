@@ -4,11 +4,9 @@ import React, { useState } from "react";
 import { 
   Bot, 
   User, 
-  Send, 
   ShieldAlert, 
   ToggleLeft, 
   ToggleRight, 
-  Sparkles, 
   Smile, 
   BarChart3, 
   PieChart, 

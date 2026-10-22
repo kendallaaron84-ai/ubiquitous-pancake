@@ -7,7 +7,7 @@ interface PipelineStage {
   number: number;
   label: string;
   description: string;
-  icon: React.ComponentType<any>;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
 }
 
 interface AudioNarrationTrackerProps {

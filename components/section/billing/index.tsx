@@ -315,15 +315,12 @@ export default function Billing() {
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.success) {
+        if (response.status === 404 || payload?.code === "WEBSITE_CONNECTION_NOT_FOUND") {
+          setReloadKey((current) => current + 1);
+        }
         throw new Error(payload?.error || "Website settings could not be saved.");
       }
-      setWebsites((current) =>
-        current.map((website) =>
-          website.websiteConnectionId === websiteConnectionId
-            ? { ...website, ...patch }
-            : website
-        )
-      );
+      setReloadKey((current) => current + 1);
       setStatusMessage({ type: "success", text: "Website settings saved." });
     } catch (error: unknown) {
       setStatusMessage({

@@ -50,11 +50,16 @@ function safeFailureReason(value: unknown): string | null {
 }
 
 function publicGuide(value: Record<string, unknown>) {
-  const { sourceStoragePath: _source, extractedTextStoragePath: _text, ...safe } = value;
+  const safe = { ...value };
+  delete safe.sourceStoragePath;
+  delete safe.extractedTextStoragePath;
   return publicData(safe);
 }
 
 function publicData(value: Record<string, unknown>): Record<string, unknown> {
-  const { secretCredentialRef: _secret, wordpressUsername: _username, wpUsername: _legacyUser, ...safe } = value;
+  const safe = { ...value };
+  delete safe.secretCredentialRef;
+  delete safe.wordpressUsername;
+  delete safe.wpUsername;
   return safe;
 }
