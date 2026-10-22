@@ -13,6 +13,46 @@ export const NEXUS_STRATEGY_CATALOG: ReadonlyArray<NexusStrategyCatalogEntry> = 
   { id: "strategy_trust_authority", displayName: "Trust & Authority", focus: "trust_authority", description: "Credibility, clarity, and durable audience trust.", goals: ["build_audience_trust", "build_authority"] },
 ];
 
+export class NexusStrategyCatalogValidationError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(code);
+    this.code = code;
+  }
+}
+
+export function validateNexusStrategySourceGoals(
+  strategyGuideId: string,
+  submittedValues: readonly unknown[]
+): NexusGoal[] {
+  const catalogEntry = NEXUS_STRATEGY_CATALOG.find((entry) => entry.id === strategyGuideId);
+  if (!catalogEntry) {
+    throw new NexusStrategyCatalogValidationError("NEXUS_STRATEGY_SLOT_INVALID");
+  }
+
+  const tokens = submittedValues
+    .flatMap((value) => typeof value === "string" ? value.split(",") : [])
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!tokens.length) {
+    throw new NexusStrategyCatalogValidationError("NEXUS_STRATEGY_GOAL_REQUIRED");
+  }
+
+  const knownGoals = new Set(NEXUS_STRATEGY_CATALOG.flatMap((entry) => entry.goals));
+  const unknownGoal = tokens.find((goal) => !knownGoals.has(goal as NexusGoal));
+  if (unknownGoal) {
+    throw new NexusStrategyCatalogValidationError("NEXUS_STRATEGY_GOAL_UNKNOWN");
+  }
+
+  const unsupportedGoal = tokens.find((goal) => !catalogEntry.goals.includes(goal as NexusGoal));
+  if (unsupportedGoal) {
+    throw new NexusStrategyCatalogValidationError("NEXUS_STRATEGY_GOAL_NOT_SUPPORTED_BY_SLOT");
+  }
+
+  return [...new Set(tokens)] as NexusGoal[];
+}
+
 export function selectNexusStrategy(input: {
   goal: NexusGoal;
   mode?: "automatic" | "manual";

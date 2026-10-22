@@ -10,14 +10,11 @@ export interface SecretManagerConnectionClient {
   createSecret(request: Record<string, unknown>): Promise<unknown>;
   addSecretVersion(request: Record<string, unknown>): Promise<unknown>;
   accessSecretVersion(request: Record<string, unknown>): Promise<unknown>;
-  getIamPolicy(request: Record<string, unknown>): Promise<unknown>;
-  setIamPolicy(request: Record<string, unknown>): Promise<unknown>;
 }
 
 export interface WordPressConnectionConfiguration {
   secretProjectId: string;
   secretProjectNumber: string;
-  workerServiceAccount: string;
 }
 
 export interface WordPressCredentialInput {
@@ -78,11 +75,6 @@ export function loadWordPressConnectionConfiguration(
   const secretProjectNumber =
     source.CONNECTION_SECRET_PROJECT_NUMBER?.trim() ||
     (secretProjectId === developmentProjectId ? "751521788548" : "");
-  const workerServiceAccount =
-    source.CONTENT_WORKER_SERVICE_ACCOUNT?.trim() ||
-    (secretProjectId === developmentProjectId
-      ? "content-worker-dev@jubilee-command-center---dev.iam.gserviceaccount.com"
-      : "");
 
   if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(secretProjectId)) {
     throw new Error("CONNECTION_SECRET_PROJECT_ID is invalid.");
@@ -90,15 +82,7 @@ export function loadWordPressConnectionConfiguration(
   if (!/^[0-9]{6,20}$/.test(secretProjectNumber)) {
     throw new Error("CONNECTION_SECRET_PROJECT_NUMBER is invalid.");
   }
-  if (
-    !/^[a-z0-9][a-z0-9._-]*@[a-z0-9][a-z0-9.-]*\.gserviceaccount\.com$/i.test(
-      workerServiceAccount
-    )
-  ) {
-    throw new Error("CONTENT_WORKER_SERVICE_ACCOUNT is invalid.");
-  }
-
-  return { secretProjectId, secretProjectNumber, workerServiceAccount };
+  return { secretProjectId, secretProjectNumber };
 }
 
 export async function verifyAndProvisionWordPressConnection(
@@ -143,10 +127,8 @@ export async function verifyAndProvisionWordPressConnection(
     "utf8"
   );
 
-  let provisioningStage:
-    | "create_secret"
-    | "add_secret_version"
-    | "grant_worker_access" = "create_secret";
+  let provisioningStage: "create_secret" | "add_secret_version" =
+    "create_secret";
 
   try {
     await createSecretIfMissing(
@@ -161,12 +143,6 @@ export async function verifyAndProvisionWordPressConnection(
       payload: { data: secretPayload },
     });
 
-    provisioningStage = "grant_worker_access";
-    await grantWorkerSecretAccess(
-      secretManager,
-      secretResourceName,
-      configuration.workerServiceAccount
-    );
   } catch (error: unknown) {
     const grpcCode = grpcStatusCode(error);
     const rawMessage =
@@ -178,7 +154,6 @@ export async function verifyAndProvisionWordPressConnection(
       message: rawMessage.slice(0, 1_000),
       secretResourceName,
       secretProjectId: configuration.secretProjectId,
-      workerServiceAccount: configuration.workerServiceAccount,
     });
 
     throw new WordPressConnectionDiagnosticError(
@@ -617,46 +592,6 @@ async function createSecretIfMissing(
   } catch (error: unknown) {
     if (grpcStatusCode(error) !== 6) throw error;
   }
-}
-
-async function grantWorkerSecretAccess(
-  secretManager: SecretManagerConnectionClient,
-  resource: string,
-  workerServiceAccount: string
-): Promise<void> {
-  const response = (await secretManager.getIamPolicy({ resource })) as
-    | [{ bindings?: IamBinding[]; etag?: unknown }]
-    | { bindings?: IamBinding[]; etag?: unknown };
-  const policy = Array.isArray(response) ? response[0] || {} : response;
-  const bindings = Array.isArray(policy.bindings)
-    ? policy.bindings.map((binding) => ({
-        role: binding.role || "",
-        members: Array.isArray(binding.members) ? [...binding.members] : [],
-      }))
-    : [];
-  const role = "roles/secretmanager.secretAccessor";
-  const member = `serviceAccount:${workerServiceAccount}`;
-  const existingBinding = bindings.find((binding) => binding.role === role);
-  if (existingBinding) {
-    if (!existingBinding.members.includes(member)) {
-      existingBinding.members.push(member);
-    }
-  } else {
-    bindings.push({ role, members: [member] });
-  }
-
-  await secretManager.setIamPolicy({
-    resource,
-    policy: {
-      ...(policy.etag ? { etag: policy.etag } : {}),
-      bindings,
-    },
-  });
-}
-
-interface IamBinding {
-  role?: string | null;
-  members?: string[] | null;
 }
 
 function grpcStatusCode(error: unknown): number | null {

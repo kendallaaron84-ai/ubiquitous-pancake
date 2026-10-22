@@ -8,8 +8,11 @@ import { useToast } from "@/hooks/use-toast";
 import Layout from "@/components/layout"; 
 import PaymentReadinessBanner from "@/components/section/dashboard/PaymentReadinessBanner";
 import Link from "next/link"; 
+import Image from "next/image";
 import { onAuthStateChanged } from "firebase/auth";
 import { Plus, X, UploadCloud, Save, Edit3, Trash2, Globe } from "lucide-react";
+import { createStudioPublication } from "@/core/studio-client";
+import { buildUserScopedProductAssetPath } from "@/core/security/product-image-path";
 
 interface AuthorIdentityOption {
   id: string;
@@ -30,20 +33,59 @@ interface ProductStoryWorld {
   defaultWebsiteConnectionId?: string | null;
 }
 
+interface ProductRecord {
+  id: string;
+  title?: string;
+  type?: string;
+  status?: string;
+  category?: string;
+  description?: string;
+  synopsis?: string;
+  coverArtUrl?: string;
+  bgImageUrl?: string;
+  price?: number | string;
+  unitPrice?: number;
+  studioKey?: string;
+  wpStudioKey?: string;
+  associatedWebsite?: string;
+  websiteConnectionId?: string;
+  storyWorldId?: string;
+  universeId?: string;
+  authorIdentityId?: string;
+  chapters?: unknown[];
+  studioTracks?: unknown[];
+  ebookPayload?: unknown;
+  wordpressDeployment?: {
+    websiteConnectionId?: string;
+    status?: string;
+    publicationId?: number | string;
+    pageId?: number | string;
+    targetWpOrigin?: string;
+  };
+  _originalWebsiteConnectionId?: string;
+  _originalAssociatedWebsite?: string;
+}
+
+interface UserProfile {
+  studioKey?: string;
+  connectionStatus?: string;
+}
+
 export const dynamic = 'force-dynamic';
 
 export default function ProductsPage() {
-  const [products, setProducts] = useState<any[]>([]);
-  const [editingProduct, setEditingProduct] = useState<any | null>(null);
+  const [products, setProducts] = useState<ProductRecord[]>([]);
+  const [editingProduct, setEditingProduct] = useState<ProductRecord | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
-  const [userProfile, setUserProfile] = useState<any | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [websiteConnections, setWebsiteConnections] = useState<ProductWebsiteConnection[]>([]);
   const [storyWorlds, setStoryWorlds] = useState<ProductStoryWorld[]>([]);
   const [destinationsLoading, setDestinationsLoading] = useState(false);
   const [authorIdentities, setAuthorIdentities] = useState<AuthorIdentityOption[]>([]);
-  const [uploadProgress, setUploadProgress] = useState<{ cover: number; bg: number }>({ cover: 0, bg: 0 });
-  const [isUploading, setIsUploading] = useState<{ cover: boolean; bg: boolean }>({ cover: false, bg: false });
+  const [, setUploadProgress] = useState<{ cover: number; bg: number }>({ cover: 0, bg: 0 });
+  const [, setIsUploading] = useState<{ cover: boolean; bg: boolean }>({ cover: false, bg: false });
   const { toast } = useToast();
 
   useEffect(() => {
@@ -53,7 +95,7 @@ export default function ProductsPage() {
         const userDocRef = doc(db, "users", user.email);
         const userSnap = await getDoc(userDocRef);
         if (userSnap.exists()) {
-          setUserProfile(userSnap.data());
+          setUserProfile(userSnap.data() as UserProfile);
         }
       } else {
         setCurrentUserEmail(null);
@@ -129,7 +171,7 @@ export default function ProductsPage() {
     const selected = websiteConnections.find((website) =>
       website.websiteConnectionId === websiteConnectionId
     );
-    setEditingProduct((current: any | null) => current ? {
+    setEditingProduct((current) => current ? {
       ...current,
       websiteConnectionId,
       associatedWebsite: selected?.wordpressOrigin || current.associatedWebsite || "",
@@ -190,37 +232,47 @@ export default function ProductsPage() {
     return () => unsubscribe();
   }, [currentUserEmail]);
 
-  const handleCreateDraft = () => {
-    const generatedId = `abk_${Math.random().toString(36).substring(2, 9)}`;
-    const websiteConnectionId = chooseProductWebsiteConnectionId(
-      {},
-      websiteConnections,
-      storyWorlds
-    );
-    const selectedWebsite = websiteConnections.find((website) =>
-      website.websiteConnectionId === websiteConnectionId
-    );
-    setEditingProduct({
-      id: generatedId,
-      title: "New Audiobook Draft",
-      price: 0.00,
-      status: "draft",
-      type: "audiobook",
-      category: "Audiobooks",
-      coverArtUrl: "",
-      bgImageUrl: "",
-      synopsis: "Draft workspace canvas.",
-      authorIdentityId: authorIdentities[0]?.id || "primary",
-      studioKey: userProfile?.studioKey || "",
-      wpStudioKey: userProfile?.studioKey || "",
-      websiteConnectionId,
-      associatedWebsite: selectedWebsite?.wordpressOrigin || "",
-      _originalWebsiteConnectionId: "",
-      _originalAssociatedWebsite: "",
-    });
+  const handleCreateDraft = async (publicationType: "audiobook" | "ebook") => {
+    if (isCreating) return;
+    setIsCreating(true);
+    try {
+      const created = await createStudioPublication(publicationType);
+      const canonicalProduct = created.product;
+      if (!canonicalProduct || canonicalProduct.id !== created.assetId) {
+        throw new Error("The publication workspace could not be confirmed.");
+      }
+      const websiteConnectionId = chooseProductWebsiteConnectionId(
+        { id: "" },
+        websiteConnections,
+        storyWorlds
+      );
+      const selectedWebsite = websiteConnections.find((website) =>
+        website.websiteConnectionId === websiteConnectionId
+      );
+      setEditingProduct({
+        ...canonicalProduct,
+        price: 0,
+        bgImageUrl: "",
+        authorIdentityId: authorIdentities[0]?.id || "primary",
+        studioKey: userProfile?.studioKey || "",
+        wpStudioKey: userProfile?.studioKey || "",
+        websiteConnectionId,
+        associatedWebsite: selectedWebsite?.wordpressOrigin || "",
+        _originalWebsiteConnectionId: "",
+        _originalAssociatedWebsite: "",
+      });
+    } catch (error) {
+      toast({
+        title: "Draft creation failed",
+        description: error instanceof Error ? error.message : "A publication workspace could not be created.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsCreating(false);
+    }
   };
 
-  const handleEditProduct = (product: any) => {
+  const handleEditProduct = (product: ProductRecord) => {
     const websiteConnectionId = chooseProductWebsiteConnectionId(
       product,
       websiteConnections,
@@ -250,13 +302,18 @@ export default function ProductsPage() {
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: "cover" | "bg") => {
     const file = e.target.files?.[0];
-    if (!file || !editingProduct) return;
+    if (!file || !editingProduct || !currentUserEmail) return;
 
     setIsUploading(prev => ({ ...prev, [type]: true }));
     setUploadProgress(prev => ({ ...prev, [type]: 0 }));
 
     const storage = getStorage();
-    const fileName = `assets/${editingProduct.id}_${type === "cover" ? "coverUrl" : "bgImageUrl"}_${file.name}`;
+    const fileName = buildUserScopedProductAssetPath(
+      currentUserEmail,
+      editingProduct.id,
+      type,
+      file.name
+    );
     const storageRef = ref(storage, fileName);
     const uploadTask = uploadBytesResumable(storageRef, file);
 
@@ -272,7 +329,7 @@ export default function ProductsPage() {
       },
       async () => {
         const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-        setEditingProduct((prev: any | null) => prev ? ({
+        setEditingProduct((prev) => prev ? ({
           ...prev,
           [type === "cover" ? "coverArtUrl" : "bgImageUrl"]: downloadUrl,
         }) : prev);
@@ -343,6 +400,7 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
     // Inside your handleSaveAndDeploy routine inside app/products/page.tsx
     const payload = {
       bookTitle: editingProduct.title,
+      assetId: editingProduct.id,
       synopsis: editingProduct.synopsis || editingProduct.description || "",
       coverUrl: editingProduct.coverArtUrl || "", 
       bgImageUrl: editingProduct.bgImageUrl || "", 
@@ -351,7 +409,9 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
         editingProduct.category ||
         ((editingProduct.type || "audiobook") === "ebook" ? "E-Books" : "Audiobooks"),
       price: numericPrice,
-      status: editingProduct.status || "published", 
+      // Fail closed: a missing client-side status must never publish a book.
+      // The author must explicitly select published before WordPress receives it.
+      status: editingProduct.status || "draft",
       authorIdentityId: editingProduct.authorIdentityId || authorIdentities[0]?.id || "primary",
       websiteConnectionId: selectedWebsite.websiteConnectionId,
       universeId: editingProduct.universeId || editingProduct.storyWorldId || null,
@@ -378,20 +438,10 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
       throw new Error(cloudData?.error || "Your publication could not be saved.");
     }
     const canonicalAssetKey = String(cloudData.assetKey || editingProduct.id);
-    const productResponse = await fetch(`/api/products/${encodeURIComponent(canonicalAssetKey)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        synopsis: payload.synopsis,
-        authorIdentityId: payload.authorIdentityId,
-        category: payload.category,
-      }),
-    });
-    const productResult = await productResponse.json().catch(() => ({}));
-    if (!productResponse.ok || !productResult.success) {
-      throw new Error(productResult.error || "The product was deployed, but its synopsis could not be saved.");
+    if (!cloudData.product || String(cloudData.product.id) !== canonicalAssetKey) {
+      throw new Error("The publication was deployed, but its saved product record could not be confirmed.");
     }
-    const updatedProduct = productResult.product;
+    const updatedProduct = cloudData.product;
     setProducts((current) => {
       const remaining = current.filter((product) =>
         product.id !== editingProduct.id && product.id !== canonicalAssetKey
@@ -409,8 +459,8 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
       description: `Your secure product record ${canonicalAssetKey} is ready.`,
     });
 
-  } catch (err: any) {
-    toast({ title: "Deployment Failed", description: err.message, variant: "destructive" });
+  } catch (err: unknown) {
+    toast({ title: "Deployment Failed", description: err instanceof Error ? err.message : "Deployment failed.", variant: "destructive" });
   } finally {
     setIsSaving(false);
   }
@@ -428,8 +478,8 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
       }
       toast({ title: "Product Deleted", description: "Metadata removed from live Firestore catalogs." });
       setEditingProduct(null);
-    } catch (err: any) {
-      toast({ title: "Deletion Failed", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({ title: "Deletion Failed", description: err instanceof Error ? err.message : "Deletion failed.", variant: "destructive" });
     }
   };
 
@@ -443,12 +493,24 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
             <h1 className="text-3xl font-black tracking-tight text-white">Product Catalog</h1>
             <p className="text-sm text-slate-300 mt-1">Manage, update, and deploy physical and digital audio distribution streams.</p>
           </div>
-          <button 
-            onClick={handleCreateDraft} 
-            className="flex items-center gap-2 bg-[#8b4528] text-white hover:bg-[#723820] px-5 py-3 rounded-lg font-semibold shadow-lg transition-all"
-          >
-            <Plus className="w-4 h-4" /> Add Product Asset
-          </button>
+          <div className="flex flex-wrap items-center gap-2" aria-label="Create publication workspace">
+            <button
+              type="button"
+              onClick={() => handleCreateDraft("audiobook")}
+              disabled={isCreating}
+              className="flex items-center gap-2 bg-[#8b4528] text-white hover:bg-[#723820] disabled:cursor-wait disabled:opacity-70 px-5 py-3 rounded-lg font-semibold shadow-lg transition-all"
+            >
+              <Plus className="w-4 h-4" /> {isCreating ? "Creating Workspace..." : "New Audiobook"}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleCreateDraft("ebook")}
+              disabled={isCreating}
+              className="flex items-center gap-2 border border-[#8b4528] bg-slate-950/40 text-white hover:bg-[#8b4528]/20 disabled:cursor-wait disabled:opacity-70 px-5 py-3 rounded-lg font-semibold shadow-lg transition-all"
+            >
+              <Plus className="w-4 h-4" /> {isCreating ? "Creating Workspace..." : "New E-Book"}
+            </button>
+          </div>
         </div>
 
         {userProfile && (
@@ -469,14 +531,17 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
               Your Dynamic Staging Canvas is Empty. Deploy assets through the command center.
             </div>
           ) : (
-            products.map((product: any) => (
+            products.map((product) => (
               <div key={product.id} className="relative group overflow-hidden bg-[#2d3b5e] border border-[#40527c] rounded-xl p-5 shadow-lg flex flex-col justify-between hover:border-[#8b4528]/50 transition-all">
                 <div>
                   <div className="relative w-full h-48 rounded-md mb-4 bg-black/25 overflow-hidden">
-                    <img 
+                    <Image
                       src={product.coverArtUrl || "/placeholder.jpg"} 
-                      alt={product.title} 
-                      className="w-full h-full object-cover" 
+                      alt={product.title || "Publication cover"}
+                      fill
+                      unoptimized
+                      sizes="(max-width: 768px) 100vw, 33vw"
+                      className="object-cover"
                     />
                     <div className="absolute top-2 right-2 flex gap-1">
                       <span className={`text-[10px] border px-2 py-0.5 rounded font-mono uppercase ${product.status === 'published' ? 'bg-emerald-900/90 border-emerald-500/50 text-emerald-400' : 'bg-slate-900/90 border-white/10 text-white'}`}>
@@ -598,30 +663,17 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
 
                     <div className="flex flex-col space-y-1.5">
                       <label className="text-xs font-semibold text-slate-300">Media Type</label>
-                      <select 
+                      <select
+                        disabled
                         value={editingProduct.type || "audiobook"}
-                        onChange={(e) => {
-                          const newType = e.target.value;
-                          const newPrefix = newType === "ebook" ? "ebk_" : "abk_";
-                          const currentCleanId = editingProduct.id.replace(/^(abk_|ebk_)/, "");
-                          const currentCategory = String(editingProduct.category || "").trim();
-                          const defaultCategory = newType === "ebook" ? "E-Books" : "Audiobooks";
-                          const previousDefault = newType === "ebook" ? "Audiobooks" : "E-Books";
-                          setEditingProduct({
-                            ...editingProduct, 
-                            type: newType,
-                            id: `${newPrefix}${currentCleanId}`,
-                            category:
-                              !currentCategory || currentCategory === previousDefault
-                                ? defaultCategory
-                                : currentCategory,
-                          });
-                        }}
-                        className="bg-[#222b45] border border-[#40527c] rounded-lg p-2.5 text-white text-sm focus:outline-none"
+                        className="bg-[#1a2138] border border-[#40527c]/40 rounded-lg p-2.5 text-slate-400 text-sm focus:outline-none"
                       >
                         <option value="audiobook">Audiobook</option>
                         <option value="ebook">E-Book</option>
                       </select>
+                      <p className="text-[11px] leading-4 text-slate-400">
+                        Publication type is fixed when the canonical workspace is created.
+                      </p>
                     </div>
                   </div>
 
@@ -812,7 +864,7 @@ const handleSaveAndDeploy = async (e: React.FormEvent) => {
 }
 
 function chooseProductWebsiteConnectionId(
-  product: Record<string, any>,
+  product: ProductRecord,
   websites: ProductWebsiteConnection[],
   worlds: ProductStoryWorld[]
 ): string {

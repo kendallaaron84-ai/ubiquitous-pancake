@@ -1,15 +1,22 @@
 import { adminDb, adminStorage } from "@/core/firebase-admin";
 import { createCorsHeaders } from "@/core/security/cors";
-import { signReaderToken, verifyReaderToken } from "@/core/security/reader-token";
-import { readerAccessKeyId } from "@/core/security/reader-access";
+import { verifyReaderToken } from "@/core/security/reader-token";
 import { requireAuthorizedAuthorIdentity } from "@/core/security/author-identity";
 import {
+  LegacyPublicationAccessError,
+  resolveLegacyPublicationAuthorName,
+} from "@/core/security/legacy-publication-access";
+import {
+  authorizeAnonymousFreeMedia,
   authorizeReaderMedia,
   buildProtectedPublicationChapters,
   ReaderMediaAuthorizationError,
 } from "@/core/security/reader-media-authorization";
+import {
+  requireCanonicalReaderMediaPrincipal,
+  UnsupportedReaderMediaPrincipalError,
+} from "@/core/security/reader-media-principal";
 import { NextResponse } from "next/server";
-import { decodeJwt } from "jose";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,6 +24,19 @@ export const runtime = "nodejs";
 const ASSET_KEY_PATTERN = /^[a-z0-9][a-z0-9_-]{1,159}$/i;
 function cleanString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function illustratedSettings(value: unknown) {
+  const settings = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    spreadStart: cleanString(settings.spreadStart) === "left" ? "left" : "right",
+    allowSpreads: settings.allowSpreads !== false,
+    pageBackground: /^#[0-9a-f]{6}$/i.test(cleanString(settings.pageBackground))
+      ? cleanString(settings.pageBackground)
+      : "#111111",
+  };
 }
 
 function normalizeWebOrigin(value: unknown): string | null {
@@ -93,6 +113,7 @@ async function attachProtectedChapterUrls(
   const bucketName =
     process.env.FIREBASE_STORAGE_BUCKET?.trim() ||
     process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET?.trim();
+  const localMediaGateway = resolveLocalMediaGateway();
   const signedUrlExpiration = Date.now() + 60 * 60 * 1000;
   return buildProtectedPublicationChapters({
     chapters,
@@ -100,6 +121,10 @@ async function attachProtectedChapterUrls(
     assetId: assetKey,
     publicationType,
     signStoragePath: async (storagePath) => {
+      if (localMediaGateway) {
+        const fileName = storagePath.split("/").pop() || "illustration.jpg";
+        return `${localMediaGateway}/storage-preview/${encodeURIComponent(fileName)}?path=${encodeURIComponent(storagePath)}`;
+      }
       if (!bucketName) throw new Error("MEDIA_STORAGE_NOT_CONFIGURED");
       const [url] = await adminStorage
         .bucket(bucketName)
@@ -108,6 +133,26 @@ async function attachProtectedChapterUrls(
       return url;
     },
   });
+}
+
+function resolveLocalMediaGateway(): string {
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.KOBA_LOCAL_ACCEPTANCE !== "true"
+  ) return "";
+  const configured = process.env.KOBA_LOCAL_MEDIA_GATEWAY_URL?.trim() || "";
+  if (!configured) return "";
+  try {
+    const parsed = new URL(configured);
+    if (
+      parsed.protocol !== "http:" ||
+      (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") ||
+      parsed.username || parsed.password || parsed.search || parsed.hash
+    ) return "";
+    return parsed.origin;
+  } catch {
+    return "";
+  }
 }
 
 export async function OPTIONS(request: Request) {
@@ -176,16 +221,28 @@ export async function GET(request: Request) {
       );
       verifiedAuthorName = authorIdentity.displayName;
     } else {
-      if (activeLicense.exists && activeLicense.data()?.status === "active") {
-        return NextResponse.json(
-          { success: false, error: "This publication must be assigned to a registered author name." },
-          { status: 403, headers }
-        );
+      try {
+        verifiedAuthorName = resolveLegacyPublicationAuthorName({
+          publicationAuthorEmail: authorEmail,
+          publicationAuthorName: data.authorName,
+          activeLicenseExists: activeLicense.exists,
+          license: licenseData,
+        });
+      } catch (error) {
+        if (error instanceof LegacyPublicationAccessError) {
+          return NextResponse.json(
+            { success: false, code: error.code, error: error.publicMessage },
+            { status: error.status, headers }
+          );
+        }
+        throw error;
       }
-      console.warn("Serving a legacy publication without an identity registry link.", { assetKey, tenantKey });
+      console.warn("Serving an ownership-verified legacy publication without an identity registry link.", {
+        assetKey,
+        tenantKey,
+      });
     }
     const price = Number(data.price ?? data.unitPrice ?? 0);
-    let renewedReaderSession: Record<string, unknown> | null = null;
     const authorization = request.headers.get("authorization") || "";
     const readerToken = authorization.startsWith("Bearer ")
       ? authorization.slice(7).trim()
@@ -215,6 +272,18 @@ export async function GET(request: Request) {
       );
     }
 
+    try {
+      requireCanonicalReaderMediaPrincipal(claims);
+    } catch (error: unknown) {
+      if (error instanceof UnsupportedReaderMediaPrincipalError) {
+        return NextResponse.json(
+          { success: false, code: error.code, error: error.message },
+          { status: error.status, headers }
+        );
+      }
+      throw error;
+    }
+
     if (claims.tenantId !== tenantKey) {
       return NextResponse.json(
         {
@@ -226,7 +295,43 @@ export async function GET(request: Request) {
       );
     }
 
-    if (claims.principalType === "firebase_uid") {
+    if (claims.principalType === "anonymous_free") {
+      if (
+        claims.assetId !== assetKey ||
+        !normalizedRequestOrigin ||
+        claims.origin !== normalizedRequestOrigin
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: "READER_MEDIA_FREE_SCOPE_MISMATCH",
+            error: "Free-publication access does not match this asset or website.",
+          },
+          { status: 403, headers }
+        );
+      }
+      try {
+        const authorized = await authorizeAnonymousFreeMedia(adminDb, {
+          assetId: assetKey,
+          requestOrigin: normalizedRequestOrigin,
+        });
+        if (authorized.tenantId !== claims.tenantId) {
+          throw new ReaderMediaAuthorizationError(
+            403,
+            "READER_MEDIA_TENANT_MISMATCH",
+            "Reader access does not match this publication."
+          );
+        }
+      } catch (error: unknown) {
+        if (error instanceof ReaderMediaAuthorizationError) {
+          return NextResponse.json(
+            { success: false, code: error.code, error: error.message },
+            { status: error.status, headers }
+          );
+        }
+        throw error;
+      }
+    } else if (claims.principalType === "firebase_uid") {
       try {
         await authorizeReaderMedia(adminDb, {
           readerUid: claims.principalId,
@@ -242,82 +347,6 @@ export async function GET(request: Request) {
           );
         }
         throw error;
-      }
-    } else {
-      // Explicit version-0 compatibility. Tokens without the firebase_uid
-      // marker remain on the legacy phone-derived entitlement path until 5F.
-      const identityHashSecret = process.env.KOBA_IDENTITY_HASH_SECRET?.trim();
-      if (!identityHashSecret) {
-        throw new Error("READER_SECURITY_CONFIGURATION_MISSING");
-      }
-      const accessKey = readerAccessKeyId(
-        identityHashSecret,
-        claims.tenantId,
-        claims.principalId,
-        assetKey
-      );
-      const accessSnapshot = await adminDb
-        .collection("reader_access_keys")
-        .doc(accessKey)
-        .get();
-      const access = accessSnapshot.data() || {};
-      if (
-        !accessSnapshot.exists ||
-        access.status !== "active" ||
-        access.tenantId !== tenantKey ||
-        access.principalId !== claims.principalId ||
-        access.assetKey !== assetKey ||
-        typeof access.entitlementId !== "string"
-      ) {
-        return NextResponse.json(
-          {
-            success: false,
-            code: "ASSET_NOT_OWNED",
-            error: "This reader does not own the requested publication.",
-          },
-          { status: 403, headers }
-        );
-      }
-
-      const entitlementSnapshot = await adminDb
-        .collection("entitlements")
-        .doc(access.entitlementId)
-        .get();
-      const entitlement = entitlementSnapshot.data() || {};
-      if (
-        !entitlementSnapshot.exists ||
-        entitlement.status !== "active" ||
-        entitlement.assetKey !== assetKey ||
-        (entitlement.tenantKey || entitlement.studioKey) !== tenantKey ||
-        entitlement.principalId !== claims.principalId ||
-        !entitlement.stripeSessionId
-      ) {
-        return NextResponse.json(
-          {
-            success: false,
-            code: "ASSET_NOT_OWNED",
-            error: "An active purchase entitlement was not found.",
-          },
-          { status: 403, headers }
-        );
-      }
-
-      const legacyClaims = decodeJwt(readerToken);
-      const legacyLifetimeSeconds =
-        typeof legacyClaims.exp === "number" && typeof legacyClaims.iat === "number"
-          ? legacyClaims.exp - legacyClaims.iat
-          : 0;
-      if (legacyLifetimeSeconds > 0 && legacyLifetimeSeconds <= 24 * 60 * 60) {
-        const renewedToken = await signReaderToken({
-          principalId: claims.principalId,
-          tenantId: claims.tenantId,
-        });
-        const renewedExpiration = decodeJwt(renewedToken).exp;
-        renewedReaderSession = {
-          readerToken: renewedToken,
-          tenantId: claims.tenantId,
-          expiresAt: renewedExpiration ? renewedExpiration * 1000 : null,
-        };
       }
     }
 
@@ -342,6 +371,10 @@ export async function GET(request: Request) {
       bgImage: cleanString(data.bgImageUrl || data.backgroundUrl),
       authorName: verifiedAuthorName,
       price: Number.isFinite(price) ? price : 0,
+      layoutMode: cleanString(data.layoutMode) === "illustrated_pages"
+        ? "illustrated_pages"
+        : "reflowable",
+      illustratedPageSettings: illustratedSettings(data.illustratedPageSettings),
       chapters,
     };
 
@@ -351,7 +384,6 @@ export async function GET(request: Request) {
         mode: "authorized-publication",
         products: [product],
         books: [product],
-        readerSession: renewedReaderSession,
       },
       { status: 200, headers }
     );

@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
@@ -9,6 +8,8 @@ import { requireNexusAuthorContext } from "@/core/nexus/author-context";
 import { getNexusFeatureFlags } from "@/core/nexus/feature-flags";
 import { nexusErrorResponse, NexusRouteError, text } from "@/core/nexus/http";
 import { createTraceabilityChunks, estimateTokens, NEXUS_REFERENCE_GUIDE_LIMITS, validateReferenceGuideFile, validateReferenceGuideText } from "@/core/nexus/reference-guide";
+import { extractNexusSourceText, safeNexusSourceFileName } from "@/core/nexus/source-file";
+import { assertOwnedStoryWorld } from "@/core/nexus/story-world-authoring";
 import {
   assertGuideCanBeArchived,
   assertGuideCanBecomeActive,
@@ -20,11 +21,68 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const nodeRequire = createRequire(import.meta.url);
+export async function GET(request: Request) {
+  try {
+    const context = await requireNexusAuthorContext();
+    if (!getNexusFeatureFlags().referenceGuide) throw new NexusRouteError(404, "Reference Guides are not enabled.");
+    if (!adminStorage) throw new NexusRouteError(503, "Reference Guide storage is unavailable.");
+    const url = new URL(request.url);
+    const universeId = text(url.searchParams.get("universeId"), 80);
+    const referenceGuideId = text(url.searchParams.get("referenceGuideId"), 80);
+    if (!universeId || !referenceGuideId) throw new NexusRouteError(400, "A Story World and Reference Guide are required.");
+    const worldRef = adminDb.collection("nexus_story_worlds").doc(universeId);
+    const guideRef = worldRef.collection("reference_guides").doc(referenceGuideId);
+    const [worldSnapshot, guideSnapshot, versionsSnapshot] = await Promise.all([
+      worldRef.get(),
+      guideRef.get(),
+      guideRef.collection("versions").orderBy("version", "desc").get(),
+    ]);
+    const worldData = worldSnapshot.data() || {};
+    const guideData = guideSnapshot.data() || {};
+    assertOwnedStoryWorld(worldSnapshot.exists, worldData, context);
+    if (!guideSnapshot.exists || guideData.studioKey !== context.studioKey || guideData.authorId !== context.authorId || guideData.universeId !== universeId) {
+      throw new NexusRouteError(404, "The selected Reference Guide was not found.");
+    }
+    const requestedVersion = Number(url.searchParams.get("version") || guideData.version || 0);
+    const versionSnapshot = versionsSnapshot.docs.find((item) => Number(item.id) === requestedVersion);
+    const versionData = versionSnapshot?.data() || {};
+    if (!versionSnapshot || versionData.status !== "ready") throw new NexusRouteError(404, "The selected Reference Guide version was not found.");
+    const safePrefix = `nexus/${context.studioKey}/story-worlds/${universeId}/reference-guides/${referenceGuideId}/v${requestedVersion}/`;
+    const extractedTextStoragePath = text(versionData.extractedTextStoragePath, 1_000);
+    if (!extractedTextStoragePath.startsWith(safePrefix)) throw new NexusRouteError(409, "The selected Reference Guide version is unavailable.");
+    const normalizedText = await adminStorage.bucket(resolveFirebaseStorageBucketName()).file(extractedTextStoragePath).download().then(([bytes]) => bytes.toString("utf8"));
+    return NextResponse.json({
+      success: true,
+      guide: {
+        referenceGuideId,
+        displayName: text(guideData.displayName, 200),
+        version: Number(guideData.version || 0),
+        requestedVersion,
+        canonical: worldData.defaultReferenceGuideId === referenceGuideId,
+        status: normalizeReferenceGuideStatus(guideData),
+        spoilerPolicy: publicSpoilerPolicy(guideData.spoilerPolicy),
+        normalizedText,
+        versions: versionsSnapshot.docs.map((item) => {
+          const data = item.data();
+          return {
+            version: Number(data.version || item.id),
+            status: data.status,
+            wordCount: Number(data.wordCount || 0),
+            characterCount: Number(data.extractedCharacterCount || 0),
+            createdAt: data.createdAt || null,
+          };
+        }),
+      },
+    }, { headers: { "Cache-Control": "private, no-store" } });
+  } catch (error) {
+    return lifecycleErrorResponse(error);
+  }
+}
 
 export async function POST(request: Request) {
   let guideRef: FirebaseFirestore.DocumentReference | null = null;
   let uploadRequestRef: FirebaseFirestore.DocumentReference | null = null;
+  let pendingVersionRef: FirebaseFirestore.DocumentReference | null = null;
   let replacingExisting = false;
   try {
     const context = await requireNexusAuthorContext();
@@ -109,7 +167,7 @@ export async function POST(request: Request) {
     let wordCount: number;
     let characterCount: number;
     try {
-      const validated = validateReferenceGuideText(await extractText(bytes, file.name, file.type));
+      const validated = validateReferenceGuideText(await extractNexusSourceText(bytes, file.name, file.type));
       extracted = validated.normalizedText;
       wordCount = validated.wordCount;
       characterCount = validated.characterCount;
@@ -133,7 +191,7 @@ export async function POST(request: Request) {
     try {
       bucket = adminStorage.bucket(resolveFirebaseStorageBucketName());
       await Promise.all([
-        bucket.file(`${basePath}/source/${safeFileName(file.name)}`).save(bytes, { resumable: false, contentType: file.type || "application/octet-stream", metadata: { cacheControl: "private, no-store" } }),
+        bucket.file(`${basePath}/source/${safeNexusSourceFileName(file.name)}`).save(bytes, { resumable: false, contentType: file.type || "application/octet-stream", metadata: { cacheControl: "private, no-store" } }),
         bucket.file(`${basePath}/extracted.txt`).save(Buffer.from(extracted, "utf8"), { resumable: false, contentType: "text/plain; charset=utf-8", metadata: { cacheControl: "private, no-store" } }),
       ]);
     } catch (error) {
@@ -146,8 +204,9 @@ export async function POST(request: Request) {
 
     await createdGuideRef.set(replacingExisting ? { replacementStatus: "indexing", updatedAt: FieldValue.serverTimestamp() } : { status: "indexing", updatedAt: FieldValue.serverTimestamp() }, { merge: true });
     const versionRef = createdGuideRef.collection("versions").doc(String(version));
+    pendingVersionRef = versionRef;
     const acknowledgement = { contentPolicyVersion: 1, publicSafeAcknowledged: true, publicSafeAcknowledgedAt: FieldValue.serverTimestamp(), publicSafeAcknowledgedByUid: context.session.uid };
-    await versionRef.set({ version, sourceSha256: digest, status: "ready", sourceStoragePath: `${basePath}/source/${safeFileName(file.name)}`, extractedTextStoragePath: `${basePath}/extracted.txt`, extractedCharacterCount: characterCount, wordCount, estimatedTokenCount: estimateTokens(extracted), chunkCount: chunks.length, ...acknowledgement, createdAt: FieldValue.serverTimestamp() });
+    await versionRef.create({ version, sourceSha256: digest, status: "ready", sourceStoragePath: `${basePath}/source/${safeNexusSourceFileName(file.name)}`, extractedTextStoragePath: `${basePath}/extracted.txt`, extractedCharacterCount: characterCount, wordCount, estimatedTokenCount: estimateTokens(extracted), chunkCount: chunks.length, ...acknowledgement, createdAt: FieldValue.serverTimestamp() });
     for (let offset = 0; offset < chunks.length; offset += 400) {
       const batch = adminDb.batch();
       chunks.slice(offset, offset + 400).forEach((chunk, index) => {
@@ -157,13 +216,103 @@ export async function POST(request: Request) {
       });
       await batch.commit();
     }
-    await createdGuideRef.set({ displayName: text(form.get("displayName"), 200) || (typeof existingGuide?.displayName === "string" ? existingGuide.displayName : file.name), originalFileName: file.name.slice(0, 240), mimeType: file.type, fileSizeBytes: file.size, sourceSha256: digest, version, status: "ready", spoilerPolicy, sourceStoragePath: `${basePath}/source/${safeFileName(file.name)}`, extractedTextStoragePath: `${basePath}/extracted.txt`, extractedCharacterCount: characterCount, wordCount, estimatedTokenCount: estimateTokens(extracted), chunkCount: chunks.length, ...acknowledgement, replacementStatus: FieldValue.delete(), pendingVersion: FieldValue.delete(), replacementErrorMessage: FieldValue.delete(), readyAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
-    await worldRef.set({ defaultReferenceGuideId: referenceGuideId, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await createdGuideRef.set({ displayName: text(form.get("displayName"), 200) || (typeof existingGuide?.displayName === "string" ? existingGuide.displayName : file.name), originalFileName: file.name.slice(0, 240), mimeType: file.type, fileSizeBytes: file.size, sourceSha256: digest, version, status: "ready", spoilerPolicy, sourceStoragePath: `${basePath}/source/${safeNexusSourceFileName(file.name)}`, extractedTextStoragePath: `${basePath}/extracted.txt`, extractedCharacterCount: characterCount, wordCount, estimatedTokenCount: estimateTokens(extracted), chunkCount: chunks.length, ...acknowledgement, replacementStatus: FieldValue.delete(), pendingVersion: FieldValue.delete(), replacementErrorMessage: FieldValue.delete(), readyAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    if (!worldData.defaultReferenceGuideId) {
+      await worldRef.set({ defaultReferenceGuideId: referenceGuideId, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    }
     await uploadRequestRef.set({ status: "completed", referenceGuideId, version, updatedAt: FieldValue.serverTimestamp(), completedAt: FieldValue.serverTimestamp() }, { merge: true });
     return NextResponse.json({ success: true, referenceGuideId, version, wordCount, characterCount, chunkCount: chunks.length, replaced: replacingExisting }, { status: replacingExisting ? 200 : 201 });
   } catch (error) {
     if (uploadRequestRef) await uploadRequestRef.set({ status: "failed", updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
+    if (pendingVersionRef) await pendingVersionRef.set({ status: "failed", failedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
     if (guideRef) await guideRef.set(replacingExisting ? { replacementStatus: "failed", pendingVersion: FieldValue.delete(), replacementErrorMessage: error instanceof Error ? error.message.slice(0, 500) : "Reference Guide replacement failed.", updatedAt: FieldValue.serverTimestamp() } : { status: "failed", errorMessage: error instanceof Error ? error.message.slice(0, 500) : "Reference Guide ingestion failed.", updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
+    return lifecycleErrorResponse(error);
+  }
+}
+
+export async function PUT(request: Request) {
+  let guideRef: FirebaseFirestore.DocumentReference | null = null;
+  let uploadRequestRef: FirebaseFirestore.DocumentReference | null = null;
+  let pendingVersionRef: FirebaseFirestore.DocumentReference | null = null;
+  try {
+    const context = await requireNexusAuthorContext();
+    if (!getNexusFeatureFlags().referenceGuide) throw new NexusRouteError(404, "Reference Guides are not enabled.");
+    if (!adminStorage) throw new NexusRouteError(503, "Reference Guide storage is unavailable.");
+    const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+    const universeId = text(body?.universeId, 80);
+    const referenceGuideId = text(body?.referenceGuideId, 80);
+    const clientRequestId = text(body?.clientRequestId, 120);
+    if (!universeId || !referenceGuideId) throw new NexusRouteError(400, "A Story World and Reference Guide are required.");
+    if (!clientRequestId || !/^[A-Za-z0-9_-]{8,120}$/.test(clientRequestId)) throw new NexusRouteError(400, "A valid save request ID is required.");
+    if (body?.publicSafeAcknowledged !== true) throw new NexusRouteError(400, "Confirm that this Reference Guide contains only public-facing information the engine may discuss.");
+
+    const worldRef = adminDb.collection("nexus_story_worlds").doc(universeId);
+    guideRef = worldRef.collection("reference_guides").doc(referenceGuideId);
+    const [worldSnapshot, guideSnapshot] = await Promise.all([worldRef.get(), guideRef.get()]);
+    const worldData = worldSnapshot.data() || {};
+    const guideData = guideSnapshot.data() || {};
+    assertOwnedStoryWorld(worldSnapshot.exists, worldData, context, { requireActive: true });
+    if (!guideSnapshot.exists || guideData.studioKey !== context.studioKey || guideData.authorId !== context.authorId || guideData.universeId !== universeId || guideData.status !== "ready") {
+      throw new NexusRouteError(404, "The selected Reference Guide was not found.");
+    }
+
+    uploadRequestRef = worldRef.collection("reference_guide_upload_requests").doc(clientRequestId);
+    try {
+      await uploadRequestRef.create({ status: "processing", requestedGuideId: referenceGuideId, requestedByUid: context.session.uid, source: "author_edit", createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    } catch {
+      const existingRequest = await uploadRequestRef.get();
+      const existingData = existingRequest.data() || {};
+      if (existingData.status === "completed") return NextResponse.json({ success: true, referenceGuideId, version: existingData.version, deduplicated: true });
+      throw new ReferenceGuideLifecycleError("REFERENCE_GUIDE_DUPLICATE_REQUEST", 409, "This Reference Guide version is already processing. Wait for its status to update before trying again.");
+    }
+
+    const validated = validateNewVersionText(typeof body?.normalizedText === "string" ? body.normalizedText : "");
+    const digest = createHash("sha256").update(validated.normalizedText, "utf8").digest("hex");
+    if (guideData.sourceSha256 === digest) {
+      await uploadRequestRef.set({ status: "completed", referenceGuideId, version: guideData.version, deduplicated: true, completedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      return NextResponse.json({ success: true, referenceGuideId, version: guideData.version, deduplicated: true });
+    }
+
+    const version = Number(guideData.version || 0) + 1;
+    const chunks = createTraceabilityChunks(validated.normalizedText);
+    if (!chunks.length || chunks.length > NEXUS_REFERENCE_GUIDE_LIMITS.maxChunksPerGuide) throw new NexusRouteError(422, "The Reference Guide could not be divided into supported sections.");
+    const basePath = `nexus/${context.studioKey}/story-worlds/${universeId}/reference-guides/${referenceGuideId}/v${version}`;
+    const sourceStoragePath = `${basePath}/source/edited-reference-guide-v${version}.txt`;
+    const extractedTextStoragePath = `${basePath}/extracted.txt`;
+    const bytes = Buffer.from(validated.normalizedText, "utf8");
+    const bucket = adminStorage.bucket(resolveFirebaseStorageBucketName());
+    await guideRef.set({ replacementStatus: "extracting", pendingVersion: version, replacementStartedAt: FieldValue.serverTimestamp(), replacementErrorMessage: null, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await Promise.all([
+      bucket.file(sourceStoragePath).save(bytes, { resumable: false, contentType: "text/plain; charset=utf-8", metadata: { cacheControl: "private, no-store" } }),
+      bucket.file(extractedTextStoragePath).save(bytes, { resumable: false, contentType: "text/plain; charset=utf-8", metadata: { cacheControl: "private, no-store" } }),
+    ]);
+    await guideRef.set({ replacementStatus: "indexing", updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    const versionRef = guideRef.collection("versions").doc(String(version));
+    pendingVersionRef = versionRef;
+    const acknowledgement = { contentPolicyVersion: 1, publicSafeAcknowledged: true, publicSafeAcknowledgedAt: FieldValue.serverTimestamp(), publicSafeAcknowledgedByUid: context.session.uid };
+    await versionRef.create({ version, sourceSha256: digest, status: "ready", sourceStoragePath, extractedTextStoragePath, extractedCharacterCount: validated.characterCount, wordCount: validated.wordCount, estimatedTokenCount: estimateTokens(validated.normalizedText), chunkCount: chunks.length, ...acknowledgement, createdAt: FieldValue.serverTimestamp() });
+    for (let offset = 0; offset < chunks.length; offset += 400) {
+      const batch = adminDb.batch();
+      chunks.slice(offset, offset + 400).forEach((chunk, index) => {
+        const chunkIndex = offset + index;
+        const chunkId = `chunk_${String(chunkIndex).padStart(4, "0")}`;
+        batch.set(versionRef.collection("chunks").doc(chunkId), { schemaVersion: 1, chunkId, referenceGuideId, referenceGuideVersion: version, universeId, studioKey: context.studioKey, authorId: context.authorId, chunkIndex, text: chunk, sectionTitle: null, sourcePage: null, spoilerLevel: "public_safe", chunkPurpose: "traceability", chunkingModel: "traceability-v1", embeddingModel: "none", embeddingVersion: 0, createdAt: FieldValue.serverTimestamp() });
+      });
+      await batch.commit();
+    }
+    const spoilerPolicy = {
+      defaultLevel: "public_safe",
+      thingsSafeToDiscuss: text(body?.thingsSafeToDiscuss, 4_000),
+      thingsNeverToReveal: text(body?.thingsNeverToReveal, 4_000),
+    };
+    await guideRef.set({ sourceSha256: digest, version, status: "ready", spoilerPolicy, sourceStoragePath, extractedTextStoragePath, extractedCharacterCount: validated.characterCount, wordCount: validated.wordCount, estimatedTokenCount: estimateTokens(validated.normalizedText), chunkCount: chunks.length, ...acknowledgement, replacementStatus: FieldValue.delete(), pendingVersion: FieldValue.delete(), replacementErrorMessage: FieldValue.delete(), readyAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await uploadRequestRef.set({ status: "completed", referenceGuideId, version, completedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await writeReferenceGuideAudit(worldRef, context, "version_created", referenceGuideId, version);
+    return NextResponse.json({ success: true, referenceGuideId, version, wordCount: validated.wordCount, characterCount: validated.characterCount }, { status: 201 });
+  } catch (error) {
+    if (uploadRequestRef) await uploadRequestRef.set({ status: "failed", updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
+    if (pendingVersionRef) await pendingVersionRef.set({ status: "failed", failedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
+    if (guideRef) await guideRef.set({ replacementStatus: "failed", pendingVersion: FieldValue.delete(), replacementErrorMessage: error instanceof Error ? error.message.slice(0, 500) : "Reference Guide version failed.", updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
     return lifecycleErrorResponse(error);
   }
 }
@@ -171,6 +320,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     const context = await requireNexusAuthorContext();
+    if (!getNexusFeatureFlags().referenceGuide) throw new NexusRouteError(404, "Reference Guides are not enabled.");
     const body = await request.json() as Record<string, unknown>;
     const universeId = text(body.universeId, 80);
     const referenceGuideId = text(body.referenceGuideId, 80);
@@ -227,13 +377,15 @@ export async function PATCH(request: Request) {
 async function writeReferenceGuideAudit(
   worldRef: FirebaseFirestore.DocumentReference,
   context: Awaited<ReturnType<typeof requireNexusAuthorContext>>,
-  action: "active_cleared" | "active_set" | "archived" | "incomplete_deleted",
-  referenceGuideId: string | null
+  action: "active_cleared" | "active_set" | "archived" | "incomplete_deleted" | "version_created",
+  referenceGuideId: string | null,
+  version: number | null = null
 ) {
   await worldRef.collection("reference_guide_audit_events").doc(randomUUID()).create({
     schemaVersion: 1,
     action,
     referenceGuideId,
+    version,
     universeId: worldRef.id,
     studioKey: context.studioKey,
     authorId: context.authorId,
@@ -242,27 +394,36 @@ async function writeReferenceGuideAudit(
   });
 }
 
+function publicSpoilerPolicy(value: unknown): { thingsSafeToDiscuss: string; thingsNeverToReveal: string } {
+  const policy = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    thingsSafeToDiscuss: text(policy.thingsSafeToDiscuss, 4_000),
+    thingsNeverToReveal: text(policy.thingsNeverToReveal, 4_000),
+  };
+}
+
+function validateNewVersionText(value: string): ReturnType<typeof validateReferenceGuideText> {
+  try {
+    return validateReferenceGuideText(value);
+  } catch (error) {
+    const messages: Record<string, [number, string]> = {
+      REFERENCE_GUIDE_TEXT_EMPTY: [422, "Reference Guide text is required."],
+      REFERENCE_GUIDE_TOO_SHORT: [422, `Reference Guides must contain at least ${NEXUS_REFERENCE_GUIDE_LIMITS.minimumWords.toLocaleString()} normalized words.`],
+      REFERENCE_GUIDE_WORD_LIMIT_EXCEEDED: [413, `Reference Guides may contain no more than ${NEXUS_REFERENCE_GUIDE_LIMITS.maximumWords.toLocaleString()} normalized words. The text was not truncated or saved.`],
+      REFERENCE_GUIDE_CHARACTER_LIMIT_EXCEEDED: [413, `Reference Guides may contain no more than ${NEXUS_REFERENCE_GUIDE_LIMITS.maximumCharacters.toLocaleString()} normalized characters. The text was not truncated or saved.`],
+    };
+    const mapped = error instanceof Error ? messages[error.message] : undefined;
+    if (mapped) throw new NexusRouteError(mapped[0], mapped[1]);
+    throw error;
+  }
+}
+
 function lifecycleErrorResponse(error: unknown) {
   if (error instanceof ReferenceGuideLifecycleError) return NextResponse.json({ success: false, code: error.code, error: error.message }, { status: error.status });
   return nexusErrorResponse(error);
 }
 
-async function extractText(bytes: Buffer, name: string, mimeType: string): Promise<string> {
-  const extension = name.toLowerCase().split(".").pop();
-  if (mimeType.startsWith("text/") || extension === "txt" || extension === "md" || extension === "markdown") return bytes.toString("utf8");
-  if (mimeType.includes("wordprocessingml") || extension === "docx") {
-    const mammoth = nodeRequire("mammoth") as { extractRawText(input: { buffer: Buffer }): Promise<{ value: string }> };
-    return (await mammoth.extractRawText({ buffer: bytes })).value;
-  }
-  if (mimeType === "application/pdf" || extension === "pdf") {
-    const pdfParse = nodeRequire("pdf-parse") as (buffer: Buffer) => Promise<{ text: string }>;
-    return (await pdfParse(bytes)).text;
-  }
-  throw new NexusRouteError(415, "This Reference Guide file type is not supported.");
-}
-
 function normalizeSpoilerLevel(value: FormDataEntryValue | null): "public_safe" | "limited_spoilers" | "author_directed" { return value === "limited_spoilers" || value === "author_directed" ? value : "public_safe"; }
-function safeFileName(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 180) || "guide"; }
 function storageErrorCode(error: unknown): string | number | null {
   if (!error || typeof error !== "object" || !("code" in error)) return null;
   const code = (error as { code?: unknown }).code;

@@ -1,0 +1,101 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null
+        && request.auth.token.email is string
+        && request.auth.token.email.size() > 0;
+    }
+
+    function authEmailLower() {
+      return request.auth.token.email.lower();
+    }
+
+    function matchesAuthEmail(value) {
+      return isSignedIn()
+        && value is string
+        && value.lower() == authEmailLower();
+    }
+
+    function userStudioKey() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(authEmailLower()))
+        ? get(/databases/$(database)/documents/users/$(authEmailLower())).data.studioKey
+        : null;
+    }
+
+    function matchesUserStudioKey(value) {
+      let boundKey = userStudioKey();
+      return boundKey is string
+        && boundKey.size() > 0
+        && value is string
+        && value == boundKey;
+    }
+
+    function editableUserFields() {
+      return ["firstName", "lastName", "company", "displayName", "coreValues", "toneOfVoice"];
+    }
+
+    match /users/{userEmail} {
+      allow read: if matchesAuthEmail(userEmail);
+      allow create: if matchesAuthEmail(userEmail)
+        && request.resource.data.keys().hasOnly(editableUserFields());
+      allow update: if matchesAuthEmail(userEmail)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(editableUserFields());
+      allow delete: if false;
+
+      match /manuscripts/{manuscriptId} {
+        allow read, write: if matchesAuthEmail(userEmail);
+      }
+
+      match /profile/{profileDocId} {
+        allow read: if matchesAuthEmail(userEmail);
+        allow write: if false;
+      }
+    }
+
+    match /products/{productId} {
+      allow read: if matchesAuthEmail(resource.data.authorEmail)
+        || matchesAuthEmail(resource.data.authorId)
+        || matchesUserStudioKey(resource.data.studioKey)
+        || matchesUserStudioKey(resource.data.wpStudioKey);
+      allow write: if false;
+    }
+
+    match /content_blueprints/{blueprintId} {
+      allow read, delete: if matchesAuthEmail(resource.data.authorEmail);
+      allow create, update: if false;
+    }
+
+    match /voice_vault/{recordId} {
+      allow read: if matchesAuthEmail(resource.data.authorEmail);
+      allow create: if matchesAuthEmail(request.resource.data.authorEmail);
+      allow update: if matchesAuthEmail(resource.data.authorEmail)
+        && matchesAuthEmail(request.resource.data.authorEmail);
+      allow delete: if matchesAuthEmail(resource.data.authorEmail);
+    }
+
+    match /audiobook_requests/{requestId} {
+      allow read: if matchesAuthEmail(resource.data.authorEmail);
+      allow write: if false;
+    }
+
+    match /system_config/{configId} { allow read, write: if false; }
+    match /steps/{stepId} { allow read, write: if false; }
+    match /saved_test_runs/{runId} { allow read, write: if false; }
+    match /sales_pipeline/{leadId} { allow read, write: if false; }
+    match /nexus_story_worlds/{universeId} {
+      allow read, write: if false;
+      match /{document=**} { allow read, write: if false; }
+    }
+    match /nexus_strategy_guides/{guideId} {
+      allow read, write: if false;
+      match /{document=**} { allow read, write: if false; }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

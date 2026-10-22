@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import type { ReaderBookshelfPublication } from "@/core/security/reader-bookshelf";
+import { paidReaderLaunchPath } from "@/core/security/reader-paid-launch";
 
 interface ReaderSummary {
   email: string | null;
@@ -22,24 +23,16 @@ export function ReaderAccount({
   const [error, setError] = useState<string | null>(null);
   const [openingAssetId, setOpeningAssetId] = useState<string | null>(null);
 
-  async function openPublication(assetId: string) {
+  function openPublication(assetId: string) {
     setError(null);
     setOpeningAssetId(assetId);
-    try {
-      const response = await fetch("/api/reader/media/handoff", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assetId }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || typeof payload.launchUrl !== "string") {
-        setError(payload.error || "KOBA-I could not open this publication.");
-        return;
-      }
-      window.location.assign(payload.launchUrl);
-    } finally {
+    const launchPath = paidReaderLaunchPath(assetId);
+    if (!launchPath) {
+      setError("KOBA-I could not open this publication.");
       setOpeningAssetId(null);
+      return;
     }
+    window.location.assign(launchPath);
   }
 
   async function logout() {

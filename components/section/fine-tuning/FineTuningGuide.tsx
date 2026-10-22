@@ -20,7 +20,7 @@ export default function FineTuningGuide() {
 						<div className="space-y-2">
 							<h3 className="text-lg font-medium">2. Choose the Right Base Model</h3>
 							<p className="text-sm text-muted-foreground">
-								Select a base model that's closest to your target task. This reduces training time and improves
+								Select a base model that&apos;s closest to your target task. This reduces training time and improves
 								results.
 							</p>
 						</div>

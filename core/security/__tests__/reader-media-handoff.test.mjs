@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { establishReaderIdentity } from "../reader-auth.ts";
-import { createReaderMediaHandoffExchangeHandler, createReaderMediaHandoffHandler } from "../reader-media-handoff.ts";
+import { createAnonymousFreeMediaHandoffHandler, createReaderMediaHandoffExchangeHandler, createReaderMediaHandoffHandler } from "../reader-media-handoff.ts";
 import { READER_SESSION_COOKIE, serializeReaderSessionCookie } from "../reader-session-cookie.ts";
 import { createMemoryDb } from "./reader-platform-test-harness.mjs";
 
 function encoded(value) { return Buffer.from(JSON.stringify(value)).toString("base64url"); }
 function mediaJwt() { return `${encoded({ alg: "none" })}.${encoded({ exp: 2_000_000_000, principalType: "firebase_uid" })}.signature`; }
+function freeMediaJwt() { return `${encoded({ alg: "none" })}.${encoded({ exp: 2_000_000_000, principalType: "anonymous_free", tenantId: "studio_a", assetId: "abk_free", origin: "https://author.example" })}.signature`; }
 function product(overrides = {}) { return { studioKey: "studio_a", status: "published", isPublished: true, wordpressDeployment: { status: "deployed", targetWpOrigin: "https://author.example", publicationUrl: "https://author.example/koba_publication/book/" }, ...overrides }; }
 
 async function setup(source = "purchase", status = "active") {
@@ -89,4 +90,42 @@ test("cross-tenant entitlement and browser authority fields fail closed", async 
   assert.equal((await createHandoff(dependencies, cookie)).response.status, 403);
   db.docs.set("products/abk_book", product());
   assert.equal((await createHandoff(dependencies, cookie, { assetId: "abk_book", readerUid: "other" })).response.status, 400);
+});
+
+test("verified human receives one-use free handoff and 72-hour anonymous media principal without an entitlement", async () => {
+  const db = createMemoryDb({ "products/abk_free": product({ assetId: "abk_free", isFree: true, wordpressDeployment: { status: "deployed", targetWpOrigin: "https://author.example", publicationUrl: "https://author.example/koba_publication/free/" } }) });
+  let humanChecks = 0;
+  const dependencies = {
+    db,
+    verifyHuman: async ({ token, assetId }) => { humanChecks += 1; assert.equal(token, "turnstile-token"); assert.equal(assetId, "abk_free"); },
+    issueToken: async (input) => { assert.equal(input.principalType, "anonymous_free"); assert.equal(input.assetId, "abk_free"); assert.equal(input.origin, "https://author.example"); return freeMediaJwt(); },
+  };
+  const createdResponse = await createAnonymousFreeMediaHandoffHandler(dependencies)(new Request("https://dashboard.koba-i.com/api/reader/media/free-handoff", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ assetId: "abk_free", turnstileToken: "turnstile-token" }) }));
+  const created = await createdResponse.json();
+  assert.equal(createdResponse.status, 200);
+  assert.equal(humanChecks, 1);
+  assert.match(new URL(created.launchUrl).hash, /^#koba_reader_handoff=free\./);
+  assert.equal([...db.docs.keys()].some((key) => key.startsWith("reader_entitlements/")), false);
+  const credential = fragmentCredential(created.launchUrl);
+  const exchanged = await exchange(dependencies, credential, "https://author.example", "abk_free");
+  assert.equal(exchanged.response.status, 200);
+  assert.equal(exchanged.payload.principalType, "anonymous_free");
+  assert.equal((await exchange(dependencies, credential, "https://author.example", "abk_free")).response.status, 401);
+});
+
+test("failed human verification performs no product or handoff write", async () => {
+  const db = createMemoryDb({ "products/abk_free": product({ isFree: true }) });
+  const dependencies = { db, verifyHuman: async () => { throw new Error("blocked"); }, issueToken: async () => freeMediaJwt() };
+  const response = await createAnonymousFreeMediaHandoffHandler(dependencies)(new Request("https://dashboard.koba-i.com/api/reader/media/free-handoff", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ assetId: "abk_free", turnstileToken: "bad" }) }));
+  assert.equal(response.status, 401);
+  assert.equal([...db.docs.keys()].some((key) => key.startsWith("reader_free_handoffs/")), false);
+});
+
+test("paid-only publication cannot enter anonymous free handoff", async () => {
+  const db = createMemoryDb({ "products/abk_paid": product({ price: 12.99 }) });
+  const dependencies = { db, verifyHuman: async () => {}, issueToken: async () => freeMediaJwt() };
+  const response = await createAnonymousFreeMediaHandoffHandler(dependencies)(new Request("https://dashboard.koba-i.com/api/reader/media/free-handoff", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ assetId: "abk_paid", turnstileToken: "ok" }) }));
+  const payload = await response.json();
+  assert.equal(response.status, 403);
+  assert.equal(payload.code, "READER_MEDIA_FREE_ACCESS_REQUIRED");
 });

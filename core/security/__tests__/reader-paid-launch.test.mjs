@@ -1,0 +1,148 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+import {
+  createPaidReaderLaunchHandler,
+  paidReaderLaunchPath,
+  safeReaderContinuation,
+} from "../reader-paid-launch.ts";
+
+test("signed-out paid launch preserves the asset through reader sign-in", async () => {
+  let handoffRequest;
+  const handler = createPaidReaderLaunchHandler(async (request) => {
+    handoffRequest = request;
+    return Response.json(
+      { success: false, code: "READER_SESSION_INVALID", error: "Sign in." },
+      { status: 401 }
+    );
+  });
+
+  const response = await handler(
+    new Request(
+      "https://dashboard.koba-i.com/reader/open?assetId=ebk_testing-paid-book"
+    )
+  );
+
+  assert.equal(response.status, 303);
+  const location = new URL(response.headers.get("location"));
+  assert.equal(location.pathname, "/reader/signin");
+  assert.equal(
+    location.searchParams.get("next"),
+    "/reader/open?assetId=ebk_testing-paid-book"
+  );
+  assert.deepEqual(await handoffRequest.json(), {
+    assetId: "ebk_testing-paid-book",
+  });
+});
+
+test("signed-in paid launch delegates to the canonical handoff and redirects", async () => {
+  const handler = createPaidReaderLaunchHandler(async (request) => {
+    assert.equal(request.headers.get("cookie"), "koba_reader_session=session.token");
+    assert.deepEqual(await request.json(), { assetId: "abk_owned" });
+    return Response.json({
+      success: true,
+      launchUrl:
+        "https://author.example/koba_publication/book/#koba_reader_handoff=opaque",
+    });
+  });
+
+  const response = await handler(
+    new Request("https://dashboard.koba-i.com/reader/open?assetId=abk_owned", {
+      headers: { cookie: "koba_reader_session=session.token" },
+    })
+  );
+
+  assert.equal(response.status, 303);
+  assert.equal(
+    response.headers.get("location"),
+    "https://author.example/koba_publication/book/#koba_reader_handoff=opaque"
+  );
+});
+
+test("paid launch input fails closed before handoff", async () => {
+  let calls = 0;
+  const handler = createPaidReaderLaunchHandler(async () => {
+    calls += 1;
+    return Response.json({ success: true });
+  });
+
+  for (const url of [
+    "https://dashboard.koba-i.com/reader/open",
+    "https://dashboard.koba-i.com/reader/open?assetId=bad%2Fasset",
+    "https://dashboard.koba-i.com/reader/open?assetId=abk_book&uid=attacker",
+  ]) {
+    const response = await handler(new Request(url));
+    assert.equal(response.status, 400);
+  }
+  assert.equal(calls, 0);
+});
+
+test("reader continuation accepts only claim or strict paid launch paths", () => {
+  assert.equal(
+    safeReaderContinuation(
+      "/reader/claim?session_id=cs_live_1234567890abcdef"
+    ),
+    "/reader/claim?session_id=cs_live_1234567890abcdef"
+  );
+  assert.equal(
+    safeReaderContinuation("/reader/open?assetId=ebk_testing-paid-book"),
+    "/reader/open?assetId=ebk_testing-paid-book"
+  );
+  assert.equal(
+    safeReaderContinuation(
+      "/reader/purchases/recover?assetId=ebk_testing-paid-book"
+    ),
+    "/reader/purchases/recover?assetId=ebk_testing-paid-book"
+  );
+  assert.equal(safeReaderContinuation("https://attacker.example/reader/open?assetId=abk_book"), null);
+  assert.equal(safeReaderContinuation("/reader/open?assetId=bad/asset"), null);
+  assert.equal(
+    safeReaderContinuation(
+      "/reader/purchases/recover?assetId=abk_book&expected_email=x@example.com"
+    ),
+    null
+  );
+  assert.equal(safeReaderContinuation("/reader/open?assetId=abk_book&next=/admin"), null);
+  assert.equal(
+    safeReaderContinuation(
+      "/reader/claim?session_id=cs_live_1234567890&expected_email=attacker@example.com"
+    ),
+    null
+  );
+  assert.equal(
+    safeReaderContinuation("/reader/claim?session_id=cs_short"),
+    null
+  );
+});
+
+test("paid launcher remains entitlement-only and does not infer purchase state", async () => {
+  const source = await readFile(
+    new URL("../reader-paid-launch.ts", import.meta.url),
+    "utf8"
+  );
+  assert.doesNotMatch(source, /pending_purchase_claims|reader_purchases|Stripe/);
+  assert.match(source, /createHandoff\(handoffRequest\)/);
+});
+
+test("paidReaderLaunchPath normalizes only valid asset IDs", () => {
+  assert.equal(paidReaderLaunchPath("  abk_book  "), "/reader/open?assetId=abk_book");
+  assert.equal(paidReaderLaunchPath("x"), null);
+  assert.equal(paidReaderLaunchPath("abk/book"), null);
+});
+
+test("middleware lets the paid reader launcher own signed-out continuation", async () => {
+  const middleware = await readFile(
+    new URL("../../../middleware.ts", import.meta.url),
+    "utf8"
+  );
+  const readerPagesStart = middleware.indexOf("const PUBLIC_READER_PAGES");
+  const readerPagesEnd = middleware.indexOf("const PUBLIC_API_EXACT_PATHS");
+  const readerPages = middleware.slice(readerPagesStart, readerPagesEnd);
+
+  assert.ok(readerPagesStart >= 0 && readerPagesEnd > readerPagesStart);
+  assert.match(readerPages, /"\/reader\/open"/);
+  assert.match(readerPages, /"\/reader\/purchases\/recover"/);
+  assert.match(middleware, /"\/api\/reader\/purchases\/recover"/);
+  assert.doesNotMatch(readerPages, /"\/signin"/);
+});

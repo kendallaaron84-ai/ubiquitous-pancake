@@ -47,8 +47,15 @@ export function normalizeHttpsOrigin(value: unknown): string {
     throw new BlogConnectionError("The WordPress destination is invalid.");
   }
 
+  const localAcceptanceOrigin =
+    process.env.NODE_ENV !== "production" &&
+    process.env.KOBA_LOCAL_ACCEPTANCE === "true" &&
+    parsed.protocol === "http:" &&
+    (parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "koba-dev.local");
   if (
-    parsed.protocol !== "https:" ||
+    (!localAcceptanceOrigin && parsed.protocol !== "https:") ||
     parsed.username ||
     parsed.password ||
     parsed.search ||

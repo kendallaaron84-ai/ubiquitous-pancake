@@ -90,7 +90,7 @@ export default function ComparisonAnalysis({ modelResponses }: ComparisonAnalysi
 							<p className="text-sm">
 								For this particular prompt, GPT-4o provides the most balanced response in terms of clarity,
 								conciseness, and technical accuracy. However, if you need more technical details about model
-								architecture, Llama 3's response might be more suitable.
+								architecture, Llama 3&apos;s response might be more suitable.
 							</p>
 						</div>
 					</div>

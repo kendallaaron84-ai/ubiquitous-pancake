@@ -9,7 +9,8 @@ import { Slider } from "@/components/ui/slider"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Download, ImageIcon, RefreshCw, Sparkles } from "lucide-react"
-import { ChangeEvent, useState } from "react"
+import Image from "next/image"
+import { type ChangeEvent, useState } from "react"
 
 export default function ImageGenerationTab() {
 	const [prompt, setPrompt] = useState<string>("")
@@ -89,10 +90,12 @@ export default function ImageGenerationTab() {
 								{generatedImages.map((src, index) => (
 									<Card key={index} className="overflow-hidden group relative">
 										<AspectRatio ratio={1 / 1}>
-											<img
+											<Image
 												src={src || "/placeholder.svg"}
 												alt={`Generated image ${index + 1}`}
-												className="object-cover w-full h-full"
+												fill
+												unoptimized
+												className="object-cover"
 											/>
 										</AspectRatio>
 										<div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
@@ -206,7 +209,7 @@ export default function ImageGenerationTab() {
 											type="number"
 											placeholder="Random"
 											className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-											onChange={(e: ChangeEvent<HTMLInputElement>) => { }}
+											onChange={() => { }}
 										/>
 										<Button variant="outline" size="icon">
 											<RefreshCw className="h-4 w-4" />
@@ -221,9 +224,9 @@ export default function ImageGenerationTab() {
 										id="negative-prompt"
 										placeholder="Elements to exclude from the image..."
 										className="min-h-[80px]"
-										onChange={(e: ChangeEvent<HTMLTextAreaElement>) => { }}
+										onChange={() => { }}
 									/>
-									<p className="text-xs text-muted-foreground">Specify what you don't want in the image.</p>
+									<p className="text-xs text-muted-foreground">Specify what you don&apos;t want in the image.</p>
 								</div>
 							</TabsContent>
 						</Tabs>

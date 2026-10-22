@@ -5,14 +5,23 @@ import { db, auth } from "@/core/firebase";
 import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
 import Link from "next/link";
+import Image from "next/image";
 import Layout from "@/components/layout"; 
 import { Package, Headphones, BookOpen, Loader2 } from "lucide-react";
 
 export const dynamic = 'force-dynamic';
 
+interface LibraryProduct {
+  id: string;
+  coverArtUrl?: string;
+  title?: string;
+  type?: string;
+  price?: number;
+}
+
 export default function BookshelfLibraryPage() {
   // 🚀 Defensive Pre-Rendering Protection: Initialize as empty array to prevent hydration crashes
-  const [products, setProducts] = useState<any[]>([]);
+  const [products, setProducts] = useState<LibraryProduct[]>([]);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -46,7 +55,7 @@ export default function BookshelfLibraryPage() {
         id: doc.id,
         ...doc.data()
       }));
-      setProducts(updatedList);
+      setProducts(updatedList as LibraryProduct[]);
       setIsLoading(false);
     }, (error) => {
       console.error("🚨 Bookshelf sync error:", error);
@@ -91,10 +100,13 @@ export default function BookshelfLibraryPage() {
                   className="group block relative bg-[#2d3b5e] border border-[#40527c] rounded-xl overflow-hidden shadow-lg hover:border-[#8b4528] transition-all"
                 >
                   <div className="aspect-[2/3] relative bg-black/40 overflow-hidden">
-                    <img 
+                    <Image
                       src={product.coverArtUrl || "/placeholder.jpg"} 
-                      alt={product.title}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                      alt={product.title || "Publication cover"}
+                      fill
+                      unoptimized
+                      sizes="(max-width: 640px) 100vw, (max-width: 1024px) 33vw, 25vw"
+                      className="object-cover group-hover:scale-105 transition-transform duration-500"
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-[#2d3b5e] via-transparent to-transparent opacity-90" />
                     

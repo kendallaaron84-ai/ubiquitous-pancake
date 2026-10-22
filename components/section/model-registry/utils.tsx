@@ -1,4 +1,4 @@
-export const getStageBadge = (stage:any) => {
+export const getStageBadge = (stage: unknown) => {
 	switch (stage) {
 		case "Production":
 			return "bg-green-500/20 text-green-600"

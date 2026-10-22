@@ -1,10 +1,7 @@
 import React, { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { ref, uploadBytes } from "firebase/storage"; // 🔑 Import storage references
-import { storage, db } from "@/core/firebase";
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
-import { ShieldAlert, Save, UploadCloud, Loader2 } from "lucide-react";
+import { ShieldAlert, Save, Loader2 } from "lucide-react";
 
 export const dynamic = 'force-dynamic';
 
@@ -21,32 +18,24 @@ export function AdminControlsModal() {
     setUploading(true);
 
     try {
-      let gcsUri = "";
-
-      // 1. If a physical core PDF framework was selected, stream it directly to your new folder path
-      if (file) {
-        const storagePath = `system_config/foundational_constraints.pdf`;
-        const fileRef = ref(storage, storagePath);
-        
-        console.log("Streaming global foundational constraints layer to GCS...");
-        const uploadSnapshot = await uploadBytes(fileRef, file);
-        gcsUri = `gs://${uploadSnapshot.metadata.bucket}/${uploadSnapshot.metadata.fullPath}`;
+      const body = new FormData();
+      body.set("masterDirectives", directives.trim());
+      if (file) body.set("foundationalConstraints", file);
+      const response = await fetch("/api/admin/system-config", {
+        method: "POST",
+        credentials: "same-origin",
+        body,
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error || "The system configuration could not be saved.");
       }
-
-      // 2. Commit the text overrides and the new RAG path to Firestore
-      const systemConfigRef = doc(db, "system_config", "seo_core");
-      await setDoc(systemConfigRef, {
-        masterDirectives: directives.trim(),
-        foundationalConstraintsUri: gcsUri || null, // 🔑 Read dynamically by Python main.py!
-        updatedAt: serverTimestamp(),
-        updatedBy: "kendall@domain.com"
-      }, { merge: true });
 
       alert("System core configuration deployed globally across the Nexus engine fabric!");
       setFile(null);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Administrative storage execution error:", err);
-      alert(`Failed to save core systems: ${err.message}`);
+      alert(`Failed to save core systems: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
       setUploading(false);
     }

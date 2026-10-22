@@ -76,7 +76,7 @@ function productTenantId(product: Record<string, unknown>): string {
   return String(product.studioKey || product.wpStudioKey || "").trim();
 }
 
-function isExplicitlyFree(product: Record<string, unknown>): boolean {
+export function isExplicitlyFreePublication(product: Record<string, unknown>): boolean {
   if (product.isFree === true) return true;
   const accessType = String(product.accessType || "").trim().toLowerCase();
   if (["free", "promotion", "public"].includes(accessType)) return true;
@@ -120,7 +120,7 @@ function validateEligibleProduct(
       "This publication has not completed deployment."
     );
   }
-  if (!isExplicitlyFree(product)) {
+  if (!isExplicitlyFreePublication(product)) {
     throw new ReaderFreeAcquisitionError(
       403,
       READER_FREE_ACQUISITION_ERROR_CODES.notEligible,

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, Link2, Loader2, ShieldCheck, UserPlus } from "lucide-react";
 
@@ -11,11 +11,31 @@ type FormState = {
   targetWpOrigin: string;
   wpUsername: string;
   wpAppPassword: string;
+  contentRole: "business_brand" | "story_world" | "both";
 };
 
 type ProvisionFormState = {
   authorName: string;
   authorEmail: string;
+  hasAudiobookPlayer: boolean;
+  hasEreader: boolean;
+  deferWelcome: boolean;
+};
+
+type OnboardingAuthor = {
+  provisionId: string;
+  authorName: string;
+  authorEmail: string;
+  maskedStudioKey: string;
+  capabilities: { hasAudiobookPlayer: boolean; hasEreader: boolean };
+  websiteConnectionStatus: "not_connected" | "connected";
+  siteOrigins: string[];
+  welcomeEmailStatus: "pending" | "deferred" | "sending" | "sent" | "failed";
+  welcomeEmailSentAt: string | null;
+  accountEstablished: boolean;
+  accountEstablishedAt: string | null;
+  group: "needs_setup" | "welcome_deferred" | "welcome_failed" | "welcome_sent_awaiting_account" | "active";
+  nextAction: string;
 };
 
 const EMPTY_FORM: FormState = {
@@ -23,11 +43,15 @@ const EMPTY_FORM: FormState = {
   targetWpOrigin: "",
   wpUsername: "",
   wpAppPassword: "",
+  contentRole: "both",
 };
 
 const EMPTY_PROVISION_FORM: ProvisionFormState = {
   authorName: "",
   authorEmail: "",
+  hasAudiobookPlayer: true,
+  hasEreader: false,
+  deferWelcome: true,
 };
 
 export default function AdminConnectionsPage() {
@@ -39,12 +63,32 @@ export default function AdminConnectionsPage() {
   const [provisionedAuthor, setProvisionedAuthor] = useState<{
     studioKey: string;
     welcomeEmailSent: boolean;
+    welcomeEmailStatus: "pending" | "deferred" | "sending" | "sent" | "failed";
     message: string;
   } | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [verifiedOrigin, setVerifiedOrigin] = useState("");
+  const [onboardingAuthors, setOnboardingAuthors] = useState<OnboardingAuthor[]>([]);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [queueError, setQueueError] = useState("");
+  const [queueActionId, setQueueActionId] = useState("");
+
+  const loadOnboardingQueue = useCallback(async () => {
+    setQueueLoading(true);
+    setQueueError("");
+    try {
+      const response = await fetch("/api/admin/authors", { credentials: "same-origin", cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok || !payload?.success) throw new Error(payload?.error || "The author queue could not be loaded.");
+      setOnboardingAuthors(Array.isArray(payload.authors) ? payload.authors : []);
+    } catch (loadError) {
+      setQueueError(loadError instanceof Error ? loadError.message : "The author queue could not be loaded.");
+    } finally {
+      setQueueLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -64,6 +108,7 @@ export default function AdminConnectionsPage() {
           return;
         }
         setOwnerCheckComplete(true);
+        void loadOnboardingQueue();
       })
       .catch((sessionError: unknown) => {
         if (sessionError instanceof DOMException && sessionError.name === "AbortError") return;
@@ -71,10 +116,14 @@ export default function AdminConnectionsPage() {
       });
 
     return () => controller.abort();
-  }, [router]);
+  }, [loadOnboardingQueue, router]);
 
   async function provisionAuthor(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    await submitAuthorProvisioning(provisionForm.deferWelcome ? "defer" : "send");
+  }
+
+  async function submitAuthorProvisioning(welcomeDelivery: "send" | "defer") {
     if (isProvisioning) return;
 
     setIsProvisioning(true);
@@ -86,7 +135,13 @@ export default function AdminConnectionsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify(provisionForm),
+        body: JSON.stringify({
+          authorName: provisionForm.authorName,
+          authorEmail: provisionForm.authorEmail,
+          hasAudiobookPlayer: provisionForm.hasAudiobookPlayer,
+          hasEreader: provisionForm.hasEreader,
+          welcomeDelivery,
+        }),
       });
       const payload = (await response.json().catch(() => null)) as
         | {
@@ -95,6 +150,7 @@ export default function AdminConnectionsPage() {
             message?: string;
             studioKey?: string;
             welcomeEmailSent?: boolean;
+            welcomeEmailStatus?: "pending" | "deferred" | "sending" | "sent" | "failed";
           }
         | null;
 
@@ -105,9 +161,11 @@ export default function AdminConnectionsPage() {
       setProvisionedAuthor({
         studioKey: payload.studioKey,
         welcomeEmailSent: payload.welcomeEmailSent === true,
+        welcomeEmailStatus: payload.welcomeEmailStatus || "pending",
         message: payload.message || "The author workspace is ready.",
       });
       setForm((current) => ({ ...current, studioKey: payload.studioKey || "" }));
+      await loadOnboardingQueue();
     } catch (submissionError: unknown) {
       setProvisionError(
         submissionError instanceof Error
@@ -116,6 +174,38 @@ export default function AdminConnectionsPage() {
       );
     } finally {
       setIsProvisioning(false);
+    }
+  }
+
+  async function sendDeferredWelcome() {
+    await submitAuthorProvisioning("send");
+  }
+
+  async function sendQueuedWelcome(author: OnboardingAuthor) {
+    if (queueActionId) return;
+    setQueueActionId(author.provisionId);
+    setQueueError("");
+    try {
+      const response = await fetch("/api/admin/provision-author", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          authorName: author.authorName,
+          authorEmail: author.authorEmail,
+          hasAudiobookPlayer: author.capabilities.hasAudiobookPlayer,
+          hasEreader: author.capabilities.hasEreader,
+          welcomeDelivery: "send",
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload?.success) throw new Error(payload?.error || "Welcome delivery failed.");
+      await loadOnboardingQueue();
+    } catch (sendError) {
+      setQueueError(sendError instanceof Error ? sendError.message : "Welcome delivery failed.");
+      await loadOnboardingQueue();
+    } finally {
+      setQueueActionId("");
     }
   }
 
@@ -152,6 +242,7 @@ export default function AdminConnectionsPage() {
 
       setVerifiedOrigin(payload.connection?.targetWpOrigin || form.targetWpOrigin);
       setForm((current) => ({ ...current, wpAppPassword: "" }));
+      await loadOnboardingQueue();
     } catch (submissionError: unknown) {
       setError(
         submissionError instanceof Error
@@ -188,6 +279,32 @@ export default function AdminConnectionsPage() {
             </p>
           </header>
 
+          <section aria-labelledby="author-queue-heading" className="mb-8 rounded-2xl border border-[#EFB752]/20 bg-[#293A71] p-5 shadow-[0_16px_40px_rgba(0,0,0,0.28)] sm:p-7">
+            <div className="flex items-start justify-between gap-4">
+              <div><h2 id="author-queue-heading" className="text-xl font-bold text-white">Author onboarding queue</h2><p className="mt-1 text-sm text-slate-200">Durable provisioning, connection, welcome, and account-establishment state.</p></div>
+              <button type="button" onClick={() => void loadOnboardingQueue()} disabled={queueLoading} className="rounded-lg border border-[#EFB752]/30 px-3 py-2 text-xs font-bold text-[#FFE5A3] disabled:opacity-50">{queueLoading ? "Refreshing…" : "Refresh"}</button>
+            </div>
+            {queueError ? <div role="alert" className="mt-4 rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">{queueError}</div> : null}
+            <div className="mt-5 grid gap-4">
+              {!queueLoading && onboardingAuthors.length === 0 ? <p className="text-sm text-slate-300">No provisioned authors were found.</p> : null}
+              {onboardingAuthors.map((author) => (
+                <article key={author.provisionId} className="rounded-xl border border-[#5b6d9e] bg-[#151d35]/80 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div><h3 className="font-bold text-white">{author.authorName}</h3><p className="text-sm text-slate-300">{author.authorEmail}</p><p className="mt-1 font-mono text-xs text-slate-400">{author.maskedStudioKey}</p></div>
+                    <span className="rounded-full border border-[#EFB752]/30 px-3 py-1 text-xs font-bold text-[#FFE5A3]">{groupLabel(author.group)}</span>
+                  </div>
+                  <dl className="mt-4 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                    <div><dt className="text-slate-500">Capabilities</dt><dd>{[author.capabilities.hasAudiobookPlayer && "Audiobook", author.capabilities.hasEreader && "E-reader"].filter(Boolean).join(" + ")}</dd></div>
+                    <div><dt className="text-slate-500">Website</dt><dd>{author.siteOrigins.join(", ") || "Not connected"}</dd></div>
+                    <div><dt className="text-slate-500">Welcome</dt><dd>{author.welcomeEmailStatus}{author.welcomeEmailSentAt ? ` · ${new Date(author.welcomeEmailSentAt).toLocaleString()}` : ""}</dd></div>
+                    <div><dt className="text-slate-500">Account</dt><dd>{author.accountEstablished ? "Established" : "Not established"}</dd></div>
+                  </dl>
+                  <div className="mt-4 flex items-center justify-between gap-3 border-t border-[#40527c] pt-3"><p className="text-xs text-slate-300">Next: {author.nextAction}</p>{author.welcomeEmailStatus === "deferred" || author.welcomeEmailStatus === "failed" ? <button type="button" disabled={Boolean(queueActionId)} onClick={() => void sendQueuedWelcome(author)} className="rounded-lg bg-[#733026] px-3 py-2 text-xs font-bold text-[#EFB752] disabled:opacity-50">{queueActionId === author.provisionId ? "Sending…" : author.welcomeEmailStatus === "failed" ? "Retry welcome" : "Send welcome package now"}</button> : null}</div>
+                </article>
+              ))}
+            </div>
+          </section>
+
           <section aria-labelledby="provision-author-heading" className="mb-8">
             <div className="mb-4">
               <h2 id="provision-author-heading" className="text-xl font-bold text-white">
@@ -222,6 +339,35 @@ export default function AdminConnectionsPage() {
                 />
               </div>
 
+              <fieldset className="mt-5 rounded-xl border border-[#5b6d9e] bg-[#151d35]/70 p-4">
+                <legend className="px-1 text-sm font-semibold text-white">Approved capabilities</legend>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <ProvisionCheckbox
+                    label="Audiobook player"
+                    checked={provisionForm.hasAudiobookPlayer}
+                    onChange={(checked) => setProvisionForm((current) => ({ ...current, hasAudiobookPlayer: checked }))}
+                  />
+                  <ProvisionCheckbox
+                    label="E-reader"
+                    checked={provisionForm.hasEreader}
+                    onChange={(checked) => setProvisionForm((current) => ({ ...current, hasEreader: checked }))}
+                  />
+                </div>
+              </fieldset>
+
+              <label className="mt-5 flex items-start gap-3 rounded-xl border border-[#EFB752]/20 bg-[#151d35]/70 p-4 text-sm text-slate-100">
+                <input
+                  type="checkbox"
+                  checked={provisionForm.deferWelcome}
+                  onChange={(event) => setProvisionForm((current) => ({ ...current, deferWelcome: event.target.checked }))}
+                  className="mt-0.5 h-4 w-4 accent-[#EFB752]"
+                />
+                <span>
+                  <strong className="block text-white">Defer welcome package</strong>
+                  Create or recover the workspace now. Send the author&apos;s welcome only after site setup is complete.
+                </span>
+              </label>
+
               {provisionError ? (
                 <div role="alert" className="mt-5 rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
                   {provisionError}
@@ -238,7 +384,9 @@ export default function AdminConnectionsPage() {
                       <p className="mt-2 text-xs text-emerald-50/80">
                         {provisionedAuthor.welcomeEmailSent
                           ? "The welcome package was sent to the author."
-                          : "The workspace is ready, but the welcome email was not confirmed."}
+                          : provisionedAuthor.welcomeEmailStatus === "deferred"
+                            ? "The workspace is ready. Welcome delivery is deferred."
+                            : "The workspace is ready, but the welcome email was not confirmed."}
                       </p>
                     </div>
                   </div>
@@ -250,6 +398,17 @@ export default function AdminConnectionsPage() {
                     <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
                     Continue to WordPress connection
                   </button>
+                  {provisionedAuthor.welcomeEmailStatus === "deferred" ? (
+                    <button
+                      type="button"
+                      disabled={isProvisioning}
+                      onClick={sendDeferredWelcome}
+                      className="ml-2 mt-4 inline-flex items-center gap-2 rounded-lg border border-[#EFB752]/40 bg-[#EFB752]/10 px-3 py-2 text-xs font-bold text-[#FFE5A3] transition hover:bg-[#EFB752]/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isProvisioning ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
+                      Send welcome package now
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -311,6 +470,22 @@ export default function AdminConnectionsPage() {
                   placeholder="Paste the Application Password"
                   onChange={(value) => setForm((current) => ({ ...current, wpAppPassword: value }))}
                 />
+                <label htmlFor="contentRole" className="grid gap-2 text-sm font-semibold text-white">
+                  Content role
+                  <select
+                    id="contentRole"
+                    value={form.contentRole}
+                    onChange={(event) => setForm((current) => ({
+                      ...current,
+                      contentRole: event.target.value as FormState["contentRole"],
+                    }))}
+                    className="w-full rounded-lg border border-[#5b6d9e] bg-[#151d35] px-3 py-3 text-sm text-white outline-none focus:border-[#f97316] focus:ring-2 focus:ring-[#f97316]/30"
+                  >
+                    <option value="both">Business Brand and Story World</option>
+                    <option value="business_brand">Business Brand</option>
+                    <option value="story_world">Story World</option>
+                  </select>
+                </label>
               </div>
 
               <p className="mt-5 text-xs leading-5 text-slate-300">
@@ -346,6 +521,10 @@ export default function AdminConnectionsPage() {
   );
 }
 
+function groupLabel(group: OnboardingAuthor["group"]): string {
+  return ({ needs_setup: "Needs setup", welcome_deferred: "Welcome deferred", welcome_failed: "Welcome failed", welcome_sent_awaiting_account: "Welcome sent / awaiting account", active: "Active" })[group];
+}
+
 function ProvisionField({
   id,
   label,
@@ -355,7 +534,7 @@ function ProvisionField({
   type = "text",
   autoComplete,
 }: {
-  id: keyof ProvisionFormState;
+  id: "authorName" | "authorEmail";
   label: string;
   value: string;
   placeholder: string;
@@ -377,6 +556,28 @@ function ProvisionField({
         onChange={(event) => onChange(event.target.value)}
         className="w-full rounded-lg border border-[#5b6d9e] bg-[#151d35] px-3 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-[#EFB752] focus:ring-2 focus:ring-[#EFB752]/30"
       />
+    </label>
+  );
+}
+
+function ProvisionCheckbox({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange(checked: boolean): void;
+}) {
+  return (
+    <label className="flex items-center gap-3 text-sm text-slate-100">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="h-4 w-4 accent-[#EFB752]"
+      />
+      {label}
     </label>
   );
 }

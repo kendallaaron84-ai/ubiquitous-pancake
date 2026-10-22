@@ -1,0 +1,55 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const gatewaySource = await readFile(
+  new URL("./index.js", import.meta.url),
+  "utf8"
+);
+const gatewayClientSource = await readFile(
+  new URL("../../core/security/wordpress-egress-gateway.ts", import.meta.url),
+  "utf8"
+);
+const connectionSource = await readFile(
+  new URL("../../core/security/wordpress-connection.ts", import.meta.url),
+  "utf8"
+);
+const routeSource = await readFile(
+  new URL("../../app/api/connections/verify/route.ts", import.meta.url),
+  "utf8"
+);
+
+test("gateway never rewrites Secret Manager IAM policy in an author request", () => {
+  assert.doesNotMatch(gatewaySource, /getIamPolicy|setIamPolicy/);
+  assert.doesNotMatch(gatewaySource, /CONTENT_WORKER_SERVICE_ACCOUNT/);
+  assert.doesNotMatch(connectionSource, /getIamPolicy|setIamPolicy/);
+  assert.doesNotMatch(connectionSource, /grantWorkerSecretAccess/);
+});
+
+test("saved credential verification stays behind the authenticated gateway", () => {
+  assert.match(gatewaySource, /app\.post\("\/verify-stored-wordpress"/);
+  assert.match(gatewaySource, /loadStoredWordPressCredentials\(\{/);
+  assert.match(gatewayClientSource, /verifyStoredThroughGateway/);
+  assert.match(gatewayClientSource, /\/verify-stored-wordpress/);
+  assert.match(routeSource, /await verifyStoredThroughGateway\(gatewayUrl/);
+});
+
+test("production cannot fall back to a Dashboard-side secret read", () => {
+  assert.match(
+    routeSource,
+    /if \(process\.env\.NODE_ENV === "production"\)[\s\S]{0,240}Production stored-connection verification requires the WordPress gateway/
+  );
+  assert.match(
+    routeSource,
+    /else \{[\s\S]{0,520}verifyStoredWordPressConnection\(getSecretManagerClient\(\)/
+  );
+});
+
+test("provisioning is limited to secret creation and version addition", () => {
+  const provisionBody = gatewaySource.match(
+    /async function provisionWordPressSecret\([\s\S]*?return credentialSecretReference\([\u0000-\uFFFF]*?\n\}/
+  )?.[0] || "";
+  assert.match(provisionBody, /createSecret/);
+  assert.match(provisionBody, /addSecretVersion/);
+  assert.doesNotMatch(provisionBody, /getIamPolicy|setIamPolicy|accessSecretVersion/);
+});

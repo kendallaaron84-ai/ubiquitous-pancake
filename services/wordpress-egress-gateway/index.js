@@ -29,8 +29,6 @@ const secretProjectId =
   "";
 const secretProjectNumber =
   process.env.CONNECTION_SECRET_PROJECT_NUMBER || "";
-const contentWorkerServiceAccount =
-  process.env.CONTENT_WORKER_SERVICE_ACCOUNT || "";
 
 const secretManager = new SecretManagerServiceClient();
 const app = express();
@@ -286,9 +284,6 @@ function requireSecretConfiguration() {
   const missing = [];
   if (!secretProjectId) missing.push("CONNECTION_SECRET_PROJECT_ID");
   if (!secretProjectNumber) missing.push("CONNECTION_SECRET_PROJECT_NUMBER");
-  if (!contentWorkerServiceAccount) {
-    missing.push("CONTENT_WORKER_SERVICE_ACCOUNT");
-  }
   if (missing.length) {
     throw new GatewayError(
       "SERVICE_CONFIGURATION_ERROR",
@@ -296,32 +291,6 @@ function requireSecretConfiguration() {
       503
     );
   }
-}
-
-async function addSecretAccessor(secretName) {
-  const [policyResponse] = await secretManager.getIamPolicy({
-    resource: secretName,
-  });
-  const policy = policyResponse || {};
-  const bindings = Array.isArray(policy.bindings) ? policy.bindings : [];
-  const role = "roles/secretmanager.secretAccessor";
-  const member = `serviceAccount:${contentWorkerServiceAccount}`;
-  let binding = bindings.find((item) => item.role === role);
-
-  if (!binding) {
-    binding = { role, members: [] };
-    bindings.push(binding);
-  }
-
-  const members = Array.isArray(binding.members) ? binding.members : [];
-  if (!members.includes(member)) members.push(member);
-  binding.members = members;
-  policy.bindings = bindings;
-
-  await secretManager.setIamPolicy({
-    resource: secretName,
-    policy,
-  });
 }
 
 async function provisionWordPressSecret({
@@ -360,8 +329,6 @@ async function provisionWordPressSecret({
       ),
     },
   });
-
-  await addSecretAccessor(secretName);
 
   return credentialSecretReference(
     secretProjectNumber,
@@ -474,6 +441,8 @@ function normalizePublicationPayload(value) {
   const type = clean(value.type).toLowerCase();
   const status = clean(value.status).toLowerCase();
   const price = Number(value.price ?? 0);
+  const expectedPublicationId = Number(value.expectedPublicationId ?? 0);
+  const expectedPageId = Number(value.expectedPageId ?? 0);
 
   if (!/^(?:abk|ebk)_[a-z0-9][a-z0-9_-]{0,139}$/.test(assetKey)) {
     throw new GatewayError(
@@ -505,6 +474,14 @@ function normalizePublicationPayload(value) {
       "The publication price is invalid."
     );
   }
+  for (const expectedId of [expectedPublicationId, expectedPageId]) {
+    if (!Number.isInteger(expectedId) || expectedId < 0) {
+      throw new GatewayError(
+        "INVALID_PUBLICATION_PAYLOAD",
+        "The existing WordPress publication identity is invalid."
+      );
+    }
+  }
 
   return {
     ...value,
@@ -527,6 +504,8 @@ function normalizePublicationPayload(value) {
         ? value.chapters
         : [],
     ebookPayload: value.ebookPayload ?? null,
+    expectedPublicationId,
+    expectedPageId,
   };
 }
 
@@ -584,7 +563,7 @@ async function forwardPublicationToWordPress({
       "WORDPRESS_DEPLOYMENT_FAILED",
       clean(payload?.message) ||
         `WordPress rejected the publication deployment (HTTP ${wordpressResponse.status}).`,
-      502
+      wordpressResponse.status === 409 ? 409 : 502
     );
   }
 
@@ -694,6 +673,81 @@ app.post("/verify-wordpress", async (request, response) => {
     console.error("WordPress egress gateway request failed.", {
       code: known.code,
       message: known.message,
+      durationMs: Date.now() - startedAt,
+    });
+
+    response.status(known.status).json({
+      success: false,
+      code: known.code,
+      error: known.message,
+    });
+  }
+});
+
+app.post("/verify-stored-wordpress", async (request, response) => {
+  const startedAt = Date.now();
+  let studioKey = "";
+  let websiteConnectionId = "";
+  let targetWpOrigin = "";
+
+  try {
+    studioKey = normalizeStudioKey(request.body?.studioKey);
+    websiteConnectionId = normalizeConnectionId(
+      request.body?.websiteConnectionId,
+      { allowPrimaryDefault: true }
+    );
+    targetWpOrigin = normalizeWordPressOrigin(request.body?.targetWpOrigin);
+    const wpUsername = clean(request.body?.wpUsername);
+    if (!wpUsername) {
+      throw new GatewayError(
+        "MISSING_CONNECTION_FIELDS",
+        "The saved WordPress username is required."
+      );
+    }
+
+    await assertPublicHostname(targetWpOrigin);
+    const credentials = await loadStoredWordPressCredentials({
+      studioKey,
+      websiteConnectionId,
+      secretCredentialRef: request.body?.secretCredentialRef,
+      targetWpOrigin,
+      wpUsername,
+    });
+    const wpUser = await verifyWordPress(
+      credentials.targetWpOrigin,
+      credentials.wpUsername,
+      credentials.applicationPassword
+    );
+
+    console.info("Saved WordPress connection verified through static egress.", {
+      studioKey,
+      websiteConnectionId,
+      targetWpOrigin,
+      wpUserId: wpUser.id,
+      durationMs: Date.now() - startedAt,
+    });
+
+    response.status(200).json({
+      success: true,
+      targetWpOrigin,
+      wpUsername,
+    });
+  } catch (error) {
+    const known =
+      error instanceof GatewayError
+        ? error
+        : new GatewayError(
+            "SAVED_CONNECTION_VERIFICATION_FAILED",
+            "KOBA-I could not verify the saved WordPress connection.",
+            502
+          );
+
+    console.error("Saved WordPress connection verification failed.", {
+      code: known.code,
+      message: known.message,
+      studioKey,
+      websiteConnectionId,
+      targetWpOrigin,
       durationMs: Date.now() - startedAt,
     });
 

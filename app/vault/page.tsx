@@ -11,8 +11,8 @@ import {
 } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
 import { 
-  ShieldCheck, Play, Pause, Lock, Fingerprint, 
-  UserCheck, Cpu, Plus, BookOpen, Trash2 
+  ShieldCheck, Play, Pause, Fingerprint,
+  Cpu, Plus, BookOpen, Trash2
 } from "lucide-react";
 
 interface VaultBook {
@@ -49,7 +49,6 @@ export default function VoiceVaultPage() {
   const [selectedRecord, setSelectedRecord] = useState<VoiceVaultRecord | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [newCharacterName, setNewCharacterName] = useState("");
-  const [newPersonaKey, setNewPersonaKey] = useState("Standard-V1");
   const [isPlaying, setIsPlaying] = useState(false);
   const [isWatermarkActive, setIsWatermarkActive] = useState(true);
   const { toast } = useToast();
@@ -144,7 +143,8 @@ export default function VoiceVaultPage() {
 
   const initAudioPipeline = () => {
     if (!audioRef.current) return;
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    const AudioContextClass = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
     const ctx = new AudioContextClass();
     audioContextRef.current = ctx;
 

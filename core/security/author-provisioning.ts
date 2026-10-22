@@ -6,8 +6,11 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { adminDb } from "@/core/firebase-admin";
 import { sendWelcomePackage } from "@/core/messaging/mailer";
+import { buildAuthorInvitationUrl, createAuthorInvitationEnvelope } from "@/core/security/author-invitation";
 
 export type AuthorProvisioningSource = "stripe_plugin_purchase" | "manual_owner";
+export type WelcomeDeliveryIntent = "send" | "defer";
+export type WelcomeEmailStatus = "pending" | "deferred" | "sending" | "sent" | "failed";
 
 export interface AuthorProvisioningInput {
   authorName: string;
@@ -21,12 +24,14 @@ export interface AuthorProvisioningInput {
   stripeCustomerId?: string | null;
   productId?: string | null;
   productName?: string | null;
+  welcomeDelivery?: WelcomeDeliveryIntent;
 }
 
 export interface AuthorProvisioningResult {
   studioKey: string;
   created: boolean;
   welcomeEmailSent: boolean;
+  welcomeEmailStatus: WelcomeEmailStatus;
 }
 
 interface ProvisioningState {
@@ -65,6 +70,7 @@ export async function provisionAuthorPlugin(
   const authorName = normalizeName(input.authorName);
   const authorEmail = normalizeEmail(input.authorEmail);
   const idempotencyKey = input.idempotencyKey.trim();
+  const welcomeDelivery = input.welcomeDelivery ?? "send";
   if (!authorName) throw new Error("The author name is required.");
   if (!EMAIL_PATTERN.test(authorEmail)) throw new Error("A valid author email is required.");
   if (!idempotencyKey) throw new Error("A provisioning idempotency key is required.");
@@ -72,14 +78,13 @@ export async function provisionAuthorPlugin(
     throw new Error("At least one plugin entitlement is required.");
   }
 
-  const pluginDownloadUrl = resolvePluginDownloadUrl();
   const provisionId = createHash("sha256")
     .update(`${input.source}:${idempotencyKey}`)
     .digest("hex");
   const provisionRef = adminDb.collection("plugin_license_provisions").doc(provisionId);
   const candidateStudioKey = generateStudioKey();
 
-  const licenseResult = await adminDb.runTransaction(async (transaction: any) => {
+  const licenseResult = await adminDb.runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
     const provisionSnapshot = await transaction.get(provisionRef);
     const existingProvision = provisionSnapshot.exists
       ? (provisionSnapshot.data() as ProvisioningState)
@@ -119,6 +124,10 @@ export async function provisionAuthorPlugin(
         : "audiobook_plugin";
     const timestamp = FieldValue.serverTimestamp();
 
+    const welcomeEmailStatus: WelcomeEmailStatus = welcomeDelivery === "defer"
+      ? "deferred"
+      : "pending";
+
     transaction.create(licenseRef, {
       key: studioKey,
       studioKey,
@@ -144,7 +153,7 @@ export async function provisionAuthorPlugin(
       productId: nullableString(input.productId),
       productName: nullableString(input.productName),
       associatedWebsite: null,
-      welcomeEmailStatus: "pending",
+      welcomeEmailStatus,
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -181,9 +190,10 @@ export async function provisionAuthorPlugin(
       provisionId,
       studioKey,
       authorEmail,
+      authorName,
       source: input.source,
       idempotencyKeyHash: provisionId,
-      welcomeEmailStatus: "pending",
+      welcomeEmailStatus,
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -191,8 +201,73 @@ export async function provisionAuthorPlugin(
     return { studioKey, created: true };
   });
 
+  if (welcomeDelivery === "defer") {
+    const welcomeEmailStatus = await deferProvisionedAuthorWelcome(
+      provisionRef,
+      licenseResult.studioKey,
+    );
+    return {
+      ...licenseResult,
+      welcomeEmailSent: welcomeEmailStatus === "sent",
+      welcomeEmailStatus,
+    };
+  }
+
+  return deliverProvisionedAuthorWelcome({
+    provisionRef,
+    authorEmail,
+    authorName,
+    studioKey: licenseResult.studioKey,
+    licenseResult,
+  });
+}
+
+async function deferProvisionedAuthorWelcome(
+  provisionRef: FirebaseFirestore.DocumentReference,
+  studioKey: string,
+): Promise<WelcomeEmailStatus> {
+  let status: WelcomeEmailStatus = "deferred";
+  await adminDb.runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
+    const snapshot = await transaction.get(provisionRef);
+    if (!snapshot.exists) throw new Error("Provisioning state was not created.");
+    const data = snapshot.data() as ProvisioningState;
+    const currentStatus = normalizeWelcomeEmailStatus(data.welcomeEmailStatus);
+    if (currentStatus === "sent") {
+      status = "sent";
+      return;
+    }
+    const leaseExpiresAt = Number(data.welcomeEmailLeaseExpiresAt) || 0;
+    if (currentStatus === "sending" && leaseExpiresAt > Date.now()) {
+      status = "sending";
+      return;
+    }
+    const timestamp = FieldValue.serverTimestamp();
+    transaction.update(provisionRef, {
+      welcomeEmailStatus: "deferred",
+      welcomeEmailLeaseExpiresAt: null,
+      updatedAt: timestamp,
+    });
+    transaction.set(adminDb.collection("plugin_licenses").doc(studioKey), {
+      welcomeEmailStatus: "deferred",
+      updatedAt: timestamp,
+    }, { merge: true });
+  });
+  return status;
+}
+
+async function deliverProvisionedAuthorWelcome(input: {
+  provisionRef: FirebaseFirestore.DocumentReference;
+  authorEmail: string;
+  authorName: string;
+  studioKey: string;
+  licenseResult: { studioKey: string; created: boolean };
+}): Promise<AuthorProvisioningResult> {
+  const pluginDownloadUrl = resolvePluginDownloadUrl();
+  const { provisionRef, authorEmail, authorName, studioKey, licenseResult } = input;
+
   const emailClaimId = randomUUID();
-  const shouldSendEmail = await adminDb.runTransaction(async (transaction: any) => {
+  const invitation = createAuthorInvitationEnvelope();
+  const shouldSendEmail = await adminDb.runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
     const snapshot = await transaction.get(provisionRef);
     if (!snapshot.exists) throw new Error("Provisioning state was not created.");
     const data = snapshot.data() as ProvisioningState;
@@ -207,6 +282,12 @@ export async function provisionAuthorPlugin(
       welcomeEmailStatus: "sending",
       welcomeEmailClaimId: emailClaimId,
       welcomeEmailLeaseExpiresAt: Date.now() + EMAIL_LEASE_MS,
+      welcomeEmailDeliveryId: provisionRef.id,
+      welcomeInvitationTokenHash: invitation.tokenHash,
+      welcomeInvitationStatus: "active",
+      welcomeInvitationIssuedAt: FieldValue.serverTimestamp(),
+      welcomeInvitationExpiresAt: invitation.expiresAt,
+      welcomeInvitationConsumedAt: null,
       updatedAt: FieldValue.serverTimestamp(),
     });
     return true;
@@ -217,49 +298,78 @@ export async function provisionAuthorPlugin(
     return {
       ...licenseResult,
       welcomeEmailSent: currentState.data()?.welcomeEmailStatus === "sent",
+      welcomeEmailStatus: normalizeWelcomeEmailStatus(
+        currentState.data()?.welcomeEmailStatus,
+      ),
     };
   }
 
+  let mailResult: Awaited<ReturnType<typeof sendWelcomePackage>>;
   try {
-    const mailResult = await sendWelcomePackage({
+    mailResult = await sendWelcomePackage({
       toEmail: authorEmail,
       authorName,
-      studioKey: licenseResult.studioKey,
+      studioKey,
       pluginDownloadUrl,
+      accountSetupUrl: buildAuthorInvitationUrl(invitation.token),
+      deliveryId: provisionRef.id,
     });
-    const timestamp = FieldValue.serverTimestamp();
-    await Promise.all([
-      provisionRef.set({
-        welcomeEmailStatus: "sent",
-        welcomeEmailMessageId: mailResult.messageId,
-        welcomeEmailSentAt: timestamp,
-        welcomeEmailLeaseExpiresAt: null,
-        updatedAt: timestamp,
-      }, { merge: true }),
-      adminDb.collection("plugin_licenses").doc(licenseResult.studioKey).set({
-        welcomeEmailStatus: "sent",
-        welcomeEmailMessageId: mailResult.messageId,
-        welcomeEmailSentAt: timestamp,
-        updatedAt: timestamp,
-      }, { merge: true }),
-    ]);
-    return { ...licenseResult, welcomeEmailSent: true };
   } catch (error) {
     const timestamp = FieldValue.serverTimestamp();
-    await Promise.all([
-      provisionRef.set({
+    const failureBatch = adminDb.batch();
+    failureBatch.set(provisionRef, {
         welcomeEmailStatus: "failed",
         welcomeEmailError: safeError(error),
+        welcomeEmailClaimId: null,
         welcomeEmailLeaseExpiresAt: null,
         updatedAt: timestamp,
-      }, { merge: true }),
-      adminDb.collection("plugin_licenses").doc(licenseResult.studioKey).set({
+      }, { merge: true });
+    failureBatch.set(adminDb.collection("plugin_licenses").doc(studioKey), {
         welcomeEmailStatus: "failed",
         updatedAt: timestamp,
-      }, { merge: true }),
-    ]);
+      }, { merge: true });
+    await failureBatch.commit();
     throw error;
   }
+
+  const persistAcceptedDelivery = async () => {
+    const timestamp = FieldValue.serverTimestamp();
+    const successBatch = adminDb.batch();
+    successBatch.set(provisionRef, {
+      welcomeEmailStatus: "sent",
+      welcomeEmailMessageId: mailResult.messageId,
+      welcomeEmailSentAt: timestamp,
+      welcomeEmailClaimId: null,
+      welcomeEmailLeaseExpiresAt: null,
+      updatedAt: timestamp,
+    }, { merge: true });
+    successBatch.set(adminDb.collection("plugin_licenses").doc(studioKey), {
+      welcomeEmailStatus: "sent",
+      welcomeEmailMessageId: mailResult.messageId,
+      welcomeEmailSentAt: timestamp,
+      updatedAt: timestamp,
+    }, { merge: true });
+    await successBatch.commit();
+  };
+
+  try {
+    await persistAcceptedDelivery();
+  } catch (firstPersistenceError) {
+    console.error("Welcome SMTP delivery was accepted, but status persistence needs retry.", {
+      provisionId: provisionRef.id,
+      errorName: firstPersistenceError instanceof Error ? firstPersistenceError.name : "UnknownError",
+    });
+    // The SMTP provider already accepted this deterministic delivery. Retry only
+    // the durable write; never downgrade it to `failed` and invite a resend.
+    await persistAcceptedDelivery();
+  }
+  return { ...licenseResult, welcomeEmailSent: true, welcomeEmailStatus: "sent" };
+}
+
+function normalizeWelcomeEmailStatus(value: unknown): WelcomeEmailStatus {
+  return value === "deferred" || value === "sending" || value === "sent" || value === "failed"
+    ? value
+    : "pending";
 }
 
 function generateStudioKey(): string {

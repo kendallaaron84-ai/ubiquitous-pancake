@@ -15,16 +15,22 @@ const PUBLIC_READER_PAGES = new Set([
   "/reader/recover",
   "/reader/claim",
   "/reader/account",
+  "/reader/open",
+  "/reader/free",
+  "/reader/purchases/recover",
 ]);
 const PUBLIC_API_EXACT_PATHS = new Set([
   "/api/login",
   "/api/logout",
   "/api/session",
   "/api/auth/activate",
+  "/api/auth/invitation",
   "/api/auth/sms-send",
   "/api/auth/sms-verify",
   "/api/products/public",
   "/api/content/public",
+  "/api/webhook",
+  "/api/webhook/stripe",
   "/api/checkout",
   "/api/checkout/plugin",
   "/api/checkout/listener-session",
@@ -38,26 +44,49 @@ const PUBLIC_API_EXACT_PATHS = new Set([
   "/api/reader/media/token",
   "/api/reader/media/handoff",
   "/api/reader/media/handoff/exchange",
+  "/api/reader/media/free-handoff",
   "/api/reader/purchases/claim",
+  "/api/reader/purchases/recover",
 ]);
-const PUBLIC_API_PREFIXES = ["/api/webhook"];
+const INTERNALLY_AUTHENTICATED_API_EXACT_PATHS = new Set([
+  "/api/checkout/create-session",
+  "/api/checkout/create-session/complete",
+  "/api/audiobook-requests",
+]);
 const MVP_PAGE_PREFIXES = [
   "/products",
   "/nexus-engine",
   "/visibility-cure",
   "/connect",
   "/billing",
+  "/studio",
+  "/workbench",
 ];
 const MVP_API_EXACT_PATHS = new Set([
   "/api/generate-blog",
   "/api/checkout/create-session",
+  "/api/agent/deploy",
   "/api/connections/verify",
+  "/api/author-identities",
+  "/api/stripe/connect/sync",
+  "/api/stripe/connect/onboard",
+  "/api/stripe/connect/dashboard",
+  "/api/nexus/context",
+  "/api/nexus/story-worlds",
+  "/api/nexus/reference-guides",
+  "/api/studio/publications",
+  "/api/studio/transcribe",
+  "/api/studio/vault",
 ]);
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (isStaticAsset(pathname) || isPublicRoute(pathname)) {
+  if (
+    isStaticAsset(pathname) ||
+    isPublicRoute(pathname) ||
+    INTERNALLY_AUTHENTICATED_API_EXACT_PATHS.has(pathname)
+  ) {
     return NextResponse.next();
   }
 
@@ -81,7 +110,7 @@ export async function middleware(request: NextRequest) {
       return MVP_API_EXACT_PATHS.has(pathname)
         ? NextResponse.next()
         : NextResponse.json(
-            { success: false, error: "This API is not available in the MVP workspace." },
+            { success: false, error: "This feature is not available for your account." },
             { status: 404 }
           );
     }
@@ -120,7 +149,7 @@ function isPublicRoute(pathname: string): boolean {
     return true;
   }
 
-  return PUBLIC_API_PREFIXES.some((prefix) => pathMatchesPrefix(pathname, prefix));
+  return /^\/api\/publications\/[^/]+$/.test(pathname) || pathname === "/api/studio/dashboard";
 }
 
 function isStaticAsset(pathname: string): boolean {

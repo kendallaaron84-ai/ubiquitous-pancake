@@ -1,8 +1,8 @@
 // Filepath: core/firebase.ts
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
+import { connectAuthEmulator, getAuth } from "firebase/auth";
+import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
+import { connectStorageEmulator, getStorage } from "firebase/storage";
 import { validateFirebasePublicConfig } from "@/core/firebase-config";
 
 // 🚀 Safe evaluation of client-side environment keys (NEXT_PUBLIC_ prefixes prevent leaking keys to the client bundle)
@@ -22,3 +22,23 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
+
+declare global {
+  // HMR may evaluate this module repeatedly. A global marker prevents duplicate
+  // emulator connection attempts while keeping production initialization intact.
+  var __kobaFirebaseEmulatorsConnected: boolean | undefined;
+}
+
+if (
+  typeof window !== "undefined" &&
+  process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "true" &&
+  !globalThis.__kobaFirebaseEmulatorsConnected
+) {
+  const emulatorHost = window.location.hostname === "localhost" ? "localhost" : "127.0.0.1";
+  connectAuthEmulator(auth, `http://${emulatorHost}:9099`, {
+    disableWarnings: true,
+  });
+  connectFirestoreEmulator(db, emulatorHost, 8087);
+  connectStorageEmulator(storage, emulatorHost, 9199);
+  globalThis.__kobaFirebaseEmulatorsConnected = true;
+}

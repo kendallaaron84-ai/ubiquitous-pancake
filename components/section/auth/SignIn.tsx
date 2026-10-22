@@ -13,6 +13,7 @@ import {
   AuthError 
 } from "firebase/auth"
 import { useRouter } from "next/navigation"
+import Image from "next/image"
 
 type AuthState = "signin" | "signup" | "reset" | "verify-phone" | "verify-email" | "success"
 
@@ -149,11 +150,13 @@ export default function SignIn({ onStateChange, setEmail }: SignInProps) {
         
         {/* Brand mark and accessible text wordmark */}
         <div className="mb-4 flex w-44 flex-col items-center justify-center gap-1 justify-self-center">
-          <div className="h-24 w-full overflow-hidden" aria-hidden="true">
-            <img
+          <div className="relative h-24 w-full overflow-hidden" aria-hidden="true">
+            <Image
               src="/KOBA-I Audio Logo Latest.png"
               alt=""
-              className="h-full w-full scale-x-[1.24] object-cover object-[center_23%] drop-shadow-md"
+              fill
+              priority
+              className="scale-x-[1.24] object-cover object-[center_23%] drop-shadow-md"
             />
           </div>
           <div className="flex w-full items-baseline justify-between" aria-label="KOBA-I Audio">

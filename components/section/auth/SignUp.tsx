@@ -9,6 +9,7 @@ import { Dispatch, FormEvent, SetStateAction, useState } from "react"
 import { auth } from "@/core/firebase"
 import { createUserWithEmailAndPassword, AuthError } from "firebase/auth"
 import { useRouter } from "next/navigation"
+import Image from "next/image"
 
 type AuthState = "signin" | "signup" | "reset" | "verify-phone" | "verify-email" | "success"
 
@@ -132,16 +133,20 @@ export default function SignUp({ onStateChange, setPhoneNumber }: SignUpProps) {
         
         {/* Brand Logos */}
         <div className="flex items-center justify-center gap-3 mb-6">
-          <img 
+          <Image
             src="/KOBA-I Audio Logo Latest.png" 
             alt="KOBA-I Icon" 
+            width={48}
+            height={48}
             className="w-12 h-12 object-contain drop-shadow-md" 
           />
           {/* Subtle light background behind the text logo ensures the dark text pops against the navy card */}
           <div className="bg-white/90 px-3 py-1.5 rounded-md shadow-sm flex items-center justify-center">
-            <img 
+            <Image
               src="/logo-text.png"
               alt="KOBA-I Audio" 
+              width={160}
+              height={20}
               className="h-5 object-contain" 
             />
           </div>

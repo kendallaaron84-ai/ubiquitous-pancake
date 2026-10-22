@@ -1,15 +1,20 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { signOut } from "firebase/auth";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { auth } from "@/core/firebase";
+import { switchReaderPurchaseAccount } from "@/core/security/reader-purchase-account-switch";
 
 type ClaimState =
   | { kind: "loading" }
   | { kind: "pending"; message: string }
   | { kind: "auth"; message: string }
+  | { kind: "accountSwitch" }
   | { kind: "success"; entitlementCount: number }
   | { kind: "error"; message: string; code?: string };
 
@@ -18,6 +23,7 @@ export function ReaderPurchaseClaim({
 }: {
   checkoutSessionId: string;
 }) {
+  const router = useRouter();
   const [state, setState] = useState<ClaimState>({ kind: "loading" });
   const claimPath = `/reader/claim?session_id=${encodeURIComponent(
     checkoutSessionId
@@ -56,6 +62,10 @@ export function ReaderPurchaseClaim({
         });
         return;
       }
+      if (data.code === "READER_PURCHASE_ACCOUNT_SWITCH_REQUIRED") {
+        setState({ kind: "accountSwitch" });
+        return;
+      }
       if (!response.ok || !data.success) {
         setState({
           kind: "error",
@@ -68,13 +78,33 @@ export function ReaderPurchaseClaim({
         kind: "success",
         entitlementCount: Number(data.entitlementCount || 0),
       });
+      router.replace("/reader/account");
+      router.refresh();
     } catch {
       setState({
         kind: "error",
         message: "KOBA-I could not reach the purchase claim service.",
       });
     }
-  }, [checkoutSessionId]);
+  }, [checkoutSessionId, router]);
+
+  const switchAccount = useCallback(async () => {
+    setState({ kind: "loading" });
+    try {
+      await switchReaderPurchaseAccount({
+        claimPath,
+        logoutReaderSession: () =>
+          fetch("/api/reader/logout", { method: "POST" }),
+        logoutFirebaseIdentity: () => signOut(auth),
+        navigate: (path) => router.replace(path),
+      });
+    } catch {
+      setState({
+        kind: "error",
+        message: "KOBA-I could not switch reader accounts. Please try again.",
+      });
+    }
+  }, [claimPath, router]);
 
   useEffect(() => {
     void claim();
@@ -111,6 +141,27 @@ export function ReaderPurchaseClaim({
           <>
             <p role="status" className="text-slate-200">{state.message}</p>
             <Button onClick={() => void claim()}>Retry payment check</Button>
+          </>
+        )}
+        {state.kind === "accountSwitch" && (
+          <>
+            <div role="alert" className="space-y-2 text-slate-100">
+              <p className="font-semibold">
+                This purchase was made with a different email address.
+              </p>
+              <p className="text-slate-200">
+                You&apos;re currently signed in with another KOBA-I Reader
+                account. Sign in with the email used at checkout to add this
+                purchase to the correct Bookshelf.
+              </p>
+            </div>
+            <Button
+              type="button"
+              onClick={() => void switchAccount()}
+              className="w-full bg-[#f47b20] text-slate-950 hover:bg-[#EFB752]"
+            >
+              Switch account
+            </Button>
           </>
         )}
         {state.kind === "success" && (

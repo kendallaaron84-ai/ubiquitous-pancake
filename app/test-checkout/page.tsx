@@ -5,9 +5,6 @@ export const dynamic = 'force-dynamic';
 export default function TestCheckoutPage() {
   const handleCheckout = async () => {
     try {
-      // Replace this with an actual Price ID from your Stripe Test Dashboard (e.g., price_1H...)
-      const TEST_PRICE_ID = "price_1Tg7dFAnSppkf2FmfREYrzem"; 
-
       const response = await fetch("/api/checkout", {
         method: "POST",
         headers: {

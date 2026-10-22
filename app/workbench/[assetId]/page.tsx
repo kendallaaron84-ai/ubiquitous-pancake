@@ -1,13 +1,124 @@
 "use client";
 
-import React, { useState, useEffect, use } from "react";
-import { db } from "@/core/firebase";
-import { doc, getDoc, setDoc } from "firebase/firestore";
-import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, Settings, X, Key } from "lucide-react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, use, useRef } from "react";
+import { Save, ChevronLeft, Wand2, List, Sparkles, Info, Activity, Edit3, ShieldAlert, ImagePlus, Trash2, GripVertical, Replace, Eye, Check, RotateCcw, X } from "lucide-react";
 import Link from "next/link";
-import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
+import Image from "next/image";
 import { toast } from "@/components/ui/use-toast";
 import { ModeToggle } from "@/components/elements/mode-toggle";
+import { loadStudioProduct, saveStudioProduct, uploadStudioFile } from "@/core/studio-client";
+import { validateStudioImageFile } from "@/core/studio-image";
+import {
+  applyProtectedIllustrationMetadata,
+  captureProtectedIllustrationLocator,
+  ILLUSTRATION_ALT_TEXT_MAX_LENGTH,
+  ILLUSTRATION_CAPTION_MAX_LENGTH,
+  rebindProtectedIllustration,
+  readProtectedIllustrationMetadata,
+  restoreProtectedIllustrationSnapshot,
+  type IllustrationMetadata,
+  type ProtectedIllustrationLocator,
+  type ProtectedIllustrationSnapshot,
+} from "@/core/studio-illustration-metadata";
+
+const CHAPTER_TAGS = new Set(["A", "ABBR", "B", "BLOCKQUOTE", "BR", "CITE", "CODE", "DIV", "EM", "FIGCAPTION", "FIGURE", "H1", "H2", "H3", "H4", "H5", "H6", "HR", "I", "IMG", "LI", "OL", "P", "PRE", "SECTION", "SMALL", "SPAN", "STRONG", "SUB", "SUP", "UL"]);
+
+type IllustrationMetadataEditor = {
+  original: ProtectedIllustrationSnapshot;
+  accepted: ProtectedIllustrationSnapshot;
+  draft: IllustrationMetadata;
+  previewing: boolean;
+  storagePath: string;
+};
+
+type PendingIllustrationInsertion = {
+  chapterId: string;
+  chapterIndex: number;
+  slotIndex: number;
+};
+
+type PendingIllustrationRebind = {
+  figures: ProtectedIllustrationLocator[];
+  selected: ProtectedIllustrationLocator;
+};
+
+type IllustratedPage = {
+  id?: string;
+  assetId?: string;
+  previewUrl: string;
+  fileName?: string;
+  mimeType?: string;
+  width?: number;
+  height?: number;
+  aspectRatio?: number;
+  facingIntent?: string;
+};
+
+type WorkbenchChapter = {
+  id?: string;
+  title?: string;
+  content?: string;
+  textContent?: string;
+  pages?: IllustratedPage[];
+};
+
+type WorkbenchBook = {
+  title?: string;
+  type?: string;
+  accessError?: string;
+  layoutMode?: string;
+  illustratedPageSettings?: unknown;
+  guardrails?: { setting: string; mood: string; loreContext: string };
+  chapters: WorkbenchChapter[];
+};
+
+function imageDimensions(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = document.createElement("img");
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    };
+    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`Could not read ${file.name}.`)); };
+    image.src = url;
+  });
+}
+
+function sanitizeChapterHtml(value: string): string {
+  if (typeof window === "undefined") return value;
+  const parsed = new DOMParser().parseFromString(`<div>${value || ""}</div>`, "text/html");
+  const root = parsed.body.firstElementChild;
+  if (!root) return "";
+  root.querySelectorAll("script,style,iframe,object,embed,form,link,meta,svg").forEach((node) => node.remove());
+  [...root.querySelectorAll("*")].forEach((node) => {
+    if (!CHAPTER_TAGS.has(node.tagName)) { node.replaceWith(...node.childNodes); return; }
+    [...node.attributes].forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      if (name.startsWith("on") || !["href", "src", "alt", "title", "class", "role", "aria-label", "loading", "data-koba-storage-path"].includes(name)) node.removeAttribute(attribute.name);
+    });
+    if (node instanceof HTMLImageElement) {
+      const protectedPath = node.dataset.kobaStoragePath?.trim().replace(/^\/+/, "") || "";
+      if (protectedPath) {
+        if (!protectedPath.startsWith("studio/") || protectedPath.includes("..") || protectedPath.includes("\\")) node.remove();
+        node.alt = node.getAttribute("alt") || "Illustration";
+        return;
+      }
+      try {
+        const source = new URL(node.getAttribute("src") || "");
+        if (!/^https?:$/.test(source.protocol) || !/\.(?:jpe?g|png|gif|svg)$/i.test(source.pathname)) node.remove();
+      } catch { node.remove(); }
+      node.alt = node.getAttribute("alt") || "Illustration";
+    }
+  });
+  return root.innerHTML;
+}
+
+function editorHtml(value: string): string {
+  const source = String(value || "");
+  if (/<[a-z][\s\S]*>/i.test(source)) return sanitizeChapterHtml(source);
+  return source.split(/\r?\n/).map((line) => `<p>${line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") || "<br>"}</p>`).join("");
+}
 
 // 🛠️ THEME-RESPONSIVE TOOLTIP
 const Tooltip = ({ text, children }: { text: string, children: React.ReactNode }) => {
@@ -26,10 +137,34 @@ const Tooltip = ({ text, children }: { text: string, children: React.ReactNode }
 export default function AuthorWorkbench({ params }: { params: Promise<{ assetId: string }> }) {
   const { assetId } = use(params); 
 
-  const [bookData, setBookData] = useState<any>(null);
+  const [bookData, setBookData] = useState<WorkbenchBook | null>(null);
   const [activeChapterIndex, setActiveChapterIndex] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const pendingInsertionSlotRef = useRef<PendingIllustrationInsertion | null>(null);
+  const selectedFigureRef = useRef<HTMLElement | null>(null);
+  const illustrationAltTextInputRef = useRef<HTMLInputElement>(null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [hasSelectedIllustration, setHasSelectedIllustration] = useState(false);
+  const [illustrationMetadata, setIllustrationMetadata] = useState<IllustrationMetadataEditor | null>(null);
+  const illustrationMetadataRef = useRef<IllustrationMetadataEditor | null>(null);
+  const pendingIllustrationRebindRef = useRef<PendingIllustrationRebind | null>(null);
+  const pageInputRef = useRef<HTMLInputElement>(null);
+  const replacePageInputRef = useRef<HTMLInputElement>(null);
+  const replacePageIndexRef = useRef<number | null>(null);
+  const dragPageIndexRef = useRef<number | null>(null);
+  const [isUploadingPages, setIsUploadingPages] = useState(false);
+  const activeChapterSourceHtml = bookData?.chapters?.[activeChapterIndex]?.textContent
+    || bookData?.chapters?.[activeChapterIndex]?.content
+    || "";
+  const activeChapterId = bookData?.chapters?.[activeChapterIndex]?.id;
+  const activeChapterTextContent = bookData?.chapters?.[activeChapterIndex]?.textContent;
+  const activeChapterEditorMarkup = useMemo(
+    () => ({ __html: editorHtml(activeChapterSourceHtml) }),
+    [activeChapterSourceHtml]
+  );
   
   // 🛡️ Style Guardrails State
   const [guardrails, setGuardrails] = useState({
@@ -38,43 +173,26 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
     loreContext: ""
   });
 
-  // 🔑 NEW: BYOK (Bring Your Own Key) & Model Selection State
-  const [activeModel, setActiveModel] = useState("anthropic"); // default to claude, for example
-    const [apiKeys, setApiKeys] = useState({
-  });
-
   useEffect(() => {
     if (!assetId) return;
     
     const fetchManuscript = async () => {
       try {
         console.log("🎯 Workbench attempting connection for assetId:", assetId);
-        const docRef = doc(db, "products", assetId);
-        const docSnap = await getDoc(docRef);
-
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          if (!data.chapters || data.chapters.length === 0) {
-            data.chapters = [{ id: `ch_1_${assetId}`, title: "Chapter 1", textContent: "" }];
-          }
-          setBookData(data);
-          if (data.guardrails) setGuardrails(data.guardrails);
-          if (data.apiKeys) setApiKeys(data.apiKeys);
-        } else {
-          console.warn("⚠️ Document ID not found in products collection. Loading initialization state.");
-          setBookData({
-            title: "Sandbox Mode: Asset Not Found",
-            type: "ebook",
-            chapters: [{ id: `ch_1_${assetId}`, title: "Chapter 1 Initializer", textContent: "The workbench compiled, but could not locate this book record in your Firestore database. Click 'Save Draft' to initialize a fresh record mapping." }]
-          });
+        const payload = await loadStudioProduct(assetId);
+        const data = payload.product as WorkbenchBook;
+        if (!Array.isArray(data.chapters) || data.chapters.length === 0) {
+          data.chapters = [{ id: `ch_1_${assetId}`, title: "Chapter 1", textContent: "" }];
         }
-      } catch (error: any) {
-        // 🚀 FALLBACK 2: Database Rules / Network Connection Blocked
-        console.error("❌ Firestore connection failed:", error);
+        setBookData(data);
+        if (data.guardrails) setGuardrails(data.guardrails);
+      } catch (error: unknown) {
+        console.error("Workbench publication lookup failed:", error);
         setBookData({
-          title: "Offline Vault Mode",
-          type: "E-Book",
-          chapters: [{ id: `ch_1_${assetId}`, title: "Chapter 1 (Offline)", textContent: `Database handshake failed. Reason: ${error?.message || "Unknown Rule Block"}` }]
+          title: "Publication unavailable",
+          type: "ebook",
+          accessError: error instanceof Error ? error.message : "This publication could not be opened.",
+          chapters: [],
         });
       }
     };
@@ -83,72 +201,398 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   // ... Your existing fetchManuscript useEffect ends here ...
   }, [assetId]);
 
-  const handleMasteredUpload = async (e: React.ChangeEvent<HTMLInputElement>, chapterId: string) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // 1. Point to the "Production-Ready" folder in Firebase Storage
-    const storageInstance = getStorage();
-    const productionPath = `production-vault/${assetId}/${chapterId}_mastered.mp3`;
-    const storageRef = ref(storageInstance, productionPath);
-
-    // 2. Stream the file directly
-    toast({ title: "Mastered Upload", description: "Injecting production-ready audio into the vault..." });
-    
-    const uploadTask = uploadBytesResumable(storageRef, file);
-    
-    uploadTask.on("state_changed", null, (err) => {
-        toast({ title: "Upload Failed", description: err.message, variant: "destructive" });
-    }, async () => {
-        const audioUrl = await getDownloadURL(uploadTask.snapshot.ref);
-        
-        // 🎯 Redirected to products with an idempotent setDoc merge
-        const docRef = doc(db, "products", assetId);
-        await setDoc(docRef, {
-            [`audioMap.${chapterId}`]: audioUrl,
-            updatedAt: new Date().toISOString()
-        }, { merge: true });
-        
-        toast({ title: "Production Success", description: "Audio mastered and vaulted." });
+  const updateActiveChapterHtml = (html: string) => {
+    setBookData((current) => {
+      if (!current) return current;
+      const chapters = [...(current?.chapters || [])];
+      if (!chapters[activeChapterIndex]) return current;
+      chapters[activeChapterIndex] = { ...chapters[activeChapterIndex], textContent: html };
+      return { ...current, chapters };
     });
-};
+  };
+
+  const updateIllustrationMetadataEditor = (value: IllustrationMetadataEditor | null) => {
+    illustrationMetadataRef.current = value;
+    setIllustrationMetadata(value);
+  };
+
+  const serializedEditorHtml = () => {
+    if (!editorRef.current) return "";
+    const copy = editorRef.current.cloneNode(true) as HTMLElement;
+    copy.querySelectorAll("[data-koba-image-slot]").forEach((slot) => slot.remove());
+    copy.querySelectorAll<HTMLElement>("[data-koba-editor-figure]").forEach((figure) => {
+      figure.removeAttribute("data-koba-editor-figure");
+      figure.removeAttribute("tabindex");
+      figure.removeAttribute("aria-label");
+      figure.removeAttribute("role");
+      figure.removeAttribute("contenteditable");
+    });
+    copy.querySelectorAll<HTMLImageElement>("img[data-koba-storage-path]").forEach((image) => image.setAttribute("src", ""));
+    return copy.innerHTML;
+  };
+
+  const refreshImageInsertionSlots = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.querySelectorAll("[data-koba-image-slot]").forEach((slot) => slot.remove());
+    editor.querySelectorAll<HTMLElement>("figure.koba-illustration").forEach((figure) => {
+      if (!figure.querySelector("img[data-koba-storage-path]")) return;
+      figure.dataset.kobaEditorFigure = "true";
+      figure.tabIndex = 0;
+      figure.contentEditable = "false";
+      figure.setAttribute("role", "button");
+      figure.setAttribute("aria-label", "Edit illustration details");
+    });
+    const blocks = [...editor.children];
+    for (let index = blocks.length; index >= 0; index -= 1) {
+      const slot = document.createElement("button");
+      slot.type = "button";
+      slot.contentEditable = "false";
+      slot.dataset.kobaImageSlot = String(index);
+      slot.className = "koba-image-insertion-slot";
+      slot.textContent = "+ Add Image Here";
+      slot.setAttribute("aria-label", `Add image at chapter position ${index + 1}`);
+      editor.insertBefore(slot, blocks[index] || null);
+    }
+  }, []);
+
+  const chooseImageForSlot = (slot: HTMLElement) => {
+    const chapter = bookData?.chapters?.[activeChapterIndex];
+    const slotIndex = Number(slot.dataset.kobaImageSlot);
+    if (!chapter || !Number.isSafeInteger(slotIndex) || slotIndex < 0) {
+      pendingInsertionSlotRef.current = null;
+      toast({ title: "Choose an insertion point", description: "Select Add Image Here where the illustration should appear.", variant: "destructive" });
+      return;
+    }
+    if (!clearIllustrationSelection()) {
+      pendingInsertionSlotRef.current = null;
+      toast({ title: "Image insertion paused", description: "The current illustration preview could not be restored safely.", variant: "destructive" });
+      return;
+    }
+    pendingInsertionSlotRef.current = {
+      chapterId: String(chapter.id || ""),
+      chapterIndex: activeChapterIndex,
+      slotIndex,
+    };
+    imageInputRef.current?.click();
+  };
+
+  useEffect(() => {
+    if (!bookData) return;
+    const frame = window.requestAnimationFrame(refreshImageInsertionSlots);
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeChapterId, activeChapterIndex, bookData, refreshImageInsertionSlots]);
+
+  const insertImageAtSelectedPosition = (url: string, storagePath: string, alt: string): boolean => {
+    const editor = editorRef.current;
+    const pendingInsertion = pendingInsertionSlotRef.current;
+    const resolveInsertionSlot = (): HTMLElement | null => editor && pendingInsertion
+        && pendingInsertion.chapterIndex === Number(editor.dataset.kobaChapterIndex)
+        && pendingInsertion.chapterId === String(editor.dataset.kobaChapterId || "")
+        ? [...editor.querySelectorAll<HTMLElement>("[data-koba-image-slot]")]
+          .find((candidate) => candidate.dataset.kobaImageSlot === String(pendingInsertion.slotIndex)) || null
+        : null;
+    let slot = resolveInsertionSlot();
+    if (!editor || !slot) {
+      pendingInsertionSlotRef.current = null;
+      toast({ title: "Choose an insertion point", description: "Select Add Image Here where the illustration should appear.", variant: "destructive" });
+      return false;
+    }
+    if (!clearIllustrationSelection()) {
+      pendingInsertionSlotRef.current = null;
+      toast({ title: "Image insertion paused", description: "The current illustration preview could not be restored safely.", variant: "destructive" });
+      return false;
+    }
+    slot.blur();
+    slot = resolveInsertionSlot();
+    if (!slot) {
+      pendingInsertionSlotRef.current = null;
+      toast({ title: "Choose an insertion point", description: "Select Add Image Here where the illustration should appear.", variant: "destructive" });
+      return false;
+    }
+    const figure = document.createElement("figure");
+    figure.className = "koba-illustration";
+    const image = document.createElement("img");
+    image.src = url;
+    image.dataset.kobaStoragePath = storagePath;
+    image.alt = alt;
+    image.loading = "lazy";
+    image.dataset.kobaStoragePath = storagePath;
+    figure.appendChild(image);
+    slot.replaceWith(figure);
+    pendingInsertionSlotRef.current = null;
+    selectedFigureRef.current = figure;
+    setHasSelectedIllustration(true);
+    const snapshot = readProtectedIllustrationMetadata(figure);
+    if (!snapshot) throw new Error("The inserted protected illustration could not be selected.");
+    const metadata = { altText: snapshot.altText, caption: snapshot.caption };
+    updateIllustrationMetadataEditor({ original: snapshot, accepted: snapshot, draft: metadata, previewing: false, storagePath });
+    if (!queueIllustrationHtmlCommit(figure)) {
+      figure.remove();
+      clearIllustrationSelection(false);
+      throw new Error("The inserted illustration could not be added to the active chapter draft.");
+    }
+    refreshImageInsertionSlots();
+    return true;
+  };
+
+  const activeSelectedIllustration = () => {
+    const figure = selectedFigureRef.current;
+    const metadata = illustrationMetadataRef.current;
+    const snapshot = figure && editorRef.current?.contains(figure)
+      ? readProtectedIllustrationMetadata(figure)
+      : null;
+    if (!figure || !snapshot || (metadata && snapshot.storagePath !== metadata.storagePath)) {
+      selectedFigureRef.current = null;
+      setHasSelectedIllustration(false);
+      updateIllustrationMetadataEditor(null);
+      return null;
+    }
+    return figure;
+  };
+
+  const restorePendingIllustrationPreview = () => {
+    const metadata = illustrationMetadataRef.current;
+    if (!metadata?.previewing) return true;
+    const figure = activeSelectedIllustration();
+    if (!figure) return false;
+    try {
+      restoreProtectedIllustrationSnapshot(figure, metadata.accepted);
+      updateIllustrationMetadataEditor({
+        ...metadata,
+        draft: { altText: metadata.accepted.altText, caption: metadata.accepted.caption },
+        previewing: false,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const clearIllustrationSelection = (restorePreview = true) => {
+    if (restorePreview && !restorePendingIllustrationPreview()) return false;
+    selectedFigureRef.current = null;
+    setHasSelectedIllustration(false);
+    updateIllustrationMetadataEditor(null);
+    pendingIllustrationRebindRef.current = null;
+    return true;
+  };
+
+  const selectIllustration = (figure: HTMLElement | null, focusMetadataEditor = false) => {
+    if (!restorePendingIllustrationPreview()) {
+      toast({ title: "Selection paused", description: "The current illustration changed. Save is blocked until it is selected again.", variant: "destructive" });
+      return;
+    }
+    selectedFigureRef.current = figure;
+    setHasSelectedIllustration(Boolean(figure));
+    if (!figure || !editorRef.current?.contains(figure)) {
+      clearIllustrationSelection(false);
+      return;
+    }
+    const snapshot = readProtectedIllustrationMetadata(figure);
+    if (!snapshot) {
+      clearIllustrationSelection(false);
+      return;
+    }
+    const metadata = { altText: snapshot.altText, caption: snapshot.caption };
+    updateIllustrationMetadataEditor({
+      original: snapshot,
+      accepted: snapshot,
+      draft: metadata,
+      previewing: false,
+      storagePath: snapshot.storagePath,
+    });
+    if (focusMetadataEditor) {
+      window.requestAnimationFrame(() => illustrationAltTextInputRef.current?.focus());
+    }
+  };
+
+  const previewIllustrationMetadata = () => {
+    const figure = activeSelectedIllustration();
+    if (!figure || !illustrationMetadata) return;
+    try {
+      applyProtectedIllustrationMetadata(figure, illustrationMetadata.draft);
+      updateIllustrationMetadataEditor({ ...illustrationMetadata, previewing: true });
+    } catch (error) {
+      toast({ title: "Metadata preview failed", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" });
+    }
+  };
+
+  function queueIllustrationHtmlCommit(figure: HTMLElement) {
+    const editor = editorRef.current;
+    if (!editor) return false;
+    const locator = captureProtectedIllustrationLocator(editor, figure);
+    if (!locator) return false;
+    const protectedLocators: ProtectedIllustrationLocator[] = [];
+    for (const candidate of editor.querySelectorAll<HTMLElement>("figure.koba-illustration")) {
+      if (!candidate.querySelector("img[data-koba-storage-path]")) continue;
+      const candidateLocator = captureProtectedIllustrationLocator(editor, candidate);
+      if (!candidateLocator) return false;
+      protectedLocators.push(candidateLocator);
+    }
+    const html = serializedEditorHtml();
+    const currentHtml = String(bookData?.chapters?.[activeChapterIndex]?.textContent || "");
+    if (html !== currentHtml) {
+      pendingIllustrationRebindRef.current = { figures: protectedLocators, selected: locator };
+      updateActiveChapterHtml(html);
+    }
+    return true;
+  }
+
+  const acceptIllustrationMetadata = () => {
+    const figure = activeSelectedIllustration();
+    if (!figure || !illustrationMetadata) return;
+    try {
+      const applied = applyProtectedIllustrationMetadata(figure, illustrationMetadata.draft);
+      if (!queueIllustrationHtmlCommit(figure)) throw new Error("The selected illustration is no longer in the active chapter.");
+      updateIllustrationMetadataEditor({
+        ...illustrationMetadata,
+        accepted: applied,
+        draft: { altText: applied.altText, caption: applied.caption },
+        previewing: false,
+      });
+      toast({ title: "Illustration details accepted", description: "Save Draft to preserve the alt text and caption." });
+    } catch (error) {
+      try { restoreProtectedIllustrationSnapshot(figure, illustrationMetadata.accepted); } catch { /* Save remains blocked by identity validation. */ }
+      toast({ title: "Metadata update failed", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" });
+    }
+  };
+
+  const cancelIllustrationMetadata = () => {
+    const figure = activeSelectedIllustration();
+    if (!figure || !illustrationMetadata) return;
+    try {
+      restoreProtectedIllustrationSnapshot(figure, illustrationMetadata.accepted);
+      clearIllustrationSelection(false);
+      window.requestAnimationFrame(() => figure.focus());
+    } catch (error) {
+      toast({ title: "Cancel paused", description: error instanceof Error ? error.message : "The illustration changed unexpectedly.", variant: "destructive" });
+    }
+  };
+
+  const revertIllustrationMetadata = () => {
+    const figure = activeSelectedIllustration();
+    if (!figure || !illustrationMetadata) return;
+    try {
+      const restored = restoreProtectedIllustrationSnapshot(figure, illustrationMetadata.original);
+      if (!queueIllustrationHtmlCommit(figure)) throw new Error("The selected illustration is no longer in the active chapter.");
+      updateIllustrationMetadataEditor({
+        ...illustrationMetadata,
+        accepted: restored,
+        draft: { altText: restored.altText, caption: restored.caption },
+        previewing: false,
+      });
+      toast({ title: "Illustration details reverted", description: "The original alt text and caption are restored in this draft." });
+    } catch (error) {
+      try { restoreProtectedIllustrationSnapshot(figure, illustrationMetadata.accepted); } catch { /* Save remains blocked by identity validation. */ }
+      toast({ title: "Metadata revert failed", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" });
+    }
+  };
+
+  useEffect(() => () => {
+    const metadata = illustrationMetadataRef.current;
+    const figure = selectedFigureRef.current;
+    if (metadata?.previewing && figure && editorRef.current?.contains(figure)) {
+      try { restoreProtectedIllustrationSnapshot(figure, metadata.accepted); } catch { /* DOM is being discarded without persistence. */ }
+    }
+    selectedFigureRef.current = null;
+    illustrationMetadataRef.current = null;
+    pendingIllustrationRebindRef.current = null;
+  }, []);
+
+  useLayoutEffect(() => {
+    const pendingRebind = pendingIllustrationRebindRef.current;
+    const editor = editorRef.current;
+    if (!pendingRebind || !editor) return;
+    pendingIllustrationRebindRef.current = null;
+    pendingRebind.figures.forEach((locator) => rebindProtectedIllustration(editor, locator));
+    const figure = rebindProtectedIllustration(editor, pendingRebind.selected);
+    if (!figure) {
+      selectedFigureRef.current = null;
+      setHasSelectedIllustration(false);
+      updateIllustrationMetadataEditor(null);
+      refreshImageInsertionSlots();
+      return;
+    }
+    selectedFigureRef.current = figure;
+    refreshImageInsertionSlots();
+  }, [activeChapterIndex, activeChapterTextContent, refreshImageInsertionSlots]);
+
+  const handleIllustrationUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      pendingInsertionSlotRef.current = null;
+      return;
+    }
+    if (!validateStudioImageFile(file.name, file.type).valid) {
+      pendingInsertionSlotRef.current = null;
+      toast({ title: "Unsupported image", description: "Use JPEG, PNG, or GIF. SVG uploads are temporarily unavailable.", variant: "destructive" });
+      return;
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      pendingInsertionSlotRef.current = null;
+      toast({ title: "Image too large", description: "Images must be 12 MB or smaller.", variant: "destructive" });
+      return;
+    }
+    setIsUploadingImage(true);
+    try {
+      const uploaded = await uploadStudioFile(assetId, file, "illustrated_page");
+      if (!insertImageAtSelectedPosition(
+        uploaded.previewUrl,
+        uploaded.storagePath,
+        file.name.replace(/\.[^.]+$/, "")
+      )) return;
+      toast({ title: "Image inserted", description: "Save Draft to preserve it in this chapter." });
+    } catch (error: unknown) {
+      toast({ title: "Image upload failed", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" });
+    } finally {
+      setIsUploadingImage(false);
+    }
+  };
+
+  const removeSelectedImage = () => {
+    const selection = window.getSelection();
+    const element = selection?.anchorNode instanceof Element
+      ? selection.anchorNode
+      : selection?.anchorNode?.parentElement;
+    const figure = activeSelectedIllustration() || element?.closest("figure.koba-illustration");
+    if (!figure || !editorRef.current?.contains(figure)) {
+      toast({ title: "Select an image", description: "Click an inserted image, then choose Remove Image." });
+      return;
+    }
+    figure.remove();
+    clearIllustrationSelection(false);
+    updateActiveChapterHtml(serializedEditorHtml());
+    refreshImageInsertionSlots();
+  };
 
   const handleSave = async () => {
   if (!bookData) return;
+  if (!restorePendingIllustrationPreview()) {
+    toast({ title: "Save paused", description: "The selected illustration changed. Select it again before saving.", variant: "destructive" });
+    return;
+  }
   setIsSaving(true);
   try {
-    const docRef = doc(db, "products", assetId);
-    
     const sourceChapters = Array.isArray(bookData.chapters) ? bookData.chapters : [];
-    const formattedChapters = sourceChapters.map((ch: any, index: number) => ({
-        id: ch.id || `ch_${index + 1}_${assetId}`,
-        title: ch.title || `Chapter ${index + 1}`,
-        textContent: ch.textContent || ch.content || "" 
-    }));
+    const illustrated = bookData.layoutMode === "illustrated_pages";
+    const formattedChapters = sourceChapters.map((ch, index: number) => illustrated
+      ? { id: ch.id || `ch_${index + 1}_${assetId}`, title: ch.title || `Chapter ${index + 1}`, pages: Array.isArray(ch.pages) ? ch.pages : [] }
+      : { id: ch.id || `ch_${index + 1}_${assetId}`, title: ch.title || `Chapter ${index + 1}`, textContent: sanitizeChapterHtml(editorHtml(ch.textContent || ch.content || "")) });
 
-    await setDoc(docRef, { 
-        assetKey: assetId,
-        id: assetId,
-        type: "ebook",
-        chapters: formattedChapters,
-        ebookPayload: {
-            fontPreference: bookData.ebookPayload?.fontPreference || "Atkinson Hyperlegible",
-            chapters: formattedChapters
-        },
-        guardrails: guardrails,
-        apiKeys: apiKeys,
-        updatedAt: new Date().toISOString()
-    }, { merge: true });
-
-    setBookData((current: any) => ({
-      ...current,
+    const payload = await saveStudioProduct(assetId, "save_workbench_draft", {
       chapters: formattedChapters,
-      ebookPayload: {
-        ...current?.ebookPayload,
-        fontPreference: current?.ebookPayload?.fontPreference || "Atkinson Hyperlegible",
-        chapters: formattedChapters
-      }
-    }));
+      guardrails,
+      layoutMode: illustrated ? "illustrated_pages" : "reflowable",
+      illustratedPageSettings: bookData.illustratedPageSettings,
+    });
+
+    setBookData((current) => current ? ({
+      ...current,
+      ...(payload.product as Partial<WorkbenchBook>),
+    }) : current);
+    clearIllustrationSelection(false);
 
     console.log("💾 Workbench manuscript saved to products collection.", {
       assetId,
@@ -161,8 +605,71 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
   }
 };
 
+  const uploadPageFiles = async (files: File[], replaceIndex: number | null = null) => {
+    const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+    if (!sorted.length) return;
+    if (sorted.some((file) => !validateStudioImageFile(file.name, file.type).valid)) {
+      toast({ title: "Unsupported page", description: "Use JPEG, PNG, or GIF page images. SVG uploads are temporarily unavailable.", variant: "destructive" });
+      return;
+    }
+    setIsUploadingPages(true);
+    try {
+      const uploadedPages: Array<{
+        id: string; assetId: string; previewUrl: string; fileName: string; mimeType: string;
+        width: number; height: number; aspectRatio: number; facingIntent: "auto";
+      }> = [];
+      for (const file of sorted) {
+        const [dimensions, uploaded] = await Promise.all([
+          imageDimensions(file),
+          uploadStudioFile(assetId, file, "illustrated_page"),
+        ]);
+        uploadedPages.push({
+          id: `page_${crypto.randomUUID()}`,
+          assetId: uploaded.storagePath,
+          previewUrl: URL.createObjectURL(file),
+          fileName: file.name,
+          mimeType: file.type,
+          ...dimensions,
+          aspectRatio: dimensions.width / dimensions.height,
+          facingIntent: "auto",
+        });
+      }
+      setBookData((current) => {
+        if (!current) return current;
+        const chapters = [...current.chapters];
+        const chapter = { ...chapters[activeChapterIndex] };
+        const pages = [...(chapter.pages || [])];
+        if (replaceIndex !== null) pages.splice(replaceIndex, 1, uploadedPages[0]);
+        else pages.push(...uploadedPages);
+        chapters[activeChapterIndex] = { ...chapter, pages };
+        return { ...current, chapters };
+      });
+      toast({ title: replaceIndex === null ? "Pages added" : "Page replaced", description: "Save Draft to preserve the illustrated page order." });
+    } catch (error) {
+      toast({ title: "Page upload failed", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" });
+    } finally {
+      setIsUploadingPages(false);
+      replacePageIndexRef.current = null;
+    }
+  };
+
+  const updateCurrentPages = (transform: (pages: IllustratedPage[]) => IllustratedPage[]) => {
+    setBookData((current) => {
+      if (!current) return current;
+      const chapters = [...current.chapters];
+      const chapter = { ...chapters[activeChapterIndex] };
+      chapter.pages = transform([...(chapter.pages || [])]);
+      chapters[activeChapterIndex] = chapter;
+      return { ...current, chapters };
+    });
+  };
+
   const addChapter = () => {
       if(!bookData) return;
+      if (!clearIllustrationSelection()) {
+        toast({ title: "Chapter change paused", description: "The illustration preview could not be restored safely.", variant: "destructive" });
+        return;
+      }
       const newChapters = [...bookData.chapters];
       newChapters.push({
           id: `ch_${Date.now()}_${assetId}`,
@@ -186,6 +693,18 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
                 INITIALIZING DECOUPLED VAULT MATRIX...
             </p>
         </div>
+    );
+  }
+
+  if (bookData.accessError) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-[#070a0f] p-6 text-center text-white">
+        <div className="max-w-md rounded-xl border border-red-900/40 bg-red-950/10 p-6">
+          <h3 className="mb-2 text-lg font-bold text-red-500">Publication unavailable</h3>
+          <p className="text-sm text-gray-400">{bookData.accessError}</p>
+          <Link href="/products" className="mt-5 inline-block text-sm font-semibold text-orange-400">Return to Product Catalog</Link>
+        </div>
+      </div>
     );
   }
 
@@ -220,7 +739,7 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
                     </span>
                 </p>
                 <div className="text-left text-xs bg-black/50 p-3 rounded font-mono border border-gray-800 text-gray-500">
-                    Expected: Firestore Document under "products" collection with correct layout keys.
+                    Expected: Firestore Document under &quot;products&quot; collection with correct layout keys.
                 </div>
             </div>
         </div>
@@ -241,10 +760,17 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
           </span>
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          {bookData.chapters.map((chapter: any, index: number) => (
+          {bookData.chapters.map((chapter, index: number) => (
             <button
               key={chapter.id}
-              onClick={() => setActiveChapterIndex(index)}
+              onClick={() => {
+                if (index === activeChapterIndex) return;
+                if (!clearIllustrationSelection()) {
+                  toast({ title: "Chapter change paused", description: "The illustration preview could not be restored safely.", variant: "destructive" });
+                  return;
+                }
+                setActiveChapterIndex(index);
+              }}
               className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
                 activeChapterIndex === index 
                   ? "bg-emerald-50 dark:bg-[#7C2B22] text-emerald-700 dark:text-[#F9B437] border border-emerald-200 dark:border-[#F9B437]/30 shadow-sm" 
@@ -299,17 +825,148 @@ export default function AuthorWorkbench({ params }: { params: Promise<{ assetId:
               className="w-full bg-transparent text-3xl font-bold text-[#1E2B53] dark:text-white border-none outline-none focus:ring-0 placeholder-slate-400 dark:placeholder-white/40 transition-colors"
               placeholder="Chapter Title"
             />
-            <textarea
-              // 🚀 Bind directly to textContent
-              value={bookData.chapters[activeChapterIndex]?.textContent || bookData.chapters[activeChapterIndex]?.content || ""}
-              onChange={(e) => {
-                const newChapters = [...bookData.chapters];
-                newChapters[activeChapterIndex].textContent = e.target.value;
-                setBookData({ ...bookData, chapters: newChapters });
+            <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-slate-950/20">
+              <div><p className="text-sm font-bold">Presentation</p><p className="text-xs text-slate-500">Choose the authoring model for this publication.</p></div>
+              <select
+                aria-label="Publication presentation model"
+                value={bookData.layoutMode === "illustrated_pages" ? "illustrated_pages" : "reflowable"}
+                onChange={(event) => setBookData({
+                  ...bookData,
+                  layoutMode: event.target.value,
+                  illustratedPageSettings: bookData.illustratedPageSettings || { spreadStart: "right", allowSpreads: true, pageBackground: "#111111" },
+                  chapters: bookData.chapters.map((chapter) => ({ ...chapter, pages: chapter.pages || [] })),
+                })}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-white/20 dark:bg-slate-900"
+              >
+                <option value="reflowable">Reflowable book</option>
+                <option value="illustrated_pages">Illustrated finished pages</option>
+              </select>
+            </div>
+            {bookData.layoutMode === "illustrated_pages" ? (
+            <section aria-labelledby="illustrated-pages-heading" className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-slate-950/20">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div><h2 id="illustrated-pages-heading" className="text-sm font-bold">Finished Page Plates</h2><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Upload complete pages. KOBA-I preserves every page as one indivisible composition.</p></div>
+                <button type="button" disabled={isUploadingPages} onClick={() => pageInputRef.current?.click()} className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50"><ImagePlus className="h-4 w-4" />{isUploadingPages ? "Uploading…" : "+ Add Pages"}</button>
+              </div>
+              <input ref={pageInputRef} type="file" multiple accept="image/jpeg,image/png,image/gif" className="hidden" onChange={(event) => { const files = [...(event.target.files || [])]; event.target.value = ""; void uploadPageFiles(files); }} />
+              <input ref={replacePageInputRef} type="file" accept="image/jpeg,image/png,image/gif" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void uploadPageFiles([file], replacePageIndexRef.current); }} />
+              <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {(currentChapter.pages || []).map((page, pageIndex: number) => {
+                  const referenceRatio = Number((currentChapter.pages || [])[0]?.aspectRatio || 0);
+                  const ratioMismatch = referenceRatio > 0 && Math.abs(Number(page.aspectRatio) - referenceRatio) / referenceRatio > 0.08;
+                  return (
+                    <article key={page.id || pageIndex} draggable onDragStart={() => { dragPageIndexRef.current = pageIndex; }} onDragOver={(event) => event.preventDefault()} onDrop={() => { const from = dragPageIndexRef.current; if (from === null || from === pageIndex) return; updateCurrentPages((pages) => { const [moved] = pages.splice(from, 1); pages.splice(pageIndex, 0, moved); return pages; }); dragPageIndexRef.current = null; }} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-white/10 dark:bg-slate-900">
+                      <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2 text-xs dark:border-white/10"><span className="flex items-center gap-1 font-bold"><GripVertical className="h-4 w-4 text-slate-400" /> Page {pageIndex + 1}</span><span>{page.width} × {page.height}</span></div>
+                      <div className="relative flex h-64 items-center justify-center bg-slate-200 p-2 dark:bg-black/40"><Image src={page.previewUrl} alt={`Page ${pageIndex + 1} preview`} fill unoptimized draggable={false} sizes="(max-width: 640px) 100vw, 33vw" className="object-contain p-2" /></div>
+                      {ratioMismatch && <p className="bg-amber-50 px-3 py-2 text-xs text-amber-800">Aspect ratio differs from the first page.</p>}
+                      <div className="flex items-center justify-between gap-2 p-3">
+                        <select aria-label={`Facing intent for page ${pageIndex + 1}`} value={page.facingIntent || "auto"} onChange={(event) => updateCurrentPages((pages) => pages.map((candidate, index) => index === pageIndex ? { ...candidate, facingIntent: event.target.value } : candidate))} className="rounded border px-2 py-1 text-xs dark:bg-slate-800"><option value="auto">Auto facing</option><option value="left">Left</option><option value="right">Right</option></select>
+                        <div className="flex gap-1"><button type="button" title="Replace page" onClick={() => { replacePageIndexRef.current = pageIndex; replacePageInputRef.current?.click(); }} className="rounded p-2 hover:bg-slate-100 dark:hover:bg-white/10"><Replace className="h-4 w-4" /></button><button type="button" title="Delete page" onClick={() => updateCurrentPages((pages) => pages.filter((_, index) => index !== pageIndex))} className="rounded p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"><Trash2 className="h-4 w-4" /></button></div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+              {(currentChapter.pages || []).length === 0 && <div className="mt-5 rounded-xl border-2 border-dashed border-slate-300 p-12 text-center text-sm text-slate-500">Add finished page images to this chapter. Filename order is preserved deterministically.</div>}
+            </section>
+            ) : (
+            <section aria-labelledby="chapter-content-heading" className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-slate-950/20">
+              <div className="mb-3">
+                <h2 id="chapter-content-heading" className="text-sm font-bold text-[#1E2B53] dark:text-white">Chapter Content</h2>
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Write your chapter and add illustrations where they belong.</p>
+                <p className="mt-1 text-xs text-slate-500">Choose an Add Image Here position inside the chapter.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 border-y border-slate-200 py-3 dark:border-white/10">
+              <input ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/gif" className="hidden" onChange={handleIllustrationUpload} />
+              {isUploadingImage && <span className="flex items-center gap-2 text-sm font-bold text-emerald-700"><ImagePlus className="h-4 w-4" /> Uploading illustration…</span>}
+              {hasSelectedIllustration && (
+                <button type="button" onClick={removeSelectedImage} className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30">
+                  <Trash2 className="h-4 w-4" /> Remove Image
+                </button>
+              )}
+              <span className="text-[11px] text-slate-500">JPEG, PNG, or GIF · 12 MB max</span>
+            </div>
+            {illustrationMetadata && (
+              <aside aria-label="Illustration details" className="my-3 rounded-xl border border-emerald-200 bg-white p-4 shadow-sm dark:border-emerald-900/60 dark:bg-slate-900">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-[#1E2B53] dark:text-white">Illustration Details</h3>
+                    <p className="mt-1 text-xs text-slate-500">Edit descriptive text only. The protected image and its chapter position will not change.</p>
+                  </div>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">Protected illustration</span>
+                </div>
+                <div className="mt-4 grid gap-4">
+                  <label className="grid gap-1 text-xs font-bold text-slate-700 dark:text-slate-200">
+                    Alt Text
+                    <input
+                      ref={illustrationAltTextInputRef}
+                      type="text"
+                      maxLength={ILLUSTRATION_ALT_TEXT_MAX_LENGTH}
+                      value={illustrationMetadata.draft.altText}
+                      onChange={(event) => updateIllustrationMetadataEditor({ ...illustrationMetadata, draft: { ...illustrationMetadata.draft, altText: event.target.value } })}
+                      required
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-white/20 dark:bg-slate-950 dark:text-white"
+                      placeholder="Describe the illustration for readers who cannot see it"
+                    />
+                  </label>
+                  <label className="grid gap-1 text-xs font-bold text-slate-700 dark:text-slate-200">
+                    Caption
+                    <textarea
+                      maxLength={ILLUSTRATION_CAPTION_MAX_LENGTH}
+                      value={illustrationMetadata.draft.caption}
+                      onChange={(event) => updateIllustrationMetadataEditor({ ...illustrationMetadata, draft: { ...illustrationMetadata.draft, caption: event.target.value } })}
+                      className="min-h-20 resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-white/20 dark:bg-slate-950 dark:text-white"
+                      placeholder="Optional caption shown with the illustration"
+                    />
+                  </label>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button type="button" title="Temporarily show these details without adding them to the draft" onClick={previewIllustrationMetadata} className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50 dark:border-white/20 dark:hover:bg-white/10"><Eye className="h-4 w-4" /> Preview</button>
+                  <button type="button" title="Accept these details in the unsaved draft" onClick={acceptIllustrationMetadata} className="flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700"><Check className="h-4 w-4" /> Accept</button>
+                  <button type="button" title="Restore the details present when this editor was opened" onClick={revertIllustrationMetadata} className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50 dark:border-white/20 dark:hover:bg-white/10"><RotateCcw className="h-4 w-4" /> Revert</button>
+                  <button type="button" title="Discard preview-only changes and close this editor" onClick={cancelIllustrationMetadata} className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/10"><X className="h-4 w-4" /> Cancel</button>
+                </div>
+              </aside>
+            )}
+            <div
+              key={bookData.chapters[activeChapterIndex]?.id}
+              ref={editorRef}
+              data-koba-chapter-id={String(bookData.chapters[activeChapterIndex]?.id || "")}
+              data-koba-chapter-index={activeChapterIndex}
+              contentEditable
+              suppressContentEditableWarning
+              onInput={() => {
+                if (!restorePendingIllustrationPreview()) {
+                  toast({ title: "Edit paused", description: "The illustration preview could not be restored safely.", variant: "destructive" });
+                  return;
+                }
+                updateActiveChapterHtml(serializedEditorHtml());
               }}
-              className="w-full h-[60vh] bg-transparent text-lg text-[#293A71] dark:text-white border-none outline-none focus:ring-0 resize-none leading-relaxed font-serif placeholder-slate-400 dark:placeholder-white/40 transition-colors"
-              placeholder="Drafting continues..."
+              onBlur={refreshImageInsertionSlots}
+              onClick={(event) => {
+                const target = event.target as Element;
+                const slot = target.closest("[data-koba-image-slot]") as HTMLElement | null;
+                if (slot) {
+                  event.preventDefault();
+                  chooseImageForSlot(slot);
+                  return;
+                }
+                selectIllustration(target.closest("figure.koba-illustration") as HTMLElement | null);
+              }}
+              onKeyDown={(event) => {
+                const target = event.target as HTMLElement;
+                const figure = target.closest("figure[data-koba-editor-figure]") as HTMLElement | null;
+                if (figure && (event.key === "Enter" || event.key === " ")) {
+                  event.preventDefault();
+                  selectIllustration(figure, true);
+                }
+              }}
+              dangerouslySetInnerHTML={activeChapterEditorMarkup}
+              className="koba-chapter-editor w-full min-h-[60vh] bg-transparent text-lg text-[#293A71] dark:text-white border-none outline-none leading-relaxed font-serif transition-colors [&_.koba-image-insertion-slot]:my-2 [&_.koba-image-insertion-slot]:block [&_.koba-image-insertion-slot]:w-full [&_.koba-image-insertion-slot]:rounded-lg [&_.koba-image-insertion-slot]:border [&_.koba-image-insertion-slot]:border-dashed [&_.koba-image-insertion-slot]:border-emerald-400 [&_.koba-image-insertion-slot]:bg-emerald-50 [&_.koba-image-insertion-slot]:px-3 [&_.koba-image-insertion-slot]:py-2 [&_.koba-image-insertion-slot]:font-sans [&_.koba-image-insertion-slot]:text-sm [&_.koba-image-insertion-slot]:font-bold [&_.koba-image-insertion-slot]:text-emerald-700 [&_.koba-image-insertion-slot]:transition-colors hover:[&_.koba-image-insertion-slot]:bg-emerald-100 focus:[&_.koba-image-insertion-slot]:outline-none focus:[&_.koba-image-insertion-slot]:ring-2 focus:[&_.koba-image-insertion-slot]:ring-emerald-500 [&_figure]:my-6 [&_figure]:max-w-full [&_img]:block [&_img]:h-auto [&_img]:max-w-full [&_img]:rounded-lg [&_figcaption]:mt-2 [&_figcaption]:text-center [&_figcaption]:text-sm [&_figcaption]:text-slate-500"
+              data-placeholder="Drafting continues..."
             />
+            </section>
+            )}
           </div>
         </div>
       </div>

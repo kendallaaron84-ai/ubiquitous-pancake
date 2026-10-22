@@ -21,6 +21,7 @@ export function VoiceUploadZone({ authorEmail, onUploadSuccess }: VoiceUploadZon
   // Replace the mock function with this production logic
 const processAudioFile = async (file: File) => {
   setUploading(true);
+  setFileDetails({ name: file.name, size: `${(file.size / 1024 / 1024).toFixed(1)} MB` });
   try {
     // 1. Reference your verified bucket
     const storageRef = ref(storage, `vault/audio/${authorEmail}/${file.name.toLowerCase().replace(/\s+/g, "_")}`);
@@ -35,8 +36,8 @@ const processAudioFile = async (file: File) => {
     
     // 4. Update the form with the real URL
     onUploadSuccess(downloadUrl); 
-  } catch (error: any) {
-    toast({ title: "Pipeline Fault", description: error.message, variant: "destructive" });
+  } catch (error: unknown) {
+    toast({ title: "Pipeline Fault", description: error instanceof Error ? error.message : "Upload failed.", variant: "destructive" });
   } finally {
     setUploading(false);
   }

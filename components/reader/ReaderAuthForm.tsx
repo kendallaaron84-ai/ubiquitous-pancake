@@ -18,6 +18,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { auth } from "@/core/firebase";
+import { safeReaderContinuation } from "@/core/security/reader-paid-launch";
 
 type ReaderAuthMode = "signin" | "signup" | "recover";
 
@@ -59,11 +60,6 @@ async function openReaderSession(idToken: string) {
   }
 }
 
-function safeNextPath(value?: string): string | null {
-  if (!value || !value.startsWith("/reader/claim?session_id=cs_")) return null;
-  return value;
-}
-
 export function ReaderAuthForm({
   mode,
   nextPath,
@@ -78,7 +74,7 @@ export function ReaderAuthForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const continuation = safeNextPath(nextPath);
+  const continuation = safeReaderContinuation(nextPath);
   const authHref = (path: string) =>
     continuation
       ? `${path}?next=${encodeURIComponent(continuation)}`

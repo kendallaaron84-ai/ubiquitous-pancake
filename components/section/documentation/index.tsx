@@ -79,7 +79,7 @@ API_KEY=your_api_key`
 						<CardContent className="p-6 space-y-6">
 							<p className="text-lg text-muted-foreground leading-relaxed dark:text-muted-foreground/80">
 								AIXUS is a powerful platform designed to help you build, deploy, and manage AI agents with ease.
-								Whether you're creating customer support bots, data analysis agents, or custom AI solutions, AIXUS
+								Whether you&apos;re creating customer support bots, data analysis agents, or custom AI solutions, AIXUS
 								provides all the tools you need.
 							</p>
 
@@ -574,7 +574,7 @@ export default function RootLayout({ children }) {
 							<div className="space-y-4 pt-6 border-t border-border/50 dark:border-border/30">
 								<h3 className="text-2xl font-semibold text-foreground dark:text-foreground">Contributing</h3>
 								<p className="text-lg text-muted-foreground leading-relaxed dark:text-muted-foreground/80">
-									We welcome contributions from the community! If you'd like to contribute:
+									We welcome contributions from the community! If you&apos;d like to contribute:
 								</p>
 								<ul className="space-y-3">
 									{[

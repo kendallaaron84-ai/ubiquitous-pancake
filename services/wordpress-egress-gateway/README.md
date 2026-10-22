@@ -38,7 +38,6 @@ Do not deploy this baseline merely because it was committed.
 - `GOOGLE_CLOUD_PROJECT`
 - `CONNECTION_SECRET_PROJECT_ID`
 - `CONNECTION_SECRET_PROJECT_NUMBER`
-- `CONTENT_WORKER_SERVICE_ACCOUNT`
 
 ## Managed secrets and credentials
 
@@ -50,6 +49,10 @@ Do not deploy this baseline merely because it was committed.
 
 - `GET /healthz`: service health.
 - `POST /verify-wordpress`: validates and vaults a tenant-bound WordPress connection.
+- `POST /verify-stored-wordpress`: reads and verifies a tenant-bound saved connection without returning its credential.
 - `POST /publish-vault`: loads the tenant credential, enforces stored origin/username binding, and forwards publication payloads through Cloud NAT.
 - Redirect rejection, origin validation, secret validation, and WordPress draft/publication proof behavior remain unchanged in this baseline.
+
+Worker Secret Accessor grants are a control-plane responsibility. The gateway
+does not rewrite Secret Manager IAM policies while handling author requests.
 

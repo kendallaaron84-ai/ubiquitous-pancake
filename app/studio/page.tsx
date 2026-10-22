@@ -1,35 +1,32 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { db, auth } from "@/core/firebase";
-import { collection, query, where, onSnapshot } from "firebase/firestore";
 import Layout from "@/components/layout";
 import Link from "next/link";
-import { Mic, ArrowRight, Tag, Music, Film, Sparkles, BookOpen } from "lucide-react";
+import Image from "next/image";
+import { Mic, ArrowRight, Music, Film, Sparkles, BookOpen } from "lucide-react";
+import { loadStudioProducts } from "@/core/studio-client";
 
 export default function ProductionStudioLobby() {
-  const [products, setProducts] = useState<any[]>([]);
+  const [products, setProducts] = useState<StudioProductSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const userEmail = auth.currentUser?.email || "kendallaaron84@gmail.com";
-    const productsRef = collection(db, "products");
-    const q = query(productsRef, where("authorEmail", "==", userEmail));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setIsLoading(false);
-      if (!snapshot.empty) {
-        const updatedList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setProducts(updatedList);
-      } else {
-        setProducts([]);
-      }
-    }, (error) => {
-      console.error("Snapshot Stream Rejected:", error);
-      setIsLoading(false);
-    });
-
-    return () => unsubscribe();
+    let active = true;
+    loadStudioProducts()
+      .then((payload) => {
+        if (active) setProducts(Array.isArray(payload.products) ? payload.products as StudioProductSummary[] : []);
+      })
+      .catch((error) => {
+        if (active) {
+          console.error("Studio publication lookup failed:", error);
+          setProducts([]);
+        }
+      })
+      .finally(() => {
+        if (active) setIsLoading(false);
+      });
+    return () => { active = false; };
   }, []);
 
   return (
@@ -72,7 +69,7 @@ export default function ProductionStudioLobby() {
                 <div className="h-44 bg-slate-950 flex items-center justify-center relative border-b border-slate-800/40 overflow-hidden">
                   {product.coverUrl ? (
                     <>
-                      <img src={product.coverUrl} alt={product.title} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
+                      <Image src={product.coverUrl} alt={product.title || "Publication cover"} fill unoptimized sizes="(max-width: 768px) 100vw, 33vw" className="object-cover transition-transform duration-500 group-hover:scale-105" />
                       <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-950/20 to-transparent" />
                     </>
                   ) : (
@@ -122,4 +119,14 @@ export default function ProductionStudioLobby() {
       </div>
     </Layout>
   );
+}
+
+interface StudioProductSummary {
+  id: string;
+  assetKey?: string;
+  coverUrl?: string;
+  status?: string;
+  synopsis?: string;
+  title?: string;
+  type?: string;
 }
