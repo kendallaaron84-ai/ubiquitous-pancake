@@ -2,9 +2,9 @@
 
 ## Decision
 
-Select `gemini-nano-banana-2.1` as the source-code default for the isolated candidate. Do not change the deployed Cloud Run `ARTWORK_MODEL` setting without a separate production authorization.
+Retain `gemini-3.1-flash-image` as the source-code and deployed default for this isolated candidate. Nano Banana 2.1 is the preferred migration target, but it is not selected for this release because the current worker is pinned to `google-genai>=1.20,<2` and uses `models.generate_content`, while Google's current 2.1 examples use the newer Interactions API. A model-recognition check does not prove compatibility with that exact generation path.
 
-The existing production setting is `gemini-3.1-flash-image` (Nano Banana 2). All four compared model IDs were recognized on the `content-engine-prod` Vertex AI global endpoint through non-generative `countTokens` checks on 2026-10-22. No image was generated and no paid quality test was performed.
+The existing production setting is `gemini-3.1-flash-image` (Nano Banana 2). All four compared model IDs were recognized on the `content-engine-prod` Vertex AI global endpoint through non-generative `countTokens` checks on 2026-10-22. No image was generated and no paid quality test was performed. The recognition checks prove model availability only; they do not validate the current SDK's image-generation call shape.
 
 ## Comparison
 
@@ -19,10 +19,11 @@ Prices are public list prices from Google's Gemini API pricing page as observed 
 
 ## Compatibility and quality boundaries
 
-- The worker already uses the Google Gen AI SDK with Vertex AI, global location, `generate_content`, IMAGE response modality, 16:9 output, and JPEG output. The compared models use the same documented Gemini image-generation interface.
+- The worker uses the Google Gen AI SDK with Vertex AI, global location, `models.generate_content`, IMAGE response modality, 16:9 output, and JPEG output. This exact path is already established for Nano Banana 2.
+- Google's current Nano Banana 2.1 examples use `client.interactions.create`. Compatibility with the worker's pinned pre-v2 SDK and current response parsing is therefore unproven and must fail closed rather than be inferred from model discovery.
 - The non-generative endpoint checks establish model recognition, not quota, successful image generation, latency, or final typography quality for KOBA-I prompts.
 - Google's documentation reports improved text rendering for Nano Banana 2.1 and precise text rendering for Pro. KOBA-I has not made an empirical typography claim because paid generation was not authorized.
-- The candidate keeps the existing WordPress media upload, draft staging, retry reconciliation, and Jetpack-facing WordPress workflow unchanged.
+- The candidate keeps the existing WordPress media upload, draft staging, retry reconciliation, Jetpack-facing WordPress workflow, and deployed model unchanged.
 
 ## Sources
 
