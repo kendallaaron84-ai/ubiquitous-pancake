@@ -3,9 +3,14 @@ import hashlib
 import json
 import os
 import sys
+import threading
 import types as python_types
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import Request, urlopen
 from unittest.mock import MagicMock, patch
 
 
@@ -30,6 +35,37 @@ class _Part:
 class _CloudClient:
     def __init__(self, *args, **kwargs):
         self.models = MagicMock()
+        self._blobs = {}
+
+    def bucket(self, name):
+        return _Bucket(name, self._blobs)
+
+
+class _Bucket:
+    def __init__(self, name, blobs):
+        self.name = name
+        self._blobs = blobs
+
+    def blob(self, path):
+        return _Blob((self.name, path), self._blobs)
+
+
+class _Blob:
+    def __init__(self, key, blobs):
+        self.key = key
+        self._blobs = blobs
+        self.metadata = None
+
+    def exists(self):
+        return self.key in self._blobs
+
+    def download_as_bytes(self):
+        return self._blobs[self.key]
+
+    def upload_from_string(self, value, **_kwargs):
+        if self.key in self._blobs:
+            raise RuntimeError("precondition failed")
+        self._blobs[self.key] = bytes(value)
 
 
 def _install_import_stubs():
@@ -85,6 +121,7 @@ def _load_worker():
     _install_import_stubs()
     os.environ["CONTENT_FIRESTORE_PROJECT_ID"] = "worker-test-project"
     os.environ["KOBA_TASK_HMAC_SECRET"] = "x" * 40
+    os.environ["FIREBASE_STORAGE_BUCKET"] = "worker-test-private-bucket"
     spec = importlib.util.spec_from_file_location("koba_content_worker_under_test", WORKER_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
@@ -173,6 +210,35 @@ class FakeResponse:
             raise RuntimeError(f"HTTP {self.status_code}")
 
 
+class LoopbackHttpSession:
+    """Minimal real-HTTP session used only against the loopback contract server."""
+
+    def request(self, method, url, allow_redirects=False, **kwargs):
+        del allow_redirects
+        params = kwargs.get("params") or {}
+        if params:
+            url = f"{url}?{urlencode(params)}"
+        headers = kwargs.get("headers") or {}
+        body = kwargs.get("data")
+        if kwargs.get("json") is not None:
+            body = json.dumps(kwargs["json"]).encode("utf-8")
+            headers = {**headers, "Content-Type": "application/json"}
+        request = Request(url, data=body, headers=headers, method=method)
+        timeout = kwargs.get("timeout")
+        if isinstance(timeout, tuple):
+            timeout = max(timeout)
+        try:
+            response = urlopen(request, timeout=timeout or 30)
+            status = response.status
+            payload = json.loads(response.read().decode("utf-8"))
+            final_url = response.url
+        except HTTPError as error:
+            status = error.code
+            payload = json.loads(error.read().decode("utf-8"))
+            final_url = error.url
+        return FakeResponse(final_url, status_code=status, payload=payload)
+
+
 class FakeModelResult:
     def __init__(self, payload):
         self.text = json.dumps(payload)
@@ -226,6 +292,17 @@ class FakeWordPressSession:
     def request(self, method, url, allow_redirects=False, **kwargs):
         self.calls.append((method, url, kwargs))
         if method == "GET":
+            if "/wp-json/wp/v2/users/me" in url:
+                return FakeResponse(
+                    url,
+                    payload={
+                        "id": 17,
+                        "capabilities": {
+                            "upload_files": True,
+                            "edit_posts": True,
+                        },
+                    },
+                )
             return FakeResponse(url, payload=[])
         return FakeResponse(url, payload={"id": 41})
 
@@ -242,6 +319,17 @@ class StatefulWordPressSession:
         del allow_redirects
         self.calls.append((method, url, kwargs))
         if method == "GET":
+            if "/wp-json/wp/v2/users/me" in url:
+                return FakeResponse(
+                    url,
+                    payload={
+                        "id": 17,
+                        "capabilities": {
+                            "upload_files": True,
+                            "edit_posts": True,
+                        },
+                    },
+                )
             slug = kwargs.get("params", {}).get("slug")
             records = (
                 self.media_by_slug
@@ -291,6 +379,66 @@ class StatefulWordPressSession:
                 raise worker.requests.ConnectionError("response closed")
             return FakeResponse(url, payload=post)
         return FakeResponse(url, payload={"id": 7})
+
+
+class ContractWordPressSession(StatefulWordPressSession):
+    """Contract-faithful WordPress REST double for media-delivery tests."""
+
+    def __init__(
+        self,
+        base_url,
+        *,
+        fail_next_media_create=False,
+        fail_next_attachment=False,
+        abort_media_preflight=False,
+    ):
+        super().__init__(base_url)
+        self.fail_next_media_create = fail_next_media_create
+        self.fail_next_attachment = fail_next_attachment
+        self.abort_media_preflight = abort_media_preflight
+
+    def request(self, method, url, allow_redirects=False, **kwargs):
+        params = kwargs.get("params") or {}
+        if method == "GET" and "/wp-json/wp/v2/users/me" in url:
+            if self.abort_media_preflight:
+                raise worker.requests.ConnectionError("edge closed connection")
+        if method == "GET" and "/wp-json/wp/v2/media" in url:
+            if params.get("status") == "any":
+                self.calls.append((method, url, kwargs))
+                return FakeResponse(
+                    url,
+                    status_code=400,
+                    payload={"code": "rest_invalid_param"},
+                )
+        if (
+            method == "POST"
+            and url.endswith("/wp-json/wp/v2/media")
+            and kwargs.get("data") is not None
+            and self.fail_next_media_create
+        ):
+            self.fail_next_media_create = False
+            self.calls.append((method, url, kwargs))
+            return FakeResponse(
+                url,
+                status_code=403,
+                payload={"code": "rest_cannot_create"},
+            )
+        if (
+            method == "POST"
+            and "/wp-json/wp/v2/posts" in url
+            and (kwargs.get("json") or {}).get("featured_media")
+            and self.fail_next_attachment
+        ):
+            self.fail_next_attachment = False
+            self.calls.append((method, url, kwargs))
+            return FakeResponse(
+                url,
+                status_code=403,
+                payload={"code": "rest_cannot_edit"},
+            )
+        return super().request(
+            method, url, allow_redirects=allow_redirects, **kwargs
+        )
 
 
 class FakeRequest:
@@ -421,6 +569,7 @@ def dual_authority_blueprint():
 class WorkerContractTests(unittest.TestCase):
     def setUp(self):
         worker.db = FakeFirestore()
+        worker.storage_client = _CloudClient()
 
     def test_business_brand_route_loads_no_story_world_context(self):
         data = nexus_blueprint("business_brand")
@@ -979,7 +1128,7 @@ class WorkerContractTests(unittest.TestCase):
 
         session = RecoveringSession()
         with patch.object(worker.time, "sleep") as sleep:
-            result = worker.find_wordpress_record(
+            result = worker.find_wordpress_post(
                 session,
                 "https://author.example/wp-json/wp/v2/posts",
                 "koba-blog-blueprint-001",
@@ -995,6 +1144,445 @@ class WorkerContractTests(unittest.TestCase):
                 "status": "any",
             },
             session.params,
+        )
+
+    def test_post_and_media_lookup_use_distinct_wordpress_contracts(self):
+        session = ContractWordPressSession("https://author.example")
+        worker.find_wordpress_post(
+            session,
+            "https://author.example/wp-json/wp/v2/posts",
+            "koba-blog-blueprint-001",
+            "https://author.example",
+        )
+        worker.find_wordpress_media(
+            session,
+            "https://author.example/wp-json/wp/v2/media",
+            "koba-blog-blueprint-001-featured",
+            "https://author.example",
+        )
+        post_params = session.calls[0][2]["params"]
+        media_params = session.calls[1][2]["params"]
+        self.assertEqual("any", post_params["status"])
+        self.assertNotIn("status", media_params)
+        self.assertEqual("edit", media_params["context"])
+
+    def test_loopback_wordpress_http_contract_upload_attachment_and_idempotency(self):
+        state = {"media": {}, "posts": {}, "queries": []}
+
+        class WordPressHandler(BaseHTTPRequestHandler):
+            def _json(self, status, payload):
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                parsed = urlparse(self.path)
+                query = parse_qs(parsed.query)
+                state["queries"].append((parsed.path, query))
+                if parsed.path.endswith("/users/me"):
+                    self._json(
+                        200,
+                        {
+                            "id": 17,
+                            "capabilities": {
+                                "upload_files": True,
+                                "edit_posts": True,
+                            },
+                        },
+                    )
+                    return
+                if parsed.path.endswith("/media"):
+                    if query.get("status") == ["any"]:
+                        self._json(400, {"code": "rest_invalid_param"})
+                        return
+                    slug = (query.get("slug") or [""])[0]
+                    record = state["media"].get(slug)
+                    self._json(200, [record] if record else [])
+                    return
+                if parsed.path.endswith("/posts"):
+                    slug = (query.get("slug") or [""])[0]
+                    record = state["posts"].get(slug)
+                    self._json(200, [record] if record else [])
+                    return
+                self._json(404, {"code": "rest_no_route"})
+
+            def do_POST(self):
+                parsed = urlparse(self.path)
+                length = int(self.headers.get("Content-Length") or "0")
+                raw = self.rfile.read(length)
+                if parsed.path.endswith("/media"):
+                    filename = self.headers["Content-Disposition"].split(
+                        'filename="', 1
+                    )[-1].removesuffix('"')
+                    slug = filename.removesuffix(".jpg")
+                    media = {
+                        "id": 7,
+                        "slug": slug,
+                        "source_url": f"{server_origin}/uploads/{slug}.jpg",
+                    }
+                    state["media"][slug] = media
+                    self._json(201, media)
+                    return
+                if "/media/" in parsed.path:
+                    payload = json.loads(raw or b"{}")
+                    media = next(iter(state["media"].values()))
+                    media.update(payload)
+                    self._json(200, media)
+                    return
+                if "/posts" in parsed.path:
+                    payload = json.loads(raw or b"{}")
+                    slug = payload["slug"]
+                    post = state["posts"].get(slug) or {"id": 41, "slug": slug}
+                    post.update(payload)
+                    state["posts"][slug] = post
+                    self._json(200, post)
+                    return
+                self._json(404, {"code": "rest_no_route"})
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), WordPressHandler)
+        server_origin = f"http://127.0.0.1:{server.server_port}"
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            session = LoopbackHttpSession()
+            existing = worker.verify_wordpress_media_capability(
+                session, server_origin, "blueprint_http_001"
+            )
+            self.assertIsNone(existing)
+            media_id, _media_url = worker.upload_featured_media(
+                session,
+                server_origin,
+                "blueprint_http_001",
+                b"synthetic-jpeg",
+                "Synthetic alternative text",
+                "Synthetic caption",
+            )
+            first_post_id, _ = worker.stage_wordpress_draft(
+                session,
+                server_origin,
+                "blueprint_http_001",
+                "Synthetic Article",
+                "<p>Synthetic content.</p>",
+                media_id,
+                None,
+            )
+            second_media_id, _ = worker.upload_featured_media(
+                session,
+                server_origin,
+                "blueprint_http_001",
+                b"must-not-create-a-second-media-record",
+                "Synthetic alternative text",
+                "Synthetic caption",
+            )
+            second_post_id, _ = worker.stage_wordpress_draft(
+                session,
+                server_origin,
+                "blueprint_http_001",
+                "Synthetic Article Revised",
+                "<p>Synthetic content revised.</p>",
+                second_media_id,
+                None,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        self.assertEqual(7, media_id)
+        self.assertEqual(media_id, second_media_id)
+        self.assertEqual(first_post_id, second_post_id)
+        self.assertEqual(1, len(state["media"]))
+        self.assertEqual(1, len(state["posts"]))
+        self.assertEqual("draft", next(iter(state["posts"].values()))["status"])
+        media_queries = [
+            query for path, query in state["queries"] if path.endswith("/media")
+        ]
+        self.assertTrue(media_queries)
+        self.assertTrue(all("status" not in query for query in media_queries))
+
+    def test_invalid_media_status_contract_fails_with_sanitized_provider_code(self):
+        session = ContractWordPressSession("https://author.example")
+        with self.assertRaises(worker.WordPressStageError) as failure:
+            worker._find_wordpress_record(
+                session,
+                "https://author.example/wp-json/wp/v2/media",
+                "koba-blog-blueprint-001-featured",
+                "https://author.example",
+                include_all_statuses=True,
+            )
+        self.assertEqual(
+            "WORDPRESS_HTTP_400_REST_INVALID_PARAM", failure.exception.code
+        )
+        self.assertEqual("record_lookup", failure.exception.stage)
+
+    def test_siteground_style_connection_abort_blocks_paid_image_generation(self):
+        data = nexus_blueprint("business_brand")
+        data.update({"featuredMediaId": 0, "featuredMediaUrl": ""})
+        session = ContractWordPressSession(
+            "https://author.example", abort_media_preflight=True
+        )
+        validation = {
+            "groundingStatus": "grounded",
+            "canonValidationStatus": "not_applicable",
+            "spoilerValidationStatus": "not_applicable",
+            "warnings": [],
+        }
+        with patch.object(worker, "acquire_worker_lease", return_value=data), patch.object(
+            worker, "resolve_nexus_generation_context", return_value=({}, None, [])
+        ), patch.object(
+            worker, "validate_generated_article", return_value=validation
+        ), patch.object(worker, "update_attempt"), patch.object(
+            worker, "complete_attempt"
+        ), patch.object(
+            worker, "wordpress_session", return_value=(session, "https://author.example")
+        ), patch.object(worker, "generate_featured_image") as artwork, patch.object(
+            worker.time, "sleep"
+        ):
+            with self.assertRaises(worker.WordPressStageError) as failure:
+                worker.execute_generation(
+                    "blueprint_001",
+                    "attempt_001",
+                    "KOBA-001",
+                    "https://author.example",
+                    "secret",
+                )
+        self.assertEqual("WORDPRESS_CONNECTION_ABORTED", failure.exception.code)
+        self.assertEqual("media_capability_preflight", failure.exception.stage)
+        artwork.assert_not_called()
+        self.assertEqual(1, len(session.posts_by_slug))
+
+    def test_failed_media_upload_reuses_private_recovery_without_provider_recall(self):
+        state = nexus_blueprint("business_brand")
+        state.update({"featuredMediaId": 0, "featuredMediaUrl": ""})
+        session = ContractWordPressSession(
+            "https://author.example", fail_next_media_create=True
+        )
+        validation = {
+            "groundingStatus": "grounded",
+            "canonValidationStatus": "not_applicable",
+            "spoilerValidationStatus": "not_applicable",
+            "warnings": [],
+        }
+
+        def remember(_reference, _attempt, values):
+            for key, value in values.items():
+                if value is not worker.firestore.DELETE_FIELD:
+                    state[key] = value
+
+        with patch.object(
+            worker, "acquire_worker_lease", side_effect=lambda *_args: dict(state)
+        ), patch.object(
+            worker, "resolve_nexus_generation_context", return_value=({}, None, [])
+        ), patch.object(
+            worker, "validate_generated_article", return_value=validation
+        ), patch.object(
+            worker, "update_attempt", side_effect=remember
+        ), patch.object(worker, "complete_attempt") as complete, patch.object(
+            worker, "wordpress_session", return_value=(session, "https://author.example")
+        ), patch.object(
+            worker, "generate_featured_image", return_value=b"paid-image-once"
+        ) as artwork:
+            with self.assertRaises(worker.WordPressStageError) as first_failure:
+                worker.execute_generation(
+                    "blueprint_001",
+                    "attempt_001",
+                    "KOBA-001",
+                    "https://author.example",
+                    "secret",
+                )
+            self.assertEqual(
+                "WORDPRESS_HTTP_403_REST_CANNOT_CREATE",
+                first_failure.exception.code,
+            )
+            self.assertEqual("recoverable_delivery_failed", state["artworkDeliveryState"])
+            self.assertTrue(state["featuredImageRecoveryObject"].startswith(
+                "content-engine-recovery/KOBA-001/blueprint_001/attempt_001/"
+            ))
+            first_post_id = state["wordpressPostId"]
+
+            result = worker.execute_generation(
+                "blueprint_001",
+                "attempt_001",
+                "KOBA-001",
+                "https://author.example",
+                "secret",
+            )
+
+        self.assertEqual("success", result["status"])
+        artwork.assert_called_once()
+        complete.assert_called_once()
+        self.assertEqual(first_post_id, state["wordpressPostId"])
+        self.assertEqual(1, len(session.posts_by_slug))
+        self.assertEqual(1, len(session.media_by_slug))
+        self.assertEqual("draft", next(iter(session.posts_by_slug.values()))["status"])
+        media_lookups = [
+            kwargs.get("params") or {}
+            for method, url, kwargs in session.calls
+            if method == "GET" and "/wp-json/wp/v2/media" in url
+        ]
+        self.assertTrue(media_lookups)
+        self.assertTrue(all("status" not in params for params in media_lookups))
+
+    def test_attachment_failure_preserves_recoverable_delivery_state(self):
+        data = nexus_blueprint("business_brand")
+        data.update({"featuredMediaId": 0, "featuredMediaUrl": ""})
+        session = ContractWordPressSession(
+            "https://author.example", fail_next_attachment=True
+        )
+        updates = []
+        validation = {
+            "groundingStatus": "grounded",
+            "canonValidationStatus": "not_applicable",
+            "spoilerValidationStatus": "not_applicable",
+            "warnings": [],
+        }
+        with patch.object(worker, "acquire_worker_lease", return_value=data), patch.object(
+            worker, "resolve_nexus_generation_context", return_value=({}, None, [])
+        ), patch.object(
+            worker, "validate_generated_article", return_value=validation
+        ), patch.object(
+            worker,
+            "update_attempt",
+            side_effect=lambda _reference, _attempt, value: updates.append(value),
+        ), patch.object(worker, "complete_attempt") as complete, patch.object(
+            worker, "wordpress_session", return_value=(session, "https://author.example")
+        ), patch.object(
+            worker, "generate_featured_image", return_value=b"synthetic-image"
+        ):
+            with self.assertRaises(worker.WordPressStageError):
+                worker.execute_generation(
+                    "blueprint_001",
+                    "attempt_001",
+                    "KOBA-001",
+                    "https://author.example",
+                    "secret",
+                )
+        complete.assert_not_called()
+        self.assertTrue(
+            any(
+                update.get("artworkDeliveryState")
+                == "recoverable_attachment_failed"
+                for update in updates
+            )
+        )
+        self.assertFalse(
+            any(update.get("featuredMediaSkipped") is True for update in updates)
+        )
+
+    def test_recovery_persistence_failure_blocks_duplicate_paid_provider_call(self):
+        state = nexus_blueprint("business_brand")
+        state.update({"featuredMediaId": 0, "featuredMediaUrl": ""})
+        session = ContractWordPressSession("https://author.example")
+        validation = {
+            "groundingStatus": "grounded",
+            "canonValidationStatus": "not_applicable",
+            "spoilerValidationStatus": "not_applicable",
+            "warnings": [],
+        }
+
+        def remember(_reference, _attempt, values):
+            for key, value in values.items():
+                if value is not worker.firestore.DELETE_FIELD:
+                    state[key] = value
+
+        persistence_error = worker.ArtworkRecoveryError(
+            "ARTWORK_RECOVERY_PERSIST_FAILED",
+            "artwork_recovery_write",
+            "Synthetic persistence failure.",
+        )
+        with patch.object(
+            worker, "acquire_worker_lease", side_effect=lambda *_args: dict(state)
+        ), patch.object(
+            worker, "resolve_nexus_generation_context", return_value=({}, None, [])
+        ), patch.object(
+            worker, "validate_generated_article", return_value=validation
+        ), patch.object(
+            worker, "update_attempt", side_effect=remember
+        ), patch.object(worker, "complete_attempt"), patch.object(
+            worker, "wordpress_session", return_value=(session, "https://author.example")
+        ), patch.object(
+            worker, "generate_featured_image", return_value=b"paid-image-once"
+        ) as artwork, patch.object(
+            worker, "persist_featured_image_recovery", side_effect=persistence_error
+        ):
+            with self.assertRaises(worker.ArtworkRecoveryError):
+                worker.execute_generation(
+                    "blueprint_001",
+                    "attempt_001",
+                    "KOBA-001",
+                    "https://author.example",
+                    "secret",
+                )
+            with self.assertRaises(worker.ArtworkRecoveryError) as retry_failure:
+                worker.execute_generation(
+                    "blueprint_001",
+                    "attempt_001",
+                    "KOBA-001",
+                    "https://author.example",
+                    "secret",
+                )
+        artwork.assert_called_once()
+        self.assertEqual(
+            "ARTWORK_PROVIDER_RECALL_BLOCKED", retry_failure.exception.code
+        )
+
+    def test_ambiguous_provider_failure_is_reserved_and_not_recalled(self):
+        state = nexus_blueprint("business_brand")
+        state.update({"featuredMediaId": 0, "featuredMediaUrl": ""})
+        session = ContractWordPressSession("https://author.example")
+        validation = {
+            "groundingStatus": "grounded",
+            "canonValidationStatus": "not_applicable",
+            "spoilerValidationStatus": "not_applicable",
+            "warnings": [],
+        }
+
+        def remember(_reference, _attempt, values):
+            for key, value in values.items():
+                if value is not worker.firestore.DELETE_FIELD:
+                    state[key] = value
+
+        with patch.object(
+            worker, "acquire_worker_lease", side_effect=lambda *_args: dict(state)
+        ), patch.object(
+            worker, "resolve_nexus_generation_context", return_value=({}, None, [])
+        ), patch.object(
+            worker, "validate_generated_article", return_value=validation
+        ), patch.object(
+            worker, "update_attempt", side_effect=remember
+        ), patch.object(worker, "complete_attempt"), patch.object(
+            worker, "wordpress_session", return_value=(session, "https://author.example")
+        ), patch.object(
+            worker,
+            "generate_featured_image",
+            side_effect=RuntimeError("ambiguous provider transport failure"),
+        ) as artwork:
+            with self.assertRaises(RuntimeError):
+                worker.execute_generation(
+                    "blueprint_001",
+                    "attempt_001",
+                    "KOBA-001",
+                    "https://author.example",
+                    "secret",
+                )
+            with self.assertRaises(worker.ArtworkRecoveryError) as retry_failure:
+                worker.execute_generation(
+                    "blueprint_001",
+                    "attempt_001",
+                    "KOBA-001",
+                    "https://author.example",
+                    "secret",
+                )
+        artwork.assert_called_once()
+        self.assertEqual("provider_call_reserved", state["artworkProviderInvocationState"])
+        self.assertEqual(
+            "ARTWORK_PROVIDER_RECALL_BLOCKED", retry_failure.exception.code
         )
 
     def test_wordpress_session_uses_explicit_server_identity_for_all_rest_calls(self):
@@ -1221,14 +1809,15 @@ class WorkerContractTests(unittest.TestCase):
         ), patch.object(
             worker, "wordpress_session", return_value=(session, "https://author.example")
         ), patch.object(worker, "generate_featured_image") as artwork:
-            result = worker.execute_generation(
-                "blueprint_001",
-                "attempt_001",
-                "KOBA-001",
-                "https://author.example",
-                "secret",
-            )
-        self.assertEqual("success", result["status"])
+            with self.assertRaises(worker.ArtworkRecoveryError) as failure:
+                worker.execute_generation(
+                    "blueprint_001",
+                    "attempt_001",
+                    "KOBA-001",
+                    "https://author.example",
+                    "secret",
+                )
+        self.assertEqual("LEGACY_ARTWORK_RECOVERY_REQUIRED", failure.exception.code)
         artwork.assert_not_called()
         self.assertEqual(1, len(session.posts_by_slug))
         self.assertEqual("draft", next(iter(session.posts_by_slug.values()))["status"])

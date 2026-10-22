@@ -116,6 +116,13 @@ class WordPressStageError(Exception):
         self.stage = stage
 
 
+class ArtworkRecoveryError(Exception):
+    def __init__(self, code: str, stage: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.stage = stage
+
+
 class LeaseBusyError(Exception):
     pass
 
@@ -1064,7 +1071,7 @@ def record_worker_error(
             "workerLeaseExpiresAt": firestore.DELETE_FIELD,
             "updatedAt": firestore.SERVER_TIMESTAMP,
         }
-        if isinstance(error, WordPressStageError):
+        if isinstance(error, (WordPressStageError, ArtworkRecoveryError)):
             updates["errorCode"] = error.code
             updates["errorStage"] = error.stage
         if terminal:
@@ -1475,24 +1482,173 @@ def wordpress_request(
         raise TenantCredentialNotFound(
             "WordPress returned a redirect instead of accepting the tenant-scoped request."
         )
-    response.raise_for_status()
+    if response.status_code >= 400:
+        provider_code = ""
+        try:
+            payload = response.json()
+            candidate = str(payload.get("code") or "") if isinstance(payload, dict) else ""
+            if re.fullmatch(r"[a-z0-9_-]{1,80}", candidate):
+                provider_code = candidate
+        except Exception:
+            provider_code = ""
+        suffix = f"_{provider_code.upper()}" if provider_code else ""
+        raise WordPressStageError(
+            f"WORDPRESS_HTTP_{response.status_code}{suffix}",
+            stage,
+            f"WordPress rejected {stage} with HTTP {response.status_code}.",
+        )
     return response
 
 
-def find_wordpress_record(
-    session: requests.Session, endpoint: str, slug: str, expected_origin: str
+def _find_wordpress_record(
+    session: requests.Session,
+    endpoint: str,
+    slug: str,
+    expected_origin: str,
+    *,
+    include_all_statuses: bool,
 ) -> dict[str, Any] | None:
+    params = {"slug": slug, "context": "edit"}
+    if include_all_statuses:
+        params["status"] = "any"
     response = wordpress_request(
         session,
         "GET",
         endpoint,
         expected_origin,
         "record_lookup",
-        params={"slug": slug, "context": "edit", "status": "any"},
+        params=params,
         timeout=(10, 45),
     )
     records = response.json()
     return records[0] if isinstance(records, list) and records else None
+
+
+def find_wordpress_post(
+    session: requests.Session, endpoint: str, slug: str, expected_origin: str
+) -> dict[str, Any] | None:
+    return _find_wordpress_record(
+        session, endpoint, slug, expected_origin, include_all_statuses=True
+    )
+
+
+def find_wordpress_media(
+    session: requests.Session, endpoint: str, slug: str, expected_origin: str
+) -> dict[str, Any] | None:
+    # WordPress media does not accept status=any. Its valid edit-context status
+    # values differ from posts, so the media contract intentionally omits it.
+    return _find_wordpress_record(
+        session, endpoint, slug, expected_origin, include_all_statuses=False
+    )
+
+
+def verify_wordpress_media_capability(
+    session: requests.Session, base_url: str, blueprint_id: str
+) -> dict[str, Any] | None:
+    response = wordpress_request(
+        session,
+        "GET",
+        f"{base_url}/wp-json/wp/v2/users/me",
+        base_url,
+        "media_capability_preflight",
+        params={"context": "edit", "_fields": "id,capabilities"},
+        timeout=(10, 45),
+    )
+    user = response.json()
+    capabilities = user.get("capabilities") if isinstance(user, dict) else None
+    if not isinstance(capabilities, dict) or not (
+        capabilities.get("upload_files") is True
+        and capabilities.get("edit_posts") is True
+    ):
+        raise WordPressStageError(
+            "WORDPRESS_MEDIA_CAPABILITY_DENIED",
+            "media_capability_preflight",
+            "The authenticated WordPress identity cannot upload and attach media.",
+        )
+    media_endpoint = f"{base_url}/wp-json/wp/v2/media"
+    slug = wordpress_slug(blueprint_id) + "-featured"
+    return find_wordpress_media(session, media_endpoint, slug, base_url)
+
+
+def featured_image_recovery_path(
+    studio_key: str, blueprint_id: str, attempt_id: str
+) -> str:
+    if not STUDIO_KEY_PATTERN.fullmatch(studio_key):
+        raise PermanentTaskError("Invalid tenant binding for artwork recovery.")
+    if not ID_PATTERN.fullmatch(blueprint_id) or not ID_PATTERN.fullmatch(attempt_id):
+        raise PermanentTaskError("Invalid task binding for artwork recovery.")
+    return (
+        f"content-engine-recovery/{studio_key}/"
+        f"{blueprint_id}/{attempt_id}/featured.jpg"
+    )
+
+
+def load_featured_image_recovery(
+    object_path: str, expected_sha256: str = ""
+) -> tuple[bytes, str] | None:
+    if not TRANSCRIPT_BUCKET:
+        raise ArtworkRecoveryError(
+            "ARTWORK_RECOVERY_BUCKET_MISSING",
+            "artwork_recovery_read",
+            "Private artwork recovery storage is not configured.",
+        )
+    blob = storage_client.bucket(TRANSCRIPT_BUCKET).blob(object_path)
+    if blob.exists() is not True:
+        return None
+    image_bytes = blob.download_as_bytes()
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    if expected_sha256 and not hmac.compare_digest(digest, expected_sha256):
+        raise ArtworkRecoveryError(
+            "ARTWORK_RECOVERY_INTEGRITY_FAILED",
+            "artwork_recovery_read",
+            "Stored artwork recovery integrity verification failed.",
+        )
+    return image_bytes, digest
+
+
+def persist_featured_image_recovery(
+    object_path: str, image_bytes: bytes
+) -> str:
+    if not image_bytes:
+        raise ArtworkRecoveryError(
+            "ARTWORK_RECOVERY_EMPTY",
+            "artwork_recovery_write",
+            "Generated artwork was empty and was not delivered.",
+        )
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    existing = load_featured_image_recovery(object_path)
+    if existing:
+        _existing_bytes, existing_digest = existing
+        if not hmac.compare_digest(existing_digest, digest):
+            raise ArtworkRecoveryError(
+                "ARTWORK_RECOVERY_CONFLICT",
+                "artwork_recovery_write",
+                "A conflicting artwork recovery object already exists.",
+            )
+        return digest
+    blob = storage_client.bucket(TRANSCRIPT_BUCKET).blob(object_path)
+    blob.metadata = {
+        "koba-purpose": "content-engine-featured-image-recovery",
+        "sha256": digest,
+    }
+    try:
+        blob.upload_from_string(
+            image_bytes,
+            content_type="image/jpeg",
+            if_generation_match=0,
+        )
+    except Exception as error:
+        # A concurrent retry may have won the create-only race. Accept it only
+        # after reading and verifying the deterministic object.
+        reconciled = load_featured_image_recovery(object_path, digest)
+        if reconciled:
+            return digest
+        raise ArtworkRecoveryError(
+            "ARTWORK_RECOVERY_PERSIST_FAILED",
+            "artwork_recovery_write",
+            "Generated artwork could not be persisted for safe delivery retry.",
+        ) from error
+    return digest
 
 
 def upload_featured_media(
@@ -1505,7 +1661,7 @@ def upload_featured_media(
 ) -> tuple[int, str]:
     media_endpoint = f"{base_url}/wp-json/wp/v2/media"
     slug = wordpress_slug(blueprint_id) + "-featured"
-    existing = find_wordpress_record(session, media_endpoint, slug, base_url)
+    existing = find_wordpress_media(session, media_endpoint, slug, base_url)
     if existing:
         return int(existing["id"]), str(existing.get("source_url") or "")
 
@@ -1524,7 +1680,7 @@ def upload_featured_media(
             timeout=(10, 90),
         )
     except WordPressStageError:
-        reconciled = find_wordpress_record(
+        reconciled = find_wordpress_media(
             session, media_endpoint, slug, base_url
         )
         if reconciled:
@@ -1558,7 +1714,7 @@ def stage_wordpress_draft(
     slug = wordpress_slug(blueprint_id)
     post_id = existing_post_id
     if not post_id:
-        existing = find_wordpress_record(session, posts_endpoint, slug, base_url)
+        existing = find_wordpress_post(session, posts_endpoint, slug, base_url)
         post_id = int(existing["id"]) if existing else None
 
     payload: dict[str, Any] = {
@@ -1581,7 +1737,7 @@ def stage_wordpress_draft(
             timeout=(10, 90),
         )
     except WordPressStageError:
-        reconciled = find_wordpress_record(
+        reconciled = find_wordpress_post(
             session, posts_endpoint, slug, base_url
         )
         if reconciled:
@@ -1799,17 +1955,109 @@ def execute_generation(
 
     featured_media_id = int(data.get("featuredMediaId") or 0)
     featured_media_url = str(data.get("featuredMediaUrl") or "")
-    if not featured_media_id and data.get("featuredMediaSkipped") is not True:
+    recovery_path = str(data.get("featuredImageRecoveryObject") or "")
+    recovery_sha256 = str(data.get("featuredImageRecoverySha256") or "")
+    recovery_persisted = False
+    provider_invocation_state = str(
+        data.get("artworkProviderInvocationState") or ""
+    )
+    artwork_error: Exception | None = None
+    if not featured_media_id:
         try:
-            image_bytes = generate_featured_image(article["hero_image_prompt"])
-            featured_media_id, featured_media_url = upload_featured_media(
-                session,
-                base_url,
-                blueprint_id,
-                image_bytes,
-                article["focus_keyword"],
-                str(data.get("topicTitle") or data.get("title") or article["seo_title"]),
+            existing_media = verify_wordpress_media_capability(
+                session, base_url, blueprint_id
             )
+            if existing_media:
+                featured_media_id = int(existing_media["id"])
+                featured_media_url = str(existing_media.get("source_url") or "")
+            else:
+                expected_recovery_path = featured_image_recovery_path(
+                    studio_key, blueprint_id, attempt_id
+                )
+                if recovery_path and recovery_path != expected_recovery_path:
+                    raise ArtworkRecoveryError(
+                        "ARTWORK_RECOVERY_BINDING_MISMATCH",
+                        "artwork_recovery_read",
+                        "Artwork recovery object is not bound to this tenant and attempt.",
+                    )
+                recovery_path = expected_recovery_path
+                recovered = load_featured_image_recovery(
+                    recovery_path, recovery_sha256
+                )
+                if recovered:
+                    image_bytes, recovery_sha256 = recovered
+                    recovery_persisted = True
+                    provider_invocation_state = "recovery_persisted"
+                else:
+                    if data.get("featuredMediaSkipped") is True:
+                        raise ArtworkRecoveryError(
+                            "LEGACY_ARTWORK_RECOVERY_REQUIRED",
+                            "artwork_recovery_read",
+                            "Legacy skipped artwork requires separately authorized repair.",
+                        )
+                    if provider_invocation_state in {
+                        "provider_call_reserved",
+                        "provider_succeeded_persistence_pending",
+                        "provider_succeeded_recovery_failed",
+                    }:
+                        raise ArtworkRecoveryError(
+                            "ARTWORK_PROVIDER_RECALL_BLOCKED",
+                            "artwork_recovery_read",
+                            "A prior image-provider attempt may have been billable and was not recoverably persisted; provider recall is blocked.",
+                        )
+                    provider_invocation_state = "provider_call_reserved"
+                    update_attempt(
+                        reference,
+                        attempt_id,
+                        {
+                            "artworkProviderInvocationState": provider_invocation_state,
+                            "artworkProviderReservedAt": firestore.SERVER_TIMESTAMP,
+                        },
+                    )
+                    image_bytes = generate_featured_image(
+                        article["hero_image_prompt"]
+                    )
+                    recovery_sha256 = hashlib.sha256(image_bytes).hexdigest()
+                    provider_invocation_state = (
+                        "provider_succeeded_persistence_pending"
+                    )
+                    update_attempt(
+                        reference,
+                        attempt_id,
+                        {
+                            "artworkProviderInvocationState": provider_invocation_state,
+                            "featuredImageRecoverySha256": recovery_sha256,
+                            "artworkProviderReturnedAt": firestore.SERVER_TIMESTAMP,
+                        },
+                    )
+                    recovery_sha256 = persist_featured_image_recovery(
+                        recovery_path, image_bytes
+                    )
+                    recovery_persisted = True
+                    provider_invocation_state = "recovery_persisted"
+                    update_attempt(
+                        reference,
+                        attempt_id,
+                        {
+                            "featuredImageRecoveryObject": recovery_path,
+                            "featuredImageRecoverySha256": recovery_sha256,
+                            "artworkProviderInvocationState": provider_invocation_state,
+                            "artworkDeliveryState": "recovery_persisted",
+                            "artworkRecoveryPersistedAt": firestore.SERVER_TIMESTAMP,
+                        },
+                    )
+                featured_media_id, featured_media_url = upload_featured_media(
+                    session,
+                    base_url,
+                    blueprint_id,
+                    image_bytes,
+                    article["focus_keyword"],
+                    str(
+                        data.get("topicTitle")
+                        or data.get("title")
+                        or article["seo_title"]
+                    ),
+                )
             update_attempt(
                 reference,
                 attempt_id,
@@ -1817,19 +2065,36 @@ def execute_generation(
                     "featuredMediaId": featured_media_id,
                     "featuredMediaUrl": featured_media_url,
                     "featuredMediaUploadedAt": firestore.SERVER_TIMESTAMP,
+                    "artworkDeliveryState": "media_uploaded",
                     "artworkWarning": firestore.DELETE_FIELD,
+                    "artworkDeliveryErrorCode": firestore.DELETE_FIELD,
+                    "artworkDeliveryErrorStage": firestore.DELETE_FIELD,
+                    "featuredMediaSkipped": firestore.DELETE_FIELD,
+                    "featuredMediaSkippedAt": firestore.DELETE_FIELD,
                 },
             )
-        except Exception as artwork_error:
-            warning = str(artwork_error)[:500]
+        except Exception as caught_artwork_error:
+            artwork_error = caught_artwork_error
+            error_code = str(
+                getattr(artwork_error, "code", "ARTWORK_DELIVERY_FAILED")
+            )[:120]
+            error_stage = str(getattr(artwork_error, "stage", "artwork"))[:120]
+            recovery_available = recovery_persisted
+            provider_state = (
+                "provider_succeeded_recovery_failed"
+                if error_code == "ARTWORK_RECOVERY_PERSIST_FAILED"
+                else provider_invocation_state
+            )
             print(
                 json.dumps(
                     {
                         "severity": "WARNING",
-                        "message": "Featured artwork was skipped; draft staging will continue.",
+                        "message": "Featured artwork delivery failed; recoverable state was preserved.",
                         "blueprintId": blueprint_id,
                         "generationAttemptId": attempt_id,
-                        "error": warning,
+                        "errorCode": error_code,
+                        "errorStage": error_stage,
+                        "recoveryAvailable": recovery_available,
                     }
                 )
             )
@@ -1837,23 +2102,49 @@ def execute_generation(
                 reference,
                 attempt_id,
                 {
-                    "artworkWarning": warning,
-                    "featuredMediaSkipped": True,
-                    "featuredMediaSkippedAt": firestore.SERVER_TIMESTAMP,
+                    "artworkDeliveryState": (
+                        "recoverable_delivery_failed"
+                        if recovery_available
+                        else "preflight_or_generation_failed"
+                    ),
+                    "artworkDeliveryErrorCode": error_code,
+                    "artworkDeliveryErrorStage": error_stage,
+                    "artworkDeliveryFailedAt": firestore.SERVER_TIMESTAMP,
+                    "artworkProviderInvocationState": provider_state,
+                    "featuredMediaSkipped": firestore.DELETE_FIELD,
+                    "featuredMediaSkippedAt": firestore.DELETE_FIELD,
                 },
             )
 
     update_attempt(reference, attempt_id, {"executionState": "staging"})
     existing_post_id = int(data.get("wordpressPostId") or 0) or None
-    post_id, edit_url = stage_wordpress_draft(
-        session,
-        base_url,
-        blueprint_id,
-        article["seo_title"],
-        article["blog_post_html"],
-        featured_media_id,
-        existing_post_id,
-    )
+    try:
+        post_id, edit_url = stage_wordpress_draft(
+            session,
+            base_url,
+            blueprint_id,
+            article["seo_title"],
+            article["blog_post_html"],
+            featured_media_id,
+            existing_post_id,
+        )
+    except Exception as staging_error:
+        if recovery_path or featured_media_id:
+            update_attempt(
+                reference,
+                attempt_id,
+                {
+                    "artworkDeliveryState": "recoverable_attachment_failed",
+                    "artworkDeliveryErrorCode": str(
+                        getattr(staging_error, "code", "WORDPRESS_DRAFT_STAGE_FAILED")
+                    )[:120],
+                    "artworkDeliveryErrorStage": str(
+                        getattr(staging_error, "stage", "draft_staging")
+                    )[:120],
+                    "artworkDeliveryFailedAt": firestore.SERVER_TIMESTAMP,
+                },
+            )
+        raise
     expected_edit_prefix = f"{base_url}/wp-admin/post.php?"
     if post_id <= 0 or not edit_url.startswith(expected_edit_prefix):
         raise TenantCredentialNotFound(
@@ -1866,6 +2157,20 @@ def execute_generation(
             "wordpressPostId": post_id,
             "liveDraftUrl": edit_url,
             "wordpressDraftStagedAt": firestore.SERVER_TIMESTAMP,
+        },
+    )
+    if artwork_error is not None:
+        # The unpublished draft and its canonical ID are retained, but the task
+        # remains retryable and cannot report full success without its artwork.
+        raise artwork_error
+    update_attempt(
+        reference,
+        attempt_id,
+        {
+            "artworkDeliveryState": "delivered",
+            "artworkDeliveredAt": firestore.SERVER_TIMESTAMP,
+            "artworkDeliveryErrorCode": firestore.DELETE_FIELD,
+            "artworkDeliveryErrorStage": firestore.DELETE_FIELD,
         },
     )
     complete_attempt(
@@ -2215,10 +2520,14 @@ def process_blog_topics(request):
             record_worker_error(reference, attempt_id, error, retry_count, terminal)
         error_code = (
             error.code
-            if isinstance(error, WordPressStageError)
+            if isinstance(error, (WordPressStageError, ArtworkRecoveryError))
             else "CONTENT_GENERATION_FAILED"
         )
-        error_stage = error.stage if isinstance(error, WordPressStageError) else "worker"
+        error_stage = (
+            error.stage
+            if isinstance(error, (WordPressStageError, ArtworkRecoveryError))
+            else "worker"
+        )
         print(
             json.dumps(
                 {

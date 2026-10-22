@@ -64,3 +64,33 @@ Configured/defaulted by the worker:
 - deterministic WordPress draft creation/update;
 - audiobook transcription through the same function entry point.
 
+## Featured-image recovery contract (RC3)
+
+Before a billable image request, the worker authenticates to WordPress, verifies
+that the bound user can both upload files and edit posts, and performs the exact
+media-slug lookup without the post-only `status=any` parameter. Post
+reconciliation continues to use `status=any` so existing unpublished drafts can
+be found.
+
+After the provider returns bytes, the worker writes them before WordPress upload
+to this deterministic server-owned object:
+
+```text
+content-engine-recovery/{studioKey}/{blueprintId}/{generationAttemptId}/featured.jpg
+```
+
+The object path is tenant- and attempt-bound. The SHA-256 is stored with the
+attempt and verified on every reuse. Upload uses a create-only generation
+precondition; a conflicting object fails closed. The deployed Firebase Storage
+rules must continue to deny browser access to `content-engine-recovery/**` (the
+RC5 catch-all denial does so); only the worker service identity may use this
+prefix.
+
+If WordPress media upload or post attachment fails, the draft remains
+unpublished, its canonical post ID is retained, the attempt is marked
+recoverable, and task execution fails for retry. The retry reads the recovery
+object and never calls the paid provider again. If the provider returned bytes
+but private persistence failed, provider recall is blocked and the attempt
+requires operator review rather than incurring another charge. Legacy
+`featuredMediaSkipped` attempts likewise require separately authorized repair.
+
