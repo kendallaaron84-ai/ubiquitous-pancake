@@ -1,0 +1,41 @@
+name: KOBA-I Security Baseline Drift Monitor
+
+on:
+  # Scheduled cron disabled pending initial manual dispatch and independent acceptance
+  # schedule:
+  #   - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  drift-check:
+    name: Security Baseline & IAM Drift Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Authenticate to Google Cloud via Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/400566266819/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          service_account: 'github-drift-monitor@author-jubilee-command-center.iam.gserviceaccount.com'
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Run Security Drift Verifier
+        run: |
+          python scripts/verify_security_drift.py
+        env:
+          GCP_PROJECT: author-jubilee-command-center
+          GCP_PROJECT_NUMBER: "400566266819"
