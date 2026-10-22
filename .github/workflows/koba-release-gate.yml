@@ -89,4 +89,4 @@ jobs:
           cache-dependency-path: services/wordpress-egress-gateway/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
-      - run: node --test credential-reference.test.mjs
+      - run: node --test "*.test.mjs"

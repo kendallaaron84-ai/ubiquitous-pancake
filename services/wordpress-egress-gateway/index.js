@@ -29,8 +29,6 @@ const secretProjectId =
   "";
 const secretProjectNumber =
   process.env.CONNECTION_SECRET_PROJECT_NUMBER || "";
-const contentWorkerServiceAccount =
-  process.env.CONTENT_WORKER_SERVICE_ACCOUNT || "";
 
 const secretManager = new SecretManagerServiceClient();
 const app = express();
@@ -286,9 +284,6 @@ function requireSecretConfiguration() {
   const missing = [];
   if (!secretProjectId) missing.push("CONNECTION_SECRET_PROJECT_ID");
   if (!secretProjectNumber) missing.push("CONNECTION_SECRET_PROJECT_NUMBER");
-  if (!contentWorkerServiceAccount) {
-    missing.push("CONTENT_WORKER_SERVICE_ACCOUNT");
-  }
   if (missing.length) {
     throw new GatewayError(
       "SERVICE_CONFIGURATION_ERROR",
@@ -296,32 +291,6 @@ function requireSecretConfiguration() {
       503
     );
   }
-}
-
-async function addSecretAccessor(secretName) {
-  const [policyResponse] = await secretManager.getIamPolicy({
-    resource: secretName,
-  });
-  const policy = policyResponse || {};
-  const bindings = Array.isArray(policy.bindings) ? policy.bindings : [];
-  const role = "roles/secretmanager.secretAccessor";
-  const member = `serviceAccount:${contentWorkerServiceAccount}`;
-  let binding = bindings.find((item) => item.role === role);
-
-  if (!binding) {
-    binding = { role, members: [] };
-    bindings.push(binding);
-  }
-
-  const members = Array.isArray(binding.members) ? binding.members : [];
-  if (!members.includes(member)) members.push(member);
-  binding.members = members;
-  policy.bindings = bindings;
-
-  await secretManager.setIamPolicy({
-    resource: secretName,
-    policy,
-  });
 }
 
 async function provisionWordPressSecret({
@@ -360,8 +329,6 @@ async function provisionWordPressSecret({
       ),
     },
   });
-
-  await addSecretAccessor(secretName);
 
   return credentialSecretReference(
     secretProjectNumber,
@@ -706,6 +673,81 @@ app.post("/verify-wordpress", async (request, response) => {
     console.error("WordPress egress gateway request failed.", {
       code: known.code,
       message: known.message,
+      durationMs: Date.now() - startedAt,
+    });
+
+    response.status(known.status).json({
+      success: false,
+      code: known.code,
+      error: known.message,
+    });
+  }
+});
+
+app.post("/verify-stored-wordpress", async (request, response) => {
+  const startedAt = Date.now();
+  let studioKey = "";
+  let websiteConnectionId = "";
+  let targetWpOrigin = "";
+
+  try {
+    studioKey = normalizeStudioKey(request.body?.studioKey);
+    websiteConnectionId = normalizeConnectionId(
+      request.body?.websiteConnectionId,
+      { allowPrimaryDefault: true }
+    );
+    targetWpOrigin = normalizeWordPressOrigin(request.body?.targetWpOrigin);
+    const wpUsername = clean(request.body?.wpUsername);
+    if (!wpUsername) {
+      throw new GatewayError(
+        "MISSING_CONNECTION_FIELDS",
+        "The saved WordPress username is required."
+      );
+    }
+
+    await assertPublicHostname(targetWpOrigin);
+    const credentials = await loadStoredWordPressCredentials({
+      studioKey,
+      websiteConnectionId,
+      secretCredentialRef: request.body?.secretCredentialRef,
+      targetWpOrigin,
+      wpUsername,
+    });
+    const wpUser = await verifyWordPress(
+      credentials.targetWpOrigin,
+      credentials.wpUsername,
+      credentials.applicationPassword
+    );
+
+    console.info("Saved WordPress connection verified through static egress.", {
+      studioKey,
+      websiteConnectionId,
+      targetWpOrigin,
+      wpUserId: wpUser.id,
+      durationMs: Date.now() - startedAt,
+    });
+
+    response.status(200).json({
+      success: true,
+      targetWpOrigin,
+      wpUsername,
+    });
+  } catch (error) {
+    const known =
+      error instanceof GatewayError
+        ? error
+        : new GatewayError(
+            "SAVED_CONNECTION_VERIFICATION_FAILED",
+            "KOBA-I could not verify the saved WordPress connection.",
+            502
+          );
+
+    console.error("Saved WordPress connection verification failed.", {
+      code: known.code,
+      message: known.message,
+      studioKey,
+      websiteConnectionId,
+      targetWpOrigin,
       durationMs: Date.now() - startedAt,
     });
 

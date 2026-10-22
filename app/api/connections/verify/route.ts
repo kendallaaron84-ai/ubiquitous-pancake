@@ -29,6 +29,7 @@ import {
 import {
   resolveWordPressGatewayUrl,
   verifyAndProvisionThroughGateway,
+  verifyStoredThroughGateway,
 } from "@/core/security/wordpress-egress-gateway";
 import { BlogConnectionError } from "@/core/security/blog-connection";
 import {
@@ -118,11 +119,27 @@ export async function GET(request: Request) {
         );
       }
       try {
-        await verifyStoredWordPressConnection(getSecretManagerClient(), {
-          targetWpOrigin: selectedConnection.wordpressOrigin,
-          wpUsername: selectedConnection.wordpressUsername,
-          secretCredentialRef: selectedConnection.secretCredentialRef,
-        });
+        const gatewayUrl = resolveWordPressGatewayUrl();
+        if (gatewayUrl) {
+          await verifyStoredThroughGateway(gatewayUrl, {
+            studioKey: context.studioKey,
+            websiteConnectionId: selectedConnection.websiteConnectionId,
+            targetWpOrigin: selectedConnection.wordpressOrigin,
+            wpUsername: selectedConnection.wordpressUsername,
+            secretCredentialRef: selectedConnection.secretCredentialRef,
+          });
+        } else {
+          if (process.env.NODE_ENV === "production") {
+            throw new Error(
+              "Production stored-connection verification requires the WordPress gateway."
+            );
+          }
+          await verifyStoredWordPressConnection(getSecretManagerClient(), {
+            targetWpOrigin: selectedConnection.wordpressOrigin,
+            wpUsername: selectedConnection.wordpressUsername,
+            secretCredentialRef: selectedConnection.secretCredentialRef,
+          });
+        }
       } catch (error: unknown) {
         if (error instanceof WordPressConnectionDiagnosticError) {
           throw await diagnosticRouteError(
@@ -237,7 +254,6 @@ export async function POST(request: Request) {
       console.info("[WordPress Connection] Configuration loaded.", {
         secretProjectId: configuration.secretProjectId,
         secretProjectNumber: configuration.secretProjectNumber,
-        workerServiceAccount: configuration.workerServiceAccount,
         credentialServiceAccount:
           process.env.FIREBASE_CLIENT_EMAIL?.trim() || "missing",
       });
@@ -249,9 +265,6 @@ export async function POST(request: Request) {
         ),
         hasSecretProjectNumber: Boolean(
           process.env.CONNECTION_SECRET_PROJECT_NUMBER?.trim()
-        ),
-        hasWorkerServiceAccount: Boolean(
-          process.env.CONTENT_WORKER_SERVICE_ACCOUNT?.trim()
         ),
         hasFirebaseClientEmail: Boolean(
           process.env.FIREBASE_CLIENT_EMAIL?.trim()
@@ -268,7 +281,6 @@ export async function POST(request: Request) {
 
     let verified: VerifiedWordPressConnection;
     try {
-      const secretManager = getSecretManagerClient();
       const gatewayUrl = resolveWordPressGatewayUrl();
       const connectionInput = {
         studioKey: context.studioKey,
@@ -283,7 +295,7 @@ export async function POST(request: Request) {
             connectionInput
           )
         : await verifyAndProvisionWordPressConnection(
-            secretManager,
+            getSecretManagerClient(),
             configuration,
             {
               ...connectionInput,
