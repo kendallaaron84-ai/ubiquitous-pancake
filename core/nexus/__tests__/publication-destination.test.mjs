@@ -9,6 +9,7 @@ import {
   assertConfirmedPublicationOrigin,
   resolvePublicationDestination,
 } from "../publication-destination.ts";
+import { assertProtectedPublicationAssets } from "../../security/publication-deployment-integrity.ts";
 
 const ROOT = new URL("../../../", import.meta.url);
 const STUDIO_KEY = "KOBA-AUDIO-TEST1234";
@@ -276,6 +277,44 @@ test("new publication creation preserves canonical media type through Save & Syn
   assert.match(productPage, /createStudioPublication\(publicationType\)/);
   assert.match(productPage, /Publication type is fixed when the canonical workspace is created/);
   assert.match(route, /assertCanonicalPublicationType\(requestedAssetId, mediaType\)/);
+});
+
+test("published audiobook falls back from empty chapters to uploaded Studio tracks", async () => {
+  const route = await readFile(new URL("app/api/agent/deploy/route.ts", ROOT), "utf8");
+  const resolution = route.match(
+    /const chapters =([\s\S]*?);\r?\n\r?\n\s*await assertProtectedPublicationAssets/
+  );
+  assert.ok(resolution, "deployment route must expose its chapter resolution before protected-media validation");
+
+  const assetId = "abk_5846b3d0b20b4cd9b24469a6e1f79885";
+  const studioKey = "KOBA-AUDIO-TEST1234";
+  const studioTrack = {
+    storagePath: `studio/${assetId}/${studioKey}/chapters/chapter-1.mp3`,
+  };
+  const resolveChapters = new Function(
+    "body",
+    "existing",
+    `const chapters =${resolution[1]}; return chapters;`
+  );
+  const chapters = resolveChapters(
+    { chapters: [], studioTracks: [studioTrack], status: "published" },
+    {}
+  );
+
+  assert.deepEqual(chapters, [studioTrack]);
+  await assertProtectedPublicationAssets({
+    assetId,
+    studioKey,
+    publicationType: "audiobook",
+    chapters,
+    requireAsset: true,
+    exists: async (path) => path === studioTrack.storagePath,
+  });
+
+  const validationIndex = route.indexOf("await assertProtectedPublicationAssets");
+  const deploymentIndex = route.indexOf("await deployPublicationToWordPress", validationIndex);
+  assert.ok(validationIndex >= 0 && deploymentIndex > validationIndex,
+    "successful protected-media validation must proceed to WordPress deployment");
 });
 
 test("WordPress deployment preserves immutable post identity across rename and retry", async () => {

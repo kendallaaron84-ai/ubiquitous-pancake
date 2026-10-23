@@ -308,13 +308,16 @@ export async function POST(request: Request) {
       destinationChanged,
     });
     const localMediaGateway = resolveLocalMediaGateway();
-    const chapters = Array.isArray(body?.chapters)
-      ? body.chapters
-      : Array.isArray(body?.studioTracks)
-        ? body.studioTracks
-        : Array.isArray(existing.chapters)
-          ? existing.chapters
-          : [];
+    const chapters =
+      Array.isArray(body?.chapters) && body.chapters.length > 0
+        ? body.chapters
+        : Array.isArray(body?.studioTracks) && body.studioTracks.length > 0
+          ? body.studioTracks
+          : Array.isArray(existing.chapters) && existing.chapters.length > 0
+            ? existing.chapters
+            : Array.isArray(existing.studioTracks)
+              ? existing.studioTracks
+              : [];
 
     await assertProtectedPublicationAssets({
       assetId: assetKey,
